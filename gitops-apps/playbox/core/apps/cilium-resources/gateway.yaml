@@ -1,0 +1,18 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: playbox-external-gateway
+  namespace: playbox-service
+  annotations:
+    io.cilium/lb-ipam-ip-pool: "playbox-ingress-ip-pool"
+  #   # cert-manager가 이 Gateway를 인지하고 자동으로 TLS Secret을 생성하도록 함
+  #   cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All

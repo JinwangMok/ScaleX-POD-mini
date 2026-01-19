@@ -1,20 +1,20 @@
-# apiVersion: argoproj.io/v1alpha1
-# kind: Application
-# metadata:
-#   name: playbox-addon-app
-#   namespace: argocd
-# spec:
-#   project: base
-#   source:
-#     repoURL: https://github.com/JinwangMok/k8s-playbox.git
-#     targetRevision: main
-#     path: gitops-apps/playbox/addon
-#   destination:
-#     server: https://kubernetes.default.svc
-#     namespace: argocd
-#   syncPolicy:
-#     automated:
-#       prune: true
-#       selfHeal: true
-#     syncOptions:
-#       - CreateNamespace=true
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: playbox-addon-app
+  namespace: argocd
+spec:
+  project: base
+  source:
+    repoURL: https://github.com/JinwangMok/k8s-playbox.git
+    targetRevision: main
+    path: gitops-apps/playbox/addon
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

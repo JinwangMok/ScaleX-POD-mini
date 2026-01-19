@@ -1,0 +1,12 @@
+apiVersion: "cilium.io/v2alpha1"
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: playbox-external-gateway-announcement
+spec:
+  loadBalancerIPs: true
+  externalIPs: true
+  # 이 정책이 playbox-external-gateway 서비스에만 적용되도록 레이블로 선택
+  # 해당 서비스에 이 레이블이 있는지 확인
+  serviceSelector:
+    matchLabels:
+      io.cilium.gateway/owning-gateway: playbox-external-gateway

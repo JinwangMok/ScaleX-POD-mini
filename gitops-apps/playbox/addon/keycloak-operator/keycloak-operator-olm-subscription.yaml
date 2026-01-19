@@ -1,0 +1,23 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+    name: keycloak-operator
+    namespace: keycloak
+spec:
+    channel: fast # 'fast' 채널은 최신 기능을 빠르게 사용해 볼 수 있는 버전
+
+    # Operator 업그레이드를 자동으로 하지 않고 수동으로 승인하도록 설정
+    installPlanApproval: Manual
+    # 다음과 같은 커맨드로 승인해야 설치됨
+    # kubectl patch installplan install-xxxxxx \
+    #     -n keycloak \
+    #     --type merge \
+    #     --patch '{"spec":{"approved":true}}'
+
+    # 설치할 Operator의 이름
+    name: keycloak-operator
+
+    # OLM이 Operator를 찾아올 카탈로그(앱스토어) 정보
+    # 보통 'operatorhubio-catalog'를 사용
+    source: operatorhubio-catalog
+    sourceNamespace: olm
