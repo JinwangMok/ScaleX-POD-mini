@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: dev
+  namespace: argocd
+spec:
+  description: "개발 위주의 프로젝트 (실패 시 기능/서비스 일부 붕괴)"
+  sourceRepos:
+    - "https://github.com/JinwangMok/k8s-playbox.git"
+
+  destinations:
+    - server: "https://kubernetes.default.svc"
+      namespace: "default"
+
+  clusterResourceWhitelist:
+    - group: ""
+      kind: "Namespace"
+
+  # namespaceResourceWhitelist:
+  #   - group: "*"
+  #     kind: "*"
+
+  orphanedResources:
+    warn: true

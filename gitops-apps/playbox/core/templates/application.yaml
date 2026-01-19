@@ -1,0 +1,57 @@
+{{- range $name, $app := .Values.applications }}
+  {{- if $app.enabled }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.argo.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "{{ $app.syncWave }}"
+spec:
+  project: {{ $.Values.argo.project }}
+  {{- if $app.source.chart }}
+  # CASE 1: Helm 소스를 사용하는 경우
+  sources:
+    - repoURL: {{ $app.source.repoURL }}
+      chart: {{ $app.source.chart }}
+      targetRevision: {{ $app.source.targetRevision }}
+      helm:
+        releaseName: {{ $name }}
+        valueFiles:
+        {{- range $path := $app.source.helm.valueFiles }}
+        - $values/{{ $path }}
+        {{- end }}
+    - repoURL: {{ $.Values.argo.sourceRepo.url }}
+      targetRevision: {{ $.Values.argo.sourceRepo.branch }}
+      ref: values
+  {{- else if $app.source.path }}
+  # CASE 2: 일반 Manifest 또는 Kustomize를 사용하는 경우
+  source: # 이 경우는 소스가 하나이므로 'source:' (단수형)
+    repoURL: {{ $.Values.argo.sourceRepo.url }}
+    path: {{ $app.source.path }}
+    targetRevision: {{ $.Values.argo.sourceRepo.branch }}
+    # kustomize 키가 존재하면 렌더링하도록 추가
+    {{- if $app.source.kustomize }}
+    kustomize:
+{{ toYaml $app.source.kustomize | indent 6 }}
+    {{- end }}
+  {{- end }}
+
+  destination:
+    server: {{ $.Values.argo.server }}
+    namespace: {{ $app.namespace }}
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      {{- if $app.syncOptions }}
+      {{- range $option := $app.syncOptions }}
+      - {{ $option }}
+      {{- end }}
+      {{- end }}
+  {{- end }}
+{{- end }}

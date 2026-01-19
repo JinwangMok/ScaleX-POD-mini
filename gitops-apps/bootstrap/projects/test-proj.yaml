@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: test
+  namespace: argocd
+spec:
+  description: "테스트 기능 개발용 프로젝트 (실패 용인)"
+  sourceRepos:
+    - "https://github.com/SmartX-Team/DataX-Ops.git"
+
+  destinations:
+    - server: "https://kubernetes.default.svc"
+      namespace: "test"
+
+  clusterResourceWhitelist:
+    - group: ""
+      kind: "Namespace"
+
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  orphanedResources:
+    warn: true

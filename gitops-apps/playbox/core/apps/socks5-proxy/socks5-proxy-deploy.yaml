@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: socks5-proxy
+  namespace: kube-system
+  labels:
+    app: socks5-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: socks5-proxy
+  template:
+    metadata:
+      labels:
+        app: socks5-proxy
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+      # - key: "node-role.kubernetes.io/master"
+      #   operator: "Exists"
+      #   effect: "NoSchedule"
+      containers:
+      - name: socks5-proxy
+        image: serjs/go-socks5-proxy:latest
+        ports:
+        - containerPort: 1080
+          name: socks
+          protocol: TCP
+        env:
+        - name: PROXY_PORT
+          value: "1080"
+        - name: PROXY_USER
+          valueFrom:
+            secretKeyRef:
+              name: socks5-creds
+              key: PROXY_USER
+        - name: PROXY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: socks5-creds
+              key: PROXY_PASSWORD
