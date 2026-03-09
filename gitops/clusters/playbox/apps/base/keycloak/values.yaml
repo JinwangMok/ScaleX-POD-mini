@@ -1,0 +1,15 @@
+auth:
+  existingSecret: keycloak-admin
+production: false
+proxy: edge
+httpRelativePath: /
+service:
+  type: ClusterIP
+  ports:
+    http: 80
+postgresql:
+  auth:
+    existingSecret: keycloak-db
+    secretKeys:
+      adminPasswordKey: password
+      userPasswordKey: password

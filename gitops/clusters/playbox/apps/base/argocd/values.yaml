@@ -1,0 +1,18 @@
+server:
+  service:
+    type: ClusterIP
+  replicas: 1
+controller:
+  replicas: 1
+repoServer:
+  replicas: 1
+redis:
+  ha:
+    enabled: false
+persistence:
+  enabled: false
+global:
+  domain: cd.jinwang.dev
+configs:
+  params:
+    server.insecure: "true"

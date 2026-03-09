@@ -1,0 +1,142 @@
+---
+- name: Prepare bare-metal nodes for Kubernetes
+  hosts: all
+  become: true
+  vars:
+    ansible_user_name: "{{ nodes.ansible_user | default('ansible_user') }}"
+    ssh_key_path: "{{ nodes.ssh_key | default('~/.ssh/id_ed25519') }}"
+
+  tasks:
+    # --- User Creation ---
+    - name: Check if ansible_user exists
+      command: "id {{ ansible_user_name }}"
+      register: user_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create ansible_user
+      user:
+        name: "{{ ansible_user_name }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+      when: user_check.rc != 0
+
+    - name: Configure sudoers for ansible_user
+      template:
+        src: templates/sudoers.j2
+        dest: "/etc/sudoers.d/{{ ansible_user_name }}"
+        mode: "0440"
+        validate: "visudo -cf %s"
+
+    - name: Create .ssh directory for ansible_user
+      file:
+        path: "/home/{{ ansible_user_name }}/.ssh"
+        state: directory
+        mode: "0700"
+        owner: "{{ ansible_user_name }}"
+        group: "{{ ansible_user_name }}"
+
+    - name: Copy SSH authorized key to ansible_user
+      authorized_key:
+        user: "{{ ansible_user_name }}"
+        key: "{{ lookup('file', ssh_key_path + '.pub') }}"
+        state: present
+
+    # --- Network Configuration ---
+    - name: Prepare bond interface list
+      set_fact:
+        bond_interfaces: >-
+          {{ interfaces
+             | selectattr('role', 'in', network.bond_roles)
+             | rejectattr('state', 'defined')
+             | list
+             + interfaces
+             | selectattr('role', 'in', network.bond_roles)
+             | selectattr('state', 'defined')
+             | rejectattr('state', 'equalto', 'down')
+             | list
+             | sort(attribute='speed', reverse=true) }}
+        create_bridge: "{{ tower.enabled | default(false) and inventory_hostname == tower.host | default('') }}"
+      vars:
+        node_data: >-
+          {{ (nodes.control_plane + nodes.workers)
+             | selectattr('name', 'equalto', inventory_hostname)
+             | first }}
+        interfaces: "{{ node_data.interfaces }}"
+
+    - name: Fail if no valid bond interfaces
+      fail:
+        msg: "No valid interfaces found for bonding on {{ inventory_hostname }}"
+      when: bond_interfaces | length == 0
+
+    - name: Generate netplan configuration
+      template:
+        src: templates/netplan.yml.j2
+        dest: /etc/netplan/01-playbox.yaml
+        mode: "0600"
+      vars:
+        node_data: >-
+          {{ (nodes.control_plane + nodes.workers)
+             | selectattr('name', 'equalto', inventory_hostname)
+             | first }}
+        node_ip: "{{ node_data.ip }}"
+        bond_mode: "{{ node_data.network.bond_mode | default('active-backup') }}"
+      notify: Apply netplan
+
+    - name: Remove default netplan configs
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_fileglob:
+        - /etc/netplan/00-*.yaml
+        - /etc/netplan/50-*.yaml
+      notify: Apply netplan
+
+    # --- Kernel Parameters ---
+    - name: Set kernel parameters for Kubernetes
+      sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: true
+        state: present
+        reload: true
+      loop:
+        - { key: "net.ipv4.ip_forward", value: "1" }
+        - { key: "net.bridge.bridge-nf-call-iptables", value: "1" }
+        - { key: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+
+    - name: Load required kernel modules
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - overlay
+        - bonding
+
+    - name: Persist kernel modules
+      copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          br_netfilter
+          overlay
+          bonding
+        mode: "0644"
+
+    # --- KVM/libvirt for tower host ---
+    - name: Install KVM/libvirt on tower host
+      apt:
+        name:
+          - qemu-kvm
+          - libvirt-daemon-system
+          - libvirt-clients
+          - bridge-utils
+          - virtinst
+        state: present
+        update_cache: true
+      when: tower.enabled | default(false) and inventory_hostname == tower.host | default('')
+
+  handlers:
+    - name: Apply netplan
+      command: netplan apply

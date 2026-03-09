@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: socks5-proxy
+  namespace: kube-tunnel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: socks5-proxy
+  template:
+    metadata:
+      labels:
+        app: socks5-proxy
+    spec:
+      containers:
+        - name: socks5
+          image: serjs/go-socks5-proxy:latest
+          ports:
+            - containerPort: 1080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: socks5-proxy
+  namespace: kube-tunnel
+spec:
+  selector:
+    app: socks5-proxy
+  ports:
+    - port: 1080
+      targetPort: 1080
+      protocol: TCP
+  type: ClusterIP

@@ -1,0 +1,7 @@
+# Kubespray addon variables — rendered from values.yaml
+# Addons are managed by ArgoCD, so disable kubespray-managed addons
+helm_enabled: true
+metrics_server_enabled: false
+ingress_nginx_enabled: false
+cert_manager_enabled: false
+argocd_enabled: false

@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: test-project
+  namespace: argocd
+spec:
+  description: "Test project for validation"
+  sourceRepos:
+    - "https://github.com/JinwangMok/k8s-playbox.git"
+
+  destinations:
+    - server: "https://kubernetes.default.svc"
+      namespace: "test"
+
+  clusterResourceWhitelist:
+    - group: ""
+      kind: "Namespace"
+    - group: "storage.k8s.io"
+      kind: "StorageClass"
+
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  orphanedResources:
+    warn: true

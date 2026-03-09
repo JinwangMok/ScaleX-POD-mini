@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: playbox-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: "Root AppProject for bootstrap — manages generators (ApplicationSets) only."
+  sourceRepos:
+    - "https://github.com/JinwangMok/k8s-playbox.git"
+  destinations:
+    - server: "https://kubernetes.default.svc"
+      namespace: "argocd"
+  namespaceResourceWhitelist:
+    - group: "argoproj.io"
+      kind: "AppProject"
+    - group: "argoproj.io"
+      kind: "Application"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: playbox-root
+  namespace: argocd
+spec:
+  project: playbox-root
+  source:
+    repoURL: https://github.com/JinwangMok/k8s-playbox.git
+    targetRevision: main
+    path: gitops/clusters/playbox/generators
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: default
+spec:
+  sourceRepos: []
+  sourceNamespaces: []
+  destinations: []
+  namespaceResourceBlacklist:
+    - group: "*"
+      kind: "*"

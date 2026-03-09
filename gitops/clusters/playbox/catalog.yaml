@@ -1,0 +1,66 @@
+generators:
+  base:
+    - argocd
+    - cilium
+    - cilium-resources
+    - cert-manager
+    - cloudflared-tunnel
+    - socks5-proxy
+    - keycloak
+    - local-path-provisioner
+    - rbac
+    - cluster-config
+  test:
+    - test-resources
+
+apps:
+  argocd:
+    destinationNamespace: argocd
+    syncWave: "0"
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+      syncOptions:
+        ServerSideApply: true
+        CreateNamespace: true
+
+  cilium:
+    destinationNamespace: kube-system
+    syncWave: "1"
+
+  cilium-resources:
+    destinationNamespace: kube-system
+    syncWave: "2"
+
+  cert-manager:
+    destinationNamespace: cert-manager
+    syncWave: "1"
+
+  cloudflared-tunnel:
+    destinationNamespace: kube-tunnel
+    syncWave: "3"
+
+  socks5-proxy:
+    destinationNamespace: kube-tunnel
+    syncWave: "3"
+
+  keycloak:
+    destinationNamespace: keycloak
+    syncWave: "3"
+
+  local-path-provisioner:
+    destinationNamespace: local-path-storage
+    syncWave: "1"
+
+  rbac:
+    destinationNamespace: kube-system
+    syncWave: "4"
+
+  cluster-config:
+    destinationNamespace: kube-system
+    syncWave: "0"
+
+  test-resources:
+    destinationNamespace: test
+    syncWave: "0"

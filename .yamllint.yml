@@ -1,0 +1,24 @@
+extends: default
+
+rules:
+  line-length:
+    max: 200
+    level: warning
+  truthy:
+    allowed-values: ["true", "false", "yes", "no"]
+    check-keys: false
+  comments:
+    require-starting-space: true
+    min-spaces-from-content: 1
+  document-start: disable
+  indentation:
+    spaces: 2
+    indent-sequences: true
+  empty-lines:
+    max: 2
+
+ignore:
+  - _generated/
+  - tofu/
+  - "*.j2"
+  - tests/fixtures/values-invalid.yaml

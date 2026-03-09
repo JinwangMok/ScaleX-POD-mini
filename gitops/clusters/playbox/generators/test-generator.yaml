@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: test-generator
+  namespace: argocd
+spec:
+  goTemplate: true
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://github.com/JinwangMok/k8s-playbox.git
+              revision: main
+              files:
+                - path: gitops/clusters/playbox/catalog.yaml
+                  jsonPath: $.generators.test
+              values:
+                appName: "{{.}}"
+          - git:
+              repoURL: https://github.com/JinwangMok/k8s-playbox.git
+              revision: main
+              files:
+                - path: gitops/clusters/playbox/catalog.yaml
+                  jsonPath: $.apps
+  template:
+    metadata:
+      name: "{{.appName}}"
+      annotations:
+        argocd.argoproj.io/sync-wave: '{{ default "0" (index . .appName).syncWave }}'
+    spec:
+      project: test-project
+      source:
+        repoURL: https://github.com/JinwangMok/k8s-playbox.git
+        targetRevision: main
+        path: gitops/clusters/playbox/apps/test/{{ default .appName (index . .appName).dirName }}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{ default .appName (index . .appName).destinationNamespace }}"
+      syncPolicy:
+        automated:
+          prune: '{{ dig "syncPolicy" "automated" "prune" "true" (index . .appName) }}'
+          selfHeal: '{{ dig "syncPolicy" "automated" "selfHeal" "true" (index . .appName) }}'
+        syncOptions:
+          - ServerSideApply={{ dig "syncPolicy" "syncOptions" "ServerSideApply" "true" (index . .appName) }}
+          - CreateNamespace={{ dig "syncPolicy" "syncOptions" "CreateNamespace" "true" (index . .appName) }}

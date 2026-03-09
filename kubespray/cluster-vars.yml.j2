@@ -1,0 +1,25 @@
+# Kubespray cluster variables — rendered from values.yaml
+ansible_user: {{ nodes.ansible_user }}
+kube_owner: "{{ '{{' }} ansible_user {{ '}}' }}"
+
+kube_version: v{{ sandbox.kubernetes_version }}
+kube_network_plugin: cni
+kube_proxy_remove: true
+
+cgroup_driver: systemd
+kube_vip_enabled: false
+helm_enabled: true
+
+# OIDC configuration
+kube_oidc_auth: true
+kube_oidc_url: "https://{{ domains.auth }}/realms/{{ keycloak.realm }}"
+kube_oidc_client_id: "{{ keycloak.client_id }}"
+kube_oidc_username_claim: "email"
+kube_oidc_username_prefix: "oidc:"
+kube_oidc_groups_claim: "groups"
+kube_oidc_groups_prefix: "oidc:"
+kube_apiserver_enable_admission_plugins:
+  - NodeRestriction
+  - PodTolerationRestriction
+
+kube_api_anonymous_auth: true

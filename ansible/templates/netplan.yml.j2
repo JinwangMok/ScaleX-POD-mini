@@ -1,0 +1,50 @@
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+{% for iface in bond_interfaces %}
+    {{ iface.name }}:
+      dhcp4: no
+      dhcp6: no
+      match:
+        macaddress: "{{ iface.mac }}"
+      set-name: "{{ iface.name }}"
+      mtu: {{ iface.mtu | default(1500) }}
+{% endfor %}
+{% if bond_interfaces | length > 0 %}
+  bonds:
+    bond0:
+      interfaces:
+{% for iface in bond_interfaces %}
+        - {{ iface.name }}
+{% endfor %}
+{% if not create_bridge %}
+      addresses:
+        - "{{ node_ip }}"
+      routes:
+        - to: 0.0.0.0/0
+          via: "{{ network.gateway }}"
+      nameservers:
+        addresses: {{ network.nameservers | tojson }}
+{% endif %}
+      parameters:
+        mode: "{{ bond_mode }}"
+{% if bond_interfaces | length > 1 %}
+        primary: {{ bond_interfaces[0].name }}
+        mii-monitor-interval: 100
+{% endif %}
+      mtu: {{ bond_interfaces | map(attribute='mtu') | map('default', 1500) | max }}
+{% endif %}
+{% if create_bridge %}
+  bridges:
+    br0:
+      interfaces: [bond0]
+      addresses:
+        - "{{ node_ip }}"
+      routes:
+        - to: 0.0.0.0/0
+          via: "{{ network.gateway }}"
+      nameservers:
+        addresses: {{ network.nameservers | tojson }}
+      mtu: {{ bond_interfaces | map(attribute='mtu') | map('default', 1500) | max }}
+{% endif %}
