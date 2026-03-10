@@ -4,10 +4,10 @@
 
 ---
 
-## Current Status (Sprint 9a)
+## Current Status (Sprint 9a complete)
 
-- **Tests**: 287 pass / clippy 0 warnings / fmt clean
-- **Code**: ~12,300 lines Rust, 27 source files
+- **Tests**: 294 pass / clippy 0 warnings / fmt clean
+- **Code**: ~12,500 lines Rust, 27 source files
 - **GitOps**: 41 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
 
@@ -26,7 +26,7 @@
 | HCL 생성 (multi-host libvirt) | OK | `core/tofu.rs` -- `generate_tofu_main()`, `generate_tofu_host_infra()` |
 | 4개 호스트 provider | OK | `generate_provider_block()` per unique host |
 | VM 리소스 생성 | OK | `generate_vm_resource()` -- disk, cloudinit, domain |
-| **BUG: SSH URI에 root@ 하드코딩** | **FAIL** | `tofu.rs:172` -- `root@{host}` 사용. `adminUser` 사용해야 함 |
+| SSH URI에 adminUser 사용 | **FIXED (9a)** | `tofu.rs` -- `ssh_user` 파라미터로 변경. 2개 테스트 추가 |
 | 단일 노드 환경 | UNTESTED | 코드는 지원하지만 테스트 없음 |
 | 실제 `tofu apply` 실행 | NEVER | 물리 인프라에서 한 번도 실행된 적 없음 |
 
@@ -107,7 +107,7 @@
 | `scalex get sdi-pools` | OK | SDI state -> table |
 | `scalex get clusters` | OK | cluster dirs -> table |
 | `scalex get config-files` | OK | file presence + YAML validation |
-| **BUG: `sdi init`이 facts 미실행 시 자동 실행 안 함** | **FAIL** | 체크리스트 요구: "facts 미실행 시 우선 실행" |
+| `sdi init` facts 자동 감지/실행 | **FIXED (9a)** | `sdi.rs:121-128` -- 이미 구현되어 있었음. `dir_is_empty` 테스트 3개 추가 |
 | **`sdi init` (no flag)의 "리소스 풀 관측" 의미 불명확** | **WARN** | JSON summary만 생성. 진정한 "통합 풀" 아님 |
 
 ### CL-9: 베어메탈 직접 사용 확장성
@@ -189,9 +189,10 @@
    - `facts -> sdi init -> cluster init -> secrets -> gitops bootstrap` 흐름
 3. **실환경 실행 0회**: 모든 I/O 함수가 한 번도 실제 실행된 적 없음
 4. **버그 미발견**: 순수 함수 테스트만으로는 발견 불가능한 버그 존재
-   - `tofu.rs:172` -- SSH URI에 `root@` 하드코딩 (adminUser 무시)
-   - `sdi init`에서 facts 미실행 시 자동 실행 미구현
+   - ~~`tofu.rs:172` -- SSH URI에 `root@` 하드코딩~~ → **Sprint 9a에서 수정 완료**
+   - ~~`sdi init`에서 facts 미실행 시 자동 실행 미구현~~ → **이미 구현되어 있었음. 테스트 추가 완료**
 5. **GitOps 정합성 미검증**: sandbox-generator의 placeholder URL (`https://sandbox-api:6443`)이 자동 교체되는 흐름 미검증
+   - **Sprint 9a에서 placeholder 감지 테스트 + CF tunnel ingress 완성도 테스트 추가**
 
 ### 결론
 
@@ -209,12 +210,12 @@ TDD 원칙에서 "테스트"는 단위 테스트만을 의미하지 않는다.
 
 | # | Task | 상태 | TDD 검증 |
 |---|------|------|----------|
-| 9a-1 | **BUG FIX**: `tofu.rs` SSH URI에 adminUser 사용 | TODO | 테스트 먼저 작성 -> 실패 확인 -> 수정 -> 통과 |
-| 9a-2 | **BUG FIX**: `sdi init`에서 facts 미존재 시 경고/자동실행 | TODO | 테스트 먼저 작성 -> 수정 -> 통과 |
-| 9a-3 | **TEST**: sandbox-generator placeholder URL 감지 테스트 | TODO | URL이 placeholder인지 검증하는 테스트 |
-| 9a-4 | **TEST**: CF Tunnel ingress 완성도 테스트 | TODO | values.yaml에 필수 hostname 포함 확인 |
-| 9a-5 | **TEST**: 전체 파이프라인 cross-config 정합성 | TODO | sdi-specs + k8s-clusters -> inventory -> vars 일관성 |
-| 9a-6 | Commit + Push | TODO | `cargo test` 전체 통과 확인 후 |
+| 9a-1 | **BUG FIX**: `tofu.rs` SSH URI에 adminUser 사용 | **DONE** | RED: 2개 테스트 작성 -> 컴파일 실패 -> GREEN: ssh_user 파라미터 추가 -> 294 pass |
+| 9a-2 | **BUG FIX**: `sdi init`에서 facts 미존재 시 자동실행 | **DONE** | 이미 구현됨 확인. `dir_is_empty` 테스트 3개 추가 |
+| 9a-3 | **TEST**: sandbox-generator placeholder URL 감지 | **DONE** | YAML 파싱 + placeholder 감지 테스트 추가 |
+| 9a-4 | **TEST**: CF Tunnel ingress 완성도 | **DONE** | 3개 hostname + catch-all 404 + noTLSVerify 검증 |
+| 9a-5 | **TEST**: cross-config 정합성 | **DONE** | 이미 5+개 테스트 존재 확인 (pool ref, CIDR overlap, DNS unique, cilium ID unique) |
+| 9a-6 | Commit + Push | **DONE** | 294 tests, 0 clippy warnings |
 
 ### Sprint 9b: 실환경 E2E 검증 (물리 인프라 필요)
 

@@ -567,4 +567,141 @@ mod tests {
         let hcl2 = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
         assert_eq!(hcl1, hcl2, "generate_tofu_host_infra must be deterministic");
     }
+
+    /// CL-1: Single-node SDI — all pools on one host must produce deduplicated provider.
+    #[test]
+    fn test_single_node_sdi_all_pools_on_one_host() {
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "single-node-pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec!["8.8.8.8".to_string()],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "https://example.com/image.img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "~/.ssh/id.pub".to_string(),
+                packages: vec!["curl".to_string()],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![
+                    SdiPool {
+                        pool_name: "tower".to_string(),
+                        purpose: "management".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec!["single-node".to_string()],
+                            spread: false,
+                        },
+                        node_specs: vec![NodeSpec {
+                            node_name: "tower-cp-0".to_string(),
+                            ip: "192.168.88.100".to_string(),
+                            cpu: 2,
+                            mem_gb: 4,
+                            disk_gb: 30,
+                            host: None,
+                            roles: vec!["control-plane".to_string(), "worker".to_string()],
+                            devices: None,
+                        }],
+                    },
+                    SdiPool {
+                        pool_name: "sandbox".to_string(),
+                        purpose: "workload".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec!["single-node".to_string()],
+                            spread: false,
+                        },
+                        node_specs: vec![
+                            NodeSpec {
+                                node_name: "sandbox-cp-0".to_string(),
+                                ip: "192.168.88.110".to_string(),
+                                cpu: 2,
+                                mem_gb: 4,
+                                disk_gb: 40,
+                                host: None,
+                                roles: vec!["control-plane".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "sandbox-w-0".to_string(),
+                                ip: "192.168.88.120".to_string(),
+                                cpu: 4,
+                                mem_gb: 8,
+                                disk_gb: 60,
+                                host: None,
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                        ],
+                    },
+                ],
+            },
+        };
+
+        let hcl = generate_tofu_main(&spec, "admin");
+
+        // Only 1 provider block (deduplicated for single host)
+        let provider_count = hcl.matches("provider \"libvirt\"").count();
+        assert_eq!(
+            provider_count, 1,
+            "Single-node SDI must have exactly 1 provider, got {}",
+            provider_count
+        );
+
+        // Must use correct ssh_user
+        assert!(
+            hcl.contains("qemu+ssh://admin@single-node/system"),
+            "SSH URI must use provided ssh_user"
+        );
+
+        // All 3 VMs must be present
+        assert!(hcl.contains("tower-cp-0"), "missing tower CP VM");
+        assert!(hcl.contains("sandbox-cp-0"), "missing sandbox CP VM");
+        assert!(hcl.contains("sandbox-w-0"), "missing sandbox worker VM");
+
+        // Only 1 base volume (single host)
+        let base_vol_count = hcl.matches("libvirt_volume\" \"base_").count();
+        assert_eq!(
+            base_vol_count, 1,
+            "Single-node must have 1 base volume, got {}",
+            base_vol_count
+        );
+
+        // All VMs reference the same host's base volume
+        assert!(
+            hcl.contains("libvirt_volume.base_single-node.id"),
+            "All VMs must reference single host's base volume"
+        );
+    }
+
+    /// CL-1: Single-node host infra — exactly 1 provider + 1 pool.
+    #[test]
+    fn test_single_node_host_infra() {
+        let hosts = vec![HostInfraInput {
+            name: "solo".to_string(),
+            ip: "10.0.0.1".to_string(),
+            ssh_user: "admin".to_string(),
+        }];
+        let hcl = generate_tofu_host_infra(&hosts, "br0", "10.0.0.0/24", "10.0.0.1");
+
+        assert_eq!(
+            hcl.matches("provider \"libvirt\"").count(),
+            1,
+            "Single-node host infra must have exactly 1 provider"
+        );
+        assert_eq!(
+            hcl.matches("resource \"libvirt_pool\"").count(),
+            1,
+            "Single-node host infra must have exactly 1 storage pool"
+        );
+        assert!(
+            hcl.contains("qemu+ssh://admin@10.0.0.1/system"),
+            "Must use correct ssh_user and IP"
+        );
+    }
 }
