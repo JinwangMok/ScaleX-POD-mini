@@ -60,7 +60,7 @@ scalex get config-files                  # Config file validation
 
 ```bash
 # Rust CLI tests
-cd scalex-cli && cargo test              # 192 tests
+cd scalex-cli && cargo test              # 213 tests
 cargo clippy                             # Lint
 cargo fmt --check                        # Format check
 

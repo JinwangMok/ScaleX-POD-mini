@@ -4,9 +4,9 @@
 
 ---
 
-## 현재 상태: 192 tests pass / clippy 0 warnings / fmt clean
+## 현재 상태: 213 tests pass / clippy 0 warnings / fmt clean
 
-**코드 규모**: ~9,000 lines Rust, 23 source files, ~185 pure functions
+**코드 규모**: ~9,500 lines Rust, 27 source files, ~200 pure functions
 **GitOps**: 33 YAML files (bootstrap + generators + common/tower/sandbox apps)
 **레거시**: `.legacy-` prefix로 이동 완료
 
@@ -123,6 +123,24 @@
 | S6-1 | ArgoCD `persistence.enabled: true` 설정 | **완료** |
 | S6-2 | TDD 검증 테스트 (`test_argocd_persistence_enabled`) | **완료** |
 
+### Sprint 7: scalex kernel-tune 서브커맨드 — **완료** (TDD, 192→206 tests)
+
+| ID | 작업 | 상태 |
+|----|------|------|
+| S7-1 | K8s 노드 커널 파라미터 생성 순수함수 (역할별: worker/control-plane) | **완료** |
+| S7-2 | sysctl.conf / Ansible task 포맷 출력 | **완료** |
+| S7-3 | 현재 커널 파라미터 diff 분석 함수 | **완료** |
+| S7-4 | CLI 서브커맨드 등록 + I/O 연동 | **완료** |
+| S7-5 | 14개 TDD 테스트 | **완료** |
+
+### Sprint 8: Cilium ClusterMesh 자동화 — **완료** (TDD, 206→213 tests)
+
+| ID | 작업 | 상태 |
+|----|------|------|
+| S8-1 | `generate_cilium_values_with_mesh()` — 클러스터 ID + mesh 설정 | **완료** |
+| S8-2 | `generate_clustermesh_peer_secret()` — 양방향 peering Secret 생성 | **완료** |
+| S8-3 | 7개 TDD 테스트 (YAML 검증, 양방향 연결, 엔드포인트) | **완료** |
+
 ### 카테고리 B: 사용자 수동 작업 (코드로 해결 불가)
 
 | ID | 작업 | 가이드 위치 |
@@ -137,8 +155,8 @@
 
 | ID | 작업 | 설명 |
 |----|------|------|
-| C-1 | `scalex kernel-tune` 서브커맨드 | 원격 커널 파라미터 일괄 적용 |
-| C-2 | Cilium ClusterMesh 자동화 | tower ↔ sandbox 연결 |
+| ~~C-1~~ | ~~`scalex kernel-tune` 서브커맨드~~ | **Sprint 7에서 완료** |
+| ~~C-2~~ | ~~Cilium ClusterMesh 자동화~~ | **Sprint 8에서 완료** |
 | ~~C-3~~ | ~~`scalex status` 서브커맨드~~ | **Sprint 5에서 완료** |
 
 ---
@@ -177,7 +195,7 @@ _generated/
 ## 프로젝트 구조
 
 ```
-scalex-cli/                # Rust CLI (primary) — 170 tests, 0 clippy warnings
+scalex-cli/                # Rust CLI (primary) — 213 tests, 0 clippy warnings
 gitops/                    # Multi-cluster GitOps (ArgoCD)
 +-- bootstrap/spread.yaml  # tower-root + sandbox-root
 +-- generators/            # ApplicationSets per cluster
