@@ -276,7 +276,10 @@ cloudflare:
         assert!(result.contains("db-pass"));
         assert!(result.contains("---"));
         // Should be valid multi-doc YAML
-        let docs: Vec<&str> = result.split("---").filter(|s: &&str| !s.trim().is_empty()).collect();
+        let docs: Vec<&str> = result
+            .split("---")
+            .filter(|s: &&str| !s.trim().is_empty())
+            .collect();
         assert_eq!(docs.len(), 2);
     }
 

@@ -81,9 +81,9 @@ fn run_apply(
     }
     cmd.stdin(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| {
-        anyhow::anyhow!("Failed to run kubectl: {}. Is kubectl installed?", e)
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to run kubectl: {}. Is kubectl installed?", e))?;
 
     if let Some(ref mut stdin) = child.stdin {
         use std::io::Write;

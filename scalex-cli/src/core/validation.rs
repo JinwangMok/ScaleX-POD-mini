@@ -332,6 +332,39 @@ mod tests {
         assert_eq!(argocd.tower_manages, vec!["sandbox"]);
     }
 
+    /// Verify no k3s references in non-legacy project files.
+    /// Checklist #9: k3s must be fully excluded from the project.
+    #[test]
+    fn test_no_k3s_references_in_project_files() {
+        let files_to_check: Vec<(&str, &str)> = vec![
+            ("values.yaml", include_str!("../../../values.yaml")),
+            (
+                "tests/fixtures/values-full.yaml",
+                include_str!("../../../tests/fixtures/values-full.yaml"),
+            ),
+            (
+                "tests/fixtures/values-minimal.yaml",
+                include_str!("../../../tests/fixtures/values-minimal.yaml"),
+            ),
+        ];
+
+        let mut violations = Vec::new();
+        for (name, content) in &files_to_check {
+            for (line_num, line) in content.lines().enumerate() {
+                let lower = line.to_lowercase();
+                if lower.contains("k3s") && !lower.contains("legacy") && !lower.contains("# k3s") {
+                    violations.push(format!("{}:{}: {}", name, line_num + 1, line.trim()));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "k3s references found in non-legacy files (Checklist #9 violation):\n{}",
+            violations.join("\n")
+        );
+    }
+
     /// Cross-validate: sdi-specs.yaml.example pool names must match k8s-clusters.yaml.example references.
     #[test]
     fn test_example_files_cross_config_consistency() {

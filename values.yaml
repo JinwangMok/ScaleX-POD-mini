@@ -112,7 +112,7 @@ management:
   bastion_ip: "100.64.0.1"          # Tailscale IP (openclaw-vm → playbox-0)
   bastion_user: jinwang
 
-# --- Tower Cluster (OpenTofu + k3s) ---
+# --- Tower Cluster (OpenTofu + Kubespray) ---
 tower:
   enabled: true
   host: playbox-0
@@ -122,8 +122,6 @@ tower:
     memory_mb: 2048
     disk_gb: 20
     ip: "192.168.88.100"
-  k3s:
-    version: "v1.33.1+k3s1"
 
 # --- Sandbox Cluster (Kubespray) ---
 sandbox:

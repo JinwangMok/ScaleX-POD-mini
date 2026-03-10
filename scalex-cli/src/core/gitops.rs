@@ -138,14 +138,20 @@ mod tests {
             values.contains("k8sServiceHost: \"192.168.88.110\""),
             "sandbox cilium must have sandbox CP IP"
         );
-        assert!(!values.contains("192.168.88.100"), "must not contain tower IP");
+        assert!(
+            !values.contains("192.168.88.100"),
+            "must not contain tower IP"
+        );
     }
 
     #[test]
     fn test_generate_cilium_values_different_clusters_differ() {
         let tower = generate_cilium_values("192.168.88.100", 6443);
         let sandbox = generate_cilium_values("192.168.88.110", 6443);
-        assert_ne!(tower, sandbox, "different clusters must produce different values");
+        assert_ne!(
+            tower, sandbox,
+            "different clusters must produce different values"
+        );
         // But both share the same base structure
         assert!(tower.contains("kubeProxyReplacement: true"));
         assert!(sandbox.contains("kubeProxyReplacement: true"));
@@ -499,6 +505,115 @@ spec:
                 i
             );
         }
+    }
+
+    /// Verify every app referenced in generators has a corresponding directory.
+    /// Also verify no directory in common/ is dead code (unreferenced by any generator).
+    #[test]
+    fn test_generator_references_match_actual_directories() {
+        // Parse all generator files to extract app names and source paths
+        let generators: Vec<(&str, &str)> = vec![
+            (
+                "tower-common",
+                include_str!("../../../gitops/generators/tower/common-generator.yaml"),
+            ),
+            (
+                "tower-apps",
+                include_str!("../../../gitops/generators/tower/tower-generator.yaml"),
+            ),
+            (
+                "sandbox-common",
+                include_str!("../../../gitops/generators/sandbox/common-generator.yaml"),
+            ),
+            (
+                "sandbox-apps",
+                include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml"),
+            ),
+        ];
+
+        let mut all_referenced_paths: Vec<String> = Vec::new();
+
+        for (gen_name, content) in &generators {
+            let yaml: serde_yaml::Value = serde_yaml::from_str(content)
+                .unwrap_or_else(|e| panic!("Failed to parse {}: {}", gen_name, e));
+
+            // Extract path template from spec.template.spec.source.path
+            let path_template = yaml["spec"]["template"]["spec"]["source"]["path"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{}: missing source.path", gen_name));
+
+            // Extract app names from generator list elements
+            let elements = yaml["spec"]["generators"][0]["list"]["elements"]
+                .as_sequence()
+                .unwrap_or_else(|| panic!("{}: missing elements", gen_name));
+
+            for elem in elements {
+                let app_name = elem["appName"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{}: element missing appName", gen_name));
+                let resolved = path_template.replace("{{.appName}}", app_name);
+                all_referenced_paths.push(resolved);
+            }
+        }
+
+        // Verify each referenced path exists as a directory
+        for path in &all_referenced_paths {
+            let full_path = format!(
+                "{}/{}",
+                env!("CARGO_MANIFEST_DIR").trim_end_matches("/scalex-cli"),
+                path
+            );
+            // Use Path to check existence at compile time via a runtime check
+            assert!(
+                std::path::Path::new(&full_path).is_dir(),
+                "Generator references '{}' but directory does not exist at '{}'",
+                path,
+                full_path
+            );
+        }
+
+        // Verify common/ has no unreferenced directories (dead code check)
+        let common_dir = format!(
+            "{}/gitops/common",
+            env!("CARGO_MANIFEST_DIR").trim_end_matches("/scalex-cli")
+        );
+        if let Ok(entries) = std::fs::read_dir(&common_dir) {
+            let common_apps: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .map(|e| format!("gitops/common/{}", e.file_name().to_string_lossy()))
+                .collect();
+
+            for app_dir in &common_apps {
+                assert!(
+                    all_referenced_paths.contains(app_dir),
+                    "Directory '{}' exists but is not referenced by any generator (dead code)",
+                    app_dir
+                );
+            }
+        }
+    }
+
+    /// Verify tower/cilium and sandbox/cilium each have k8sServiceHost set.
+    #[test]
+    fn test_per_cluster_cilium_has_service_host() {
+        let tower_values = include_str!("../../../gitops/tower/cilium/values.yaml");
+        let sandbox_values = include_str!("../../../gitops/sandbox/cilium/values.yaml");
+
+        assert!(
+            tower_values.contains("k8sServiceHost:"),
+            "tower/cilium/values.yaml must define k8sServiceHost"
+        );
+        assert!(
+            sandbox_values.contains("k8sServiceHost:"),
+            "sandbox/cilium/values.yaml must define k8sServiceHost"
+        );
+
+        // Tower should have a real IP, not a placeholder
+        assert!(
+            !tower_values.contains("PLACEHOLDER"),
+            "tower/cilium should have a real IP, not PLACEHOLDER"
+        );
     }
 
     /// Verify no placeholder URL remains in tower generator files (they should

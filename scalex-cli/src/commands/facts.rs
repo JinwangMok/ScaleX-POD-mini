@@ -441,4 +441,109 @@ net.bridge.bridge-nf-call-iptables = 1
         assert!(script.contains("SCALEX_FACTS_END"));
         assert!(script.contains("lscpu"));
     }
+
+    /// Checklist #8: facts must gather kernel, params, cpu, mem, gpu, storage, pcie.
+    #[test]
+    fn test_facts_script_covers_all_required_hardware_sections() {
+        let script = build_facts_script();
+
+        let required_sections = vec![
+            ("cpu", "cpu_model="),
+            ("cpu_cores", "cpu_cores="),
+            ("memory", "MemTotal"),
+            ("kernel_version", "uname -r"),
+            ("storage/disks", "---DISKS---"),
+            ("network/nics", "---NICS---"),
+            ("gpu", "---GPUS---"),
+            ("pcie", "---PCIE---"),
+            ("iommu_groups", "---IOMMU---"),
+            ("kernel_params", "---KERNEL_PARAMS---"),
+            ("bridges", "---BRIDGES---"),
+            ("bonds", "---BONDS---"),
+        ];
+
+        let mut missing = Vec::new();
+        for (category, marker) in &required_sections {
+            if !script.contains(marker) {
+                missing.push(*category);
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "Facts script missing required hardware sections: {:?}",
+            missing
+        );
+    }
+
+    /// Verify parsed facts contain all structured fields from Checklist #8.
+    #[test]
+    fn test_parsed_facts_has_all_checklist_fields() {
+        let raw = r#"---SCALEX_FACTS_START---
+cpu_model=TestCPU
+cpu_cores=4
+cpu_threads=8
+cpu_arch=x86_64
+mem_total_kb=16384000
+mem_avail_kb=12000000
+kernel_version=6.8.0-45-generic
+---DISKS---
+sda 500107862016 disk TestDisk
+---NICS---
+[]
+---NIC_SPEEDS---
+eth0|1000|e1000e|up
+---GPUS---
+01:00.0 VGA compatible controller [0300]: NVIDIA Test GPU
+---PCIE---
+00:00.0 Host bridge: Test
+01:00.0 VGA: NVIDIA
+---IOMMU---
+group_1: 0000:01:00.0
+---BRIDGES---
+---BONDS---
+---KERNEL_PARAMS---
+net.ipv4.ip_forward = 1
+---SCALEX_FACTS_END---"#;
+
+        let facts = parse_facts_output("node-0", raw).unwrap();
+
+        // CPU (Checklist: cpu)
+        assert!(!facts.cpu.model.is_empty(), "cpu.model must be populated");
+        assert!(facts.cpu.cores > 0, "cpu.cores must be > 0");
+        assert!(facts.cpu.threads > 0, "cpu.threads must be > 0");
+        assert!(
+            !facts.cpu.architecture.is_empty(),
+            "cpu.architecture must be populated"
+        );
+
+        // Memory (Checklist: mem)
+        assert!(facts.memory.total_mb > 0, "memory.total_mb must be > 0");
+
+        // Kernel (Checklist: kernel version + params)
+        assert!(
+            !facts.kernel.version.is_empty(),
+            "kernel.version must be populated"
+        );
+        assert!(
+            !facts.kernel.params.is_empty(),
+            "kernel.params must be populated"
+        );
+
+        // Storage (Checklist: storage)
+        assert!(!facts.disks.is_empty(), "disks must be populated");
+
+        // GPU (Checklist: gpu)
+        assert!(!facts.gpus.is_empty(), "gpus must be populated");
+        assert!(
+            !facts.gpus[0].vendor.is_empty(),
+            "gpu vendor must be populated"
+        );
+
+        // PCIe (Checklist: pcie)
+        assert!(!facts.pcie.is_empty(), "pcie devices must be populated");
+
+        // Network
+        assert!(!facts.nics.is_empty(), "nics must be populated");
+    }
 }

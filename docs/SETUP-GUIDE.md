@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-### On your workstation (openclaw-vm)
+### On your workstation (bastion)
 ```bash
 # Required tools
 sudo apt install -y ansible python3-pip
@@ -12,7 +12,10 @@ sudo snap install helm --classic
 curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 sudo install kubectl /usr/local/bin/
 
-# OpenTofu (if tower enabled)
+# Rust (for scalex CLI)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# OpenTofu (for SDI virtualization)
 curl -fsSL https://get.opentofu.org/install-opentofu.sh | sudo bash -s -- --install-method standalone
 ```
 
@@ -25,26 +28,55 @@ curl -fsSL https://get.opentofu.org/install-opentofu.sh | sudo bash -s -- --inst
 1. Go to Cloudflare Zero Trust dashboard
 2. Create a tunnel named `playbox-admin-static`
 3. Download credentials JSON file
-4. Download cert.pem
-5. Set paths in values.yaml: `cloudflare.credentials_file` and `cloudflare.cert_file`
-
-### NIC Discovery
-Run `./playbox discover-nics` to get MAC addresses for values.yaml.
+4. Save to `credentials/cloudflare-tunnel.json`
+5. See `docs/ops-guide.md` Section 1 for detailed setup
 
 ## Configuration
 
-Edit `values.yaml` — this is the only file you need to modify:
+### 1. Credentials (user-provided secrets)
+```bash
+cp credentials/.baremetal-init.yaml.example credentials/.baremetal-init.yaml
+cp credentials/.env.example credentials/.env
+cp credentials/secrets.yaml.example credentials/secrets.yaml
+```
+Edit each file with your actual node IPs, SSH credentials, and service passwords.
 
-1. Verify node IPs and MAC addresses match your hardware
-2. Set Cloudflare tunnel credentials paths
-3. Set Keycloak passwords (change defaults!)
-4. Verify component versions
+### 2. Config files (infrastructure specs)
+```bash
+cp config/sdi-specs.yaml.example config/sdi-specs.yaml
+cp config/k8s-clusters.yaml.example config/k8s-clusters.yaml
+```
+Edit to match your desired VM pool layout and cluster configuration.
 
 ## Provisioning
 
+### Build scalex CLI
 ```bash
-./playbox up              # Full provisioning
-# Or step-by-step with --dry-run first:
-./playbox up --dry-run    # Preview
-./playbox up              # Execute
+cd scalex-cli && cargo build --release
+```
+
+### Step-by-step provisioning
+```bash
+# 1. Gather hardware facts from all bare-metal nodes
+scalex facts --all
+
+# 2. Initialize SDI (virtualize bare-metal into resource pool + create VM pools)
+scalex sdi init config/sdi-specs.yaml --dry-run   # Preview
+scalex sdi init config/sdi-specs.yaml              # Execute
+
+# 3. Provision Kubernetes clusters via Kubespray
+scalex cluster init config/k8s-clusters.yaml --dry-run
+scalex cluster init config/k8s-clusters.yaml
+
+# 4. Apply pre-bootstrap secrets (Keycloak, Cloudflare, ArgoCD)
+scalex secrets apply
+
+# 5. Bootstrap GitOps (ArgoCD manages everything after this)
+kubectl apply -f gitops/bootstrap/spread.yaml
+
+# 6. Verify
+scalex get baremetals     # Hardware facts
+scalex get sdi-pools      # VM pool status
+scalex get clusters       # Cluster inventory
+scalex get config-files   # Config validation
 ```
