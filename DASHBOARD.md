@@ -195,7 +195,7 @@
 | G-3 | 단일 노드 SDI 전체 파이프라인 dry-run 테스트 없음 | CL-1 | 단일 호스트에서 tower+sandbox 생성 E2E 테스트 추가 |
 | G-4 | `sdi init` no-spec 오케스트레이션 흐름 테스트 없음 | CL-1, CL-8 | facts→host_prep→resource_pool→host_infra_hcl 전체 흐름 테스트 |
 | G-5 | README 참조 파일 존재 검증 테스트 없음 | CL-6 | README 내 참조되는 파일 경로 실존 여부 테스트 |
-| G-6 | 불필요 meta-files (PROMPT.md, DIRECTION.md) | CL-12 | DASHBOARD.md에 통합 후 삭제 |
+| G-6 | 불필요 meta-files (PROMPT.md, DIRECTION.md, REQUEST-TO-USER.md) | CL-12 | DASHBOARD.md에 통합 후 삭제 |
 
 ## 오프라인 해결 불가 항목 (물리 인프라 필요)
 
@@ -218,21 +218,20 @@
 
 | # | Task | GAP | TDD 테스트 | 상태 |
 |---|------|-----|-----------|------|
-| 12a-1 | Baremetal 모드 E2E dry-run | G-1 | `test_baremetal_mode_e2e_pipeline` | TODO |
-| 12a-2 | CF tunnel 라우팅 검증 | G-2 | `test_cloudflare_tunnel_routes_match_docs` | TODO |
-| 12a-3 | 단일 노드 SDI 전체 파이프라인 | G-3 | `test_single_node_sdi_full_pipeline` | TODO |
-| 12a-4 | `sdi init` no-spec 오케스트레이션 | G-4 | `test_sdi_init_no_spec_full_orchestration` | TODO |
-| 12a-5 | README 참조 파일 검증 | G-5 | `test_readme_referenced_files_exist` | TODO |
-| 12a-6 | 전체 테스트 통과 + Commit + Push | | | TODO |
+| 12a-1 | Baremetal 모드 E2E dry-run | G-1 | `test_baremetal_mode_e2e_pipeline` | DONE |
+| 12a-2 | CF tunnel 라우팅 검증 | G-2 | `test_cloudflare_tunnel_routes_match_docs` | DONE |
+| 12a-3 | 단일 노드 SDI 전체 파이프라인 | G-3 | `test_single_node_sdi_full_pipeline` | DONE |
+| 12a-4 | `sdi init` no-spec 오케스트레이션 | G-4 | `test_sdi_init_no_spec_full_orchestration` | DONE |
+| 12a-5 | README 참조 파일 검증 | G-5 | `test_readme_referenced_files_exist` | DONE |
+| 12a-6 | 전체 테스트 통과 + Commit + Push | | | DONE |
 
 ### Sprint 12b: 구조 정리
 
 | # | Task | GAP | 상태 |
 |---|------|-----|------|
-| 12b-1 | PROMPT.md 핵심 내용 → DASHBOARD.md 통합 | G-6 | TODO |
-| 12b-2 | DIRECTION.md 핵심 내용 → DASHBOARD.md 통합 | G-6 | TODO |
-| 12b-3 | PROMPT.md, DIRECTION.md 삭제 | G-6 | TODO |
-| 12b-4 | Commit + Push | | TODO |
+| 12b-1 | PROMPT.md/DIRECTION.md/REQUEST-TO-USER.md → DASHBOARD.md 통합 | G-6 | DONE |
+| 12b-2 | 3개 meta-files 삭제 | G-6 | DONE |
+| 12b-3 | Commit + Push | | IN PROGRESS |
 
 ### Sprint 12c: 실환경 E2E (물리 인프라 필요)
 
@@ -246,6 +245,37 @@
 | 12c-6 | GitOps bootstrap + ArgoCD 동작 확인 | TODO |
 | 12c-7 | 외부 kubectl 접근 (CF Tunnel) 검증 | TODO |
 | 12c-8 | `sdi clean --hard` + 재구축 (멱등성) | TODO |
+
+---
+
+## User Action Required (수동 작업 필요 항목)
+
+자동화할 수 없는 사용자 고유 환경 정보가 필요한 항목:
+
+### 1. Credentials & Config Files
+
+```bash
+cp credentials/.baremetal-init.yaml.example credentials/.baremetal-init.yaml
+cp credentials/.env.example credentials/.env
+cp credentials/secrets.yaml.example credentials/secrets.yaml
+cp config/sdi-specs.yaml.example config/sdi-specs.yaml
+cp config/k8s-clusters.yaml.example config/k8s-clusters.yaml
+```
+
+실제 노드 IP, SSH 자격증명, 서비스 비밀번호로 편집. `scalex get config-files`로 검증.
+
+### 2. Cloudflare Tunnel WebUI Setup
+
+Cloudflare Zero Trust 대시보드에서 터널 생성 + Public Hostname 설정 필요.
+- Hostnames: `api.k8s.jinwang.dev`, `auth.jinwang.dev`, `cd.jinwang.dev`
+- Guide: `docs/ops-guide.md` Section 1
+- 향후 `scalex tunnel init` 명령으로 자동화 검토 가능 (Cloudflare API 토큰 필요)
+
+### 3. Keycloak Realm/Client Configuration
+
+Keycloak 관리 콘솔에서 Realm(`kubernetes`), Client(`kubernetes`), Group(`cluster-admins`) 수동 생성.
+- Guide: `docs/ops-guide.md` Section 2
+- 자동화 후보: `KeycloakRealmImport` CRD를 `gitops/tower/keycloak/`에 추가하면 ArgoCD 자동 배포 가능
 
 ---
 
