@@ -71,6 +71,12 @@ pub struct CommonConfig {
     /// Enable NTP synchronization (default: true)
     #[serde(default = "default_true")]
     pub ntp_enabled: bool,
+    /// Etcd deployment type: "host" (recommended for production) or "docker"/"kubeadm"
+    #[serde(default = "default_etcd_deployment_type")]
+    pub etcd_deployment_type: String,
+    /// DNS mode: "coredns" (default, production standard)
+    #[serde(default = "default_dns_mode")]
+    pub dns_mode: String,
 }
 
 fn default_graceful_shutdown_sec() -> u32 {
@@ -83,6 +89,14 @@ fn default_true() -> bool {
 
 fn default_node_prefix() -> u32 {
     24
+}
+
+fn default_etcd_deployment_type() -> String {
+    "host".to_string()
+}
+
+fn default_dns_mode() -> String {
+    "coredns".to_string()
 }
 
 fn default_container_runtime() -> String {

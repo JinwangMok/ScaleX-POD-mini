@@ -4,7 +4,7 @@ metadata:
   name: cluster-info
   namespace: kube-system
 data:
-  cluster.name: "playbox"
+  cluster.name: "sandbox"
   cluster.domain: "jinwang.dev"
-  cluster.type: "sandbox"
+  cluster.type: "workload"
   managed-by: "argocd"

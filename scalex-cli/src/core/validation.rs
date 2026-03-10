@@ -554,6 +554,122 @@ mod tests {
     }
 
     /// Legacy top-level directories and files should be cleaned up or moved to .legacy- prefix.
+    /// Integration: Parse example configs end-to-end and verify kubespray vars
+    /// contain ALL DataX-required production settings.
+    #[test]
+    fn test_full_pipeline_datax_production_settings_coverage() {
+        let k8s_yaml = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig =
+            serde_yaml::from_str(k8s_yaml).expect("k8s-clusters.yaml.example must parse");
+
+        let common = &k8s_config.config.common;
+
+        // DataX-critical production settings must all be present in CommonConfig
+        assert_eq!(
+            common.etcd_deployment_type, "host",
+            "etcd must use host deployment"
+        );
+        assert_eq!(common.dns_mode, "coredns", "DNS must use coredns");
+        assert!(
+            common.kube_proxy_remove,
+            "kube-proxy must be removed for Cilium"
+        );
+        assert_eq!(common.cni, "cilium", "CNI must be cilium");
+        assert_eq!(
+            common.container_runtime, "containerd",
+            "runtime must be containerd"
+        );
+        assert_eq!(common.cgroup_driver, "systemd", "cgroup must be systemd");
+        assert!(common.helm_enabled, "helm must be enabled");
+        assert!(common.gateway_api_enabled, "gateway API must be enabled");
+        assert!(common.enable_nodelocaldns, "nodelocal DNS must be enabled");
+        assert!(common.ntp_enabled, "NTP must be enabled");
+        assert!(
+            !common.kube_apiserver_admission_plugins.is_empty(),
+            "admission plugins must be configured"
+        );
+
+        // Verify kubespray vars generation includes ALL these settings
+        for cluster in &k8s_config.config.clusters {
+            let vars = crate::core::kubespray::generate_cluster_vars(cluster, common);
+
+            let datax_required_keys = [
+                "kube_version",
+                "container_manager",
+                "kube_network_plugin",
+                "kube_proxy_remove",
+                "kubelet_cgroup_driver",
+                "helm_enabled",
+                "gateway_api_enabled",
+                "enable_nodelocaldns",
+                "ntp_enabled",
+                "etcd_deployment_type",
+                "dns_mode",
+                "kube_pods_subnet",
+                "kube_service_addresses",
+                "cert_manager_enabled",
+                "argocd_enabled",
+            ];
+
+            let parsed: serde_yaml::Mapping = serde_yaml::from_str(&vars).unwrap_or_else(|e| {
+                panic!("cluster {} vars invalid YAML: {e}", cluster.cluster_name)
+            });
+
+            for key in &datax_required_keys {
+                assert!(
+                    parsed.contains_key(serde_yaml::Value::String(key.to_string())),
+                    "cluster '{}' missing DataX-required key: {}",
+                    cluster.cluster_name,
+                    key
+                );
+            }
+        }
+    }
+
+    /// Integration: Verify cluster-config ConfigMap exists per-cluster in gitops
+    /// (NOT in common/) and has correct cluster.type values.
+    #[test]
+    fn test_cluster_config_per_cluster_not_common() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+
+        // Must NOT exist in common/
+        assert!(
+            !repo_root.join("gitops/common/cluster-config").exists(),
+            "cluster-config must NOT be in gitops/common/ (moved to per-cluster)"
+        );
+
+        // Must exist in tower/ and sandbox/
+        assert!(
+            repo_root
+                .join("gitops/tower/cluster-config/manifest.yaml")
+                .exists(),
+            "cluster-config must exist in gitops/tower/"
+        );
+        assert!(
+            repo_root
+                .join("gitops/sandbox/cluster-config/manifest.yaml")
+                .exists(),
+            "cluster-config must exist in gitops/sandbox/"
+        );
+
+        // Tower must be "management", sandbox must be "workload"
+        let tower_manifest =
+            std::fs::read_to_string(repo_root.join("gitops/tower/cluster-config/manifest.yaml"))
+                .unwrap();
+        let sandbox_manifest =
+            std::fs::read_to_string(repo_root.join("gitops/sandbox/cluster-config/manifest.yaml"))
+                .unwrap();
+
+        assert!(
+            tower_manifest.contains("cluster.type: \"management\""),
+            "tower cluster-config must have type 'management'"
+        );
+        assert!(
+            sandbox_manifest.contains("cluster.type: \"workload\""),
+            "sandbox cluster-config must have type 'workload'"
+        );
+    }
+
     #[test]
     fn test_no_legacy_toplevel_artifacts() {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

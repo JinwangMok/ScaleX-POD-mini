@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-info
+  namespace: kube-system
+data:
+  cluster.name: "tower"
+  cluster.domain: "jinwang.dev"
+  cluster.type: "management"
+  managed-by: "argocd"

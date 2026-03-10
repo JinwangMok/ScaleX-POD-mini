@@ -142,7 +142,20 @@ fn run_init(
 
     println!("\n[cluster] All clusters initialized.");
 
-    // Step 4: Update GitOps sandbox server URLs from collected kubeconfigs
+    // Step 4: Update GitOps Cilium values with correct control-plane IPs
+    for cluster in &k8s_config.config.clusters {
+        let cp_ip = find_control_plane_ip(cluster, sdi_spec.as_ref());
+        if let Some(ip) = cp_ip {
+            update_gitops_cilium_values(
+                &cluster.cluster_name,
+                &ip,
+                &k8s_config.config.common.cilium_version,
+                dry_run,
+            )?;
+        }
+    }
+
+    // Step 5: Update GitOps sandbox server URLs from collected kubeconfigs
     for cluster in &k8s_config.config.clusters {
         if cluster.cluster_role != "management" {
             let kc_path = output_dir
@@ -277,6 +290,40 @@ fn update_gitops_sandbox_urls(server_url: &str, dry_run: bool) -> anyhow::Result
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Update gitops Cilium values.yaml for a cluster with the correct control-plane IP.
+/// I/O function: reads and writes gitops/{cluster}/cilium/values.yaml.
+fn update_gitops_cilium_values(
+    cluster_name: &str,
+    control_plane_ip: &str,
+    cilium_version: &str,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let gitops_dir = std::path::Path::new("gitops");
+    let values_path = gitops_dir.join(gitops::cilium_values_path(cluster_name));
+    let kust_path = gitops_dir.join(gitops::cilium_kustomization_path(cluster_name));
+
+    let values_content = gitops::generate_cilium_values(control_plane_ip, 6443);
+    let kust_content = gitops::generate_cilium_kustomization(cilium_version);
+
+    if dry_run {
+        println!(
+            "[dry-run] Would write Cilium values for {} (CP: {})",
+            cluster_name, control_plane_ip
+        );
+    } else {
+        if let Some(parent) = values_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&values_path, &values_content)?;
+        std::fs::write(&kust_path, &kust_content)?;
+        println!(
+            "[cluster] Updated gitops/{}/cilium/ with CP IP {}",
+            cluster_name, control_plane_ip
+        );
     }
     Ok(())
 }

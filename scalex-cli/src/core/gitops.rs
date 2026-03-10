@@ -61,6 +61,38 @@ pub fn gitops_files_needing_replacement() -> Vec<&'static str> {
     ]
 }
 
+/// Generate a cluster-config ConfigMap manifest for a specific cluster.
+/// Pure function: returns YAML string with correct cluster metadata.
+pub fn generate_cluster_config_manifest(
+    cluster_name: &str,
+    cluster_domain: &str,
+    cluster_role: &str,
+) -> String {
+    let cluster_type = match cluster_role {
+        "management" => "management",
+        _ => "workload",
+    };
+    format!(
+        r#"apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-info
+  namespace: kube-system
+data:
+  cluster.name: "{cluster_name}"
+  cluster.domain: "{cluster_domain}"
+  cluster.type: "{cluster_type}"
+  managed-by: "argocd"
+"#
+    )
+}
+
+/// Return the gitops-relative path for a cluster's cluster-config manifest.
+/// Pure function.
+pub fn cluster_config_path(cluster_name: &str) -> String {
+    format!("{cluster_name}/cluster-config/manifest.yaml")
+}
+
 /// Base Cilium Helm values that are common across all clusters.
 /// k8sServiceHost is intentionally absent — it must be set per-cluster.
 const CILIUM_BASE_VALUES: &str = r#"kubeProxyReplacement: true
@@ -79,6 +111,18 @@ l2announcements:
 gatewayAPI:
   enabled: true
 "#;
+
+/// Return the gitops-relative path for a cluster's Cilium values.yaml.
+/// Pure function.
+pub fn cilium_values_path(cluster_name: &str) -> String {
+    format!("{cluster_name}/cilium/values.yaml")
+}
+
+/// Return the gitops-relative path for a cluster's Cilium kustomization.yaml.
+/// Pure function.
+pub fn cilium_kustomization_path(cluster_name: &str) -> String {
+    format!("{cluster_name}/cilium/kustomization.yaml")
+}
 
 /// Generate Cilium Helm values.yaml for a specific cluster.
 /// Pure function: merges base config with cluster-specific k8sServiceHost.
@@ -613,6 +657,69 @@ spec:
         assert!(
             !tower_values.contains("PLACEHOLDER"),
             "tower/cilium should have a real IP, not PLACEHOLDER"
+        );
+    }
+
+    // ── cluster-config ConfigMap generation ──
+
+    #[test]
+    fn test_generate_cluster_config_tower_is_management() {
+        let manifest = generate_cluster_config_manifest("tower", "jinwang.dev", "management");
+        assert!(manifest.contains("cluster.type: \"management\""));
+        assert!(manifest.contains("cluster.name: \"tower\""));
+        assert!(manifest.contains("cluster.domain: \"jinwang.dev\""));
+
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&manifest)
+            .unwrap_or_else(|e| panic!("cluster-config not valid YAML: {e}"));
+        assert_eq!(parsed["kind"].as_str().unwrap(), "ConfigMap");
+    }
+
+    #[test]
+    fn test_generate_cluster_config_sandbox_is_workload() {
+        let manifest = generate_cluster_config_manifest("sandbox", "jinwang.dev", "workload");
+        assert!(manifest.contains("cluster.type: \"workload\""));
+        assert!(manifest.contains("cluster.name: \"sandbox\""));
+    }
+
+    #[test]
+    fn test_cluster_config_path_mapping() {
+        assert_eq!(
+            cluster_config_path("tower"),
+            "tower/cluster-config/manifest.yaml"
+        );
+        assert_eq!(
+            cluster_config_path("sandbox"),
+            "sandbox/cluster-config/manifest.yaml"
+        );
+    }
+
+    /// Verify cilium_values_path returns correct gitops-relative paths.
+    #[test]
+    fn test_cilium_values_path_mapping() {
+        assert_eq!(cilium_values_path("tower"), "tower/cilium/values.yaml");
+        assert_eq!(cilium_values_path("sandbox"), "sandbox/cilium/values.yaml");
+    }
+
+    /// Verify that generate_cilium_values with a known CP IP produces
+    /// content that matches what the static gitops file should contain.
+    #[test]
+    fn test_generated_cilium_values_match_static_tower_structure() {
+        let generated = generate_cilium_values("192.168.88.100", 6443);
+        let static_content = include_str!("../../../gitops/tower/cilium/values.yaml");
+
+        // Both must have the same k8sServiceHost
+        let gen_parsed: serde_yaml::Value = serde_yaml::from_str(&generated).unwrap();
+        let static_parsed: serde_yaml::Value = serde_yaml::from_str(static_content).unwrap();
+
+        assert_eq!(
+            gen_parsed["k8sServiceHost"], static_parsed["k8sServiceHost"],
+            "generated Cilium values k8sServiceHost must match static tower file"
+        );
+
+        // Both must have kubeProxyReplacement
+        assert_eq!(
+            gen_parsed["kubeProxyReplacement"], static_parsed["kubeProxyReplacement"],
+            "kubeProxyReplacement must match"
         );
     }
 

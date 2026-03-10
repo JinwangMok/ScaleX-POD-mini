@@ -35,6 +35,10 @@ config:
     kube_network_node_prefix: 24
     # NTP synchronization
     ntp_enabled: true
+    # Etcd deployment type: "host" (recommended for production), "docker", or "kubeadm"
+    etcd_deployment_type: "host"
+    # DNS mode: "coredns" (production standard)
+    dns_mode: "coredns"
 
   clusters:
     # Mode: "sdi" (default) uses SDI VM pools, "baremetal" uses physical nodes directly

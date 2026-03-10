@@ -202,6 +202,15 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
         vars.push_str("ntp_enabled: true\n");
     }
 
+    // Etcd deployment type (DataX production pattern: host)
+    vars.push_str(&format!(
+        "etcd_deployment_type: {}\n",
+        common.etcd_deployment_type
+    ));
+
+    // DNS mode (DataX production pattern: coredns)
+    vars.push_str(&format!("dns_mode: {}\n", common.dns_mode));
+
     // OIDC authentication (Keycloak integration)
     if let Some(ref oidc) = cluster.oidc {
         if oidc.enabled {
@@ -430,6 +439,8 @@ mod tests {
             enable_nodelocaldns: true,
             kube_network_node_prefix: 24,
             ntp_enabled: true,
+            etcd_deployment_type: "host".to_string(),
+            dns_mode: "coredns".to_string(),
         }
     }
 
@@ -757,6 +768,9 @@ mod tests {
             "node_feature_discovery_enabled",
             "metrics_server_enabled",
             "registry_enabled",
+            // DataX production settings
+            "etcd_deployment_type",
+            "dns_mode",
         ];
 
         for key in &required_keys {
@@ -1416,5 +1430,59 @@ supplementary_addresses_in_ssl_keys:
             vars.contains("100.64.0.1"),
             "missing supplementary SSL address"
         );
+    }
+
+    /// DataX legacy: etcd_deployment_type must be explicitly set for production clusters.
+    /// Default: "host" (as per DataX .legacy-datax-kubespray/inventory/datax/group_vars/all/etcd.yml)
+    #[test]
+    fn test_cluster_vars_etcd_deployment_type() {
+        let common = make_common();
+        let cluster = make_cluster_def("tower", "tower");
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        assert!(
+            vars.contains("etcd_deployment_type:"),
+            "missing etcd_deployment_type — required for production (DataX uses 'host')"
+        );
+        assert!(
+            vars.contains("etcd_deployment_type: host"),
+            "etcd_deployment_type should default to 'host'"
+        );
+    }
+
+    /// DataX legacy: dns_mode must be explicitly set for production clusters.
+    /// Default: "coredns" (as per DataX .legacy-datax-kubespray/inventory/datax/group_vars/k8s_cluster/k8s-cluster.yml)
+    #[test]
+    fn test_cluster_vars_dns_mode() {
+        let common = make_common();
+        let cluster = make_cluster_def("tower", "tower");
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        assert!(
+            vars.contains("dns_mode:"),
+            "missing dns_mode — required for production (DataX uses 'coredns')"
+        );
+        assert!(
+            vars.contains("dns_mode: coredns"),
+            "dns_mode should default to 'coredns'"
+        );
+    }
+
+    /// The required_keys list must include etcd_deployment_type and dns_mode
+    #[test]
+    fn test_cluster_vars_required_keys_include_datax_production_settings() {
+        let common = make_common();
+        let cluster = make_cluster_def("tower", "tower");
+        let vars = generate_cluster_vars(&cluster, &common);
+        let parsed: serde_yaml::Mapping = serde_yaml::from_str(&vars).unwrap();
+
+        let production_keys = ["etcd_deployment_type", "dns_mode"];
+
+        for key in &production_keys {
+            assert!(
+                parsed.contains_key(serde_yaml::Value::String(key.to_string())),
+                "missing production-required kubespray key: {key}"
+            );
+        }
     }
 }
