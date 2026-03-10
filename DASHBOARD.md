@@ -4,13 +4,14 @@
 
 ---
 
-## Current Status (Sprint 12a COMPLETE — 2026-03-11)
+## Current Status (Sprint 12d COMPLETE — 2026-03-11)
 
-- **Tests**: 320 pass / clippy 0 warnings / fmt clean
+- **Tests**: 321 pass / clippy 0 warnings / fmt clean
 - **Code**: ~14,000 lines Rust, 29 source files
 - **GitOps**: 42 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
-- **Last stable commit**: `7b8c84e` (Sprint 11b — 315 tests)
+- **Last stable commit**: Sprint 12d — 321 tests
+- **All offline GAPs resolved** (G-1~G-6) + 3rd cluster extensibility verified. Next: Sprint 12c (물리 인프라 E2E)
 
 ---
 
@@ -231,7 +232,7 @@
 |---|------|-----|------|
 | 12b-1 | PROMPT.md/DIRECTION.md/REQUEST-TO-USER.md → DASHBOARD.md 통합 | G-6 | DONE |
 | 12b-2 | 3개 meta-files 삭제 | G-6 | DONE |
-| 12b-3 | Commit + Push | | IN PROGRESS |
+| 12b-3 | Commit + Push | | DONE |
 
 ### Sprint 12c: 실환경 E2E (물리 인프라 필요)
 
@@ -335,7 +336,8 @@ _generated/
 | commands/facts | 4 | facts gathering |
 | core/ssh | 5 | SSH command building, ProxyJump key, reachable_node_ip key |
 | core/validation (12a) | 5 | baremetal E2E, CF tunnel routes, single-node SDI, sdi-init orchestration, README refs |
-| **TOTAL** | **320** | |
+| core/validation (12d) | 1 | 3rd cluster extensibility (tower+sandbox+datax) pipeline |
+| **TOTAL** | **321** | |
 
 ---
 
@@ -343,6 +345,8 @@ _generated/
 
 | Sprint | Date | Tests | Summary |
 |--------|------|-------|---------|
+| 12d | 2026-03-11 | 321 | 3rd cluster extensibility test (tower+sandbox+datax pipeline) |
+| 12b | 2026-03-11 | 320 | Meta-file cleanup (PROMPT.md, DIRECTION.md, REQUEST-TO-USER.md → DASHBOARD.md) |
 | 12a | 2026-03-11 | 320 | Gap verification tests: baremetal E2E, CF tunnel, single-node SDI, orchestration flow, README refs |
 | 11b | 2026-03-11 | 315 | E2E pipeline + SSH integration tests |
 | 11a | 2026-03-11 | 313 | DASHBOARD rewrite + sdi init resource pool verification |

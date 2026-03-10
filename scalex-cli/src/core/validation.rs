@@ -3578,4 +3578,254 @@ spec:
             );
         }
     }
+
+    /// Extensibility test: Adding a 3rd cluster (datax) to tower+sandbox must work
+    /// through the entire pipeline: config → unique IDs → inventory → vars → CIDR isolation.
+    /// This validates the "무한 확장 가능한 멀티-클러스터 구조" (Principle 2).
+    #[test]
+    fn test_third_cluster_extensibility_pipeline() {
+        use crate::models::cluster::*;
+
+        let common = CommonConfig {
+            kubernetes_version: "1.33.1".to_string(),
+            kubespray_version: "2.30.0".to_string(),
+            container_runtime: "containerd".to_string(),
+            cni: "cilium".to_string(),
+            cilium_version: "1.16.5".to_string(),
+            kube_proxy_remove: true,
+            cgroup_driver: "systemd".to_string(),
+            helm_enabled: true,
+            kube_apiserver_admission_plugins: vec!["NodeRestriction".to_string()],
+            firewalld_enabled: false,
+            kube_vip_enabled: false,
+            gateway_api_enabled: false,
+            gateway_api_version: String::new(),
+            graceful_node_shutdown: false,
+            graceful_node_shutdown_sec: 120,
+            kubelet_custom_flags: vec![],
+            kubeconfig_localhost: true,
+            kubectl_localhost: true,
+            enable_nodelocaldns: true,
+            kube_network_node_prefix: 24,
+            ntp_enabled: true,
+            etcd_deployment_type: "host".to_string(),
+            dns_mode: "coredns".to_string(),
+        };
+
+        let clusters = vec![
+            ClusterDef {
+                cluster_name: "tower".to_string(),
+                cluster_mode: ClusterMode::Baremetal,
+                cluster_sdi_resource_pool: String::new(),
+                baremetal_nodes: vec![BaremetalNode {
+                    node_name: "bm-tower-0".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    roles: vec![
+                        "control-plane".to_string(),
+                        "etcd".to_string(),
+                        "worker".to_string(),
+                    ],
+                }],
+                cluster_role: "management".to_string(),
+                network: ClusterNetwork {
+                    pod_cidr: "10.244.0.0/20".to_string(),
+                    service_cidr: "10.96.0.0/20".to_string(),
+                    dns_domain: "tower.local".to_string(),
+                    native_routing_cidr: None,
+                },
+                cilium: Some(CiliumConfig {
+                    cluster_id: 1,
+                    cluster_name: "tower".to_string(),
+                }),
+                oidc: None,
+                kubespray_extra_vars: None,
+                ssh_user: None,
+            },
+            ClusterDef {
+                cluster_name: "sandbox".to_string(),
+                cluster_mode: ClusterMode::Baremetal,
+                cluster_sdi_resource_pool: String::new(),
+                baremetal_nodes: vec![
+                    BaremetalNode {
+                        node_name: "bm-sb-cp".to_string(),
+                        ip: "10.0.0.10".to_string(),
+                        roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                    },
+                    BaremetalNode {
+                        node_name: "bm-sb-w0".to_string(),
+                        ip: "10.0.0.11".to_string(),
+                        roles: vec!["worker".to_string()],
+                    },
+                ],
+                cluster_role: "workload".to_string(),
+                network: ClusterNetwork {
+                    pod_cidr: "10.245.0.0/20".to_string(),
+                    service_cidr: "10.97.0.0/20".to_string(),
+                    dns_domain: "sandbox.local".to_string(),
+                    native_routing_cidr: None,
+                },
+                cilium: Some(CiliumConfig {
+                    cluster_id: 2,
+                    cluster_name: "sandbox".to_string(),
+                }),
+                oidc: None,
+                kubespray_extra_vars: None,
+                ssh_user: None,
+            },
+            // 3rd cluster: datax (storage workload cluster)
+            ClusterDef {
+                cluster_name: "datax".to_string(),
+                cluster_mode: ClusterMode::Baremetal,
+                cluster_sdi_resource_pool: String::new(),
+                baremetal_nodes: vec![
+                    BaremetalNode {
+                        node_name: "bm-dx-cp".to_string(),
+                        ip: "10.0.0.20".to_string(),
+                        roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                    },
+                    BaremetalNode {
+                        node_name: "bm-dx-w0".to_string(),
+                        ip: "10.0.0.21".to_string(),
+                        roles: vec!["worker".to_string()],
+                    },
+                    BaremetalNode {
+                        node_name: "bm-dx-w1".to_string(),
+                        ip: "10.0.0.22".to_string(),
+                        roles: vec!["worker".to_string()],
+                    },
+                ],
+                cluster_role: "workload".to_string(),
+                network: ClusterNetwork {
+                    pod_cidr: "10.246.0.0/20".to_string(),
+                    service_cidr: "10.98.0.0/20".to_string(),
+                    dns_domain: "datax.local".to_string(),
+                    native_routing_cidr: None,
+                },
+                cilium: Some(CiliumConfig {
+                    cluster_id: 3,
+                    cluster_name: "datax".to_string(),
+                }),
+                oidc: None,
+                kubespray_extra_vars: None,
+                ssh_user: None,
+            },
+        ];
+
+        let k8s_config = K8sClustersConfig {
+            config: K8sConfig {
+                common: common.clone(),
+                clusters,
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        // 1. All 3 cluster IDs must be unique
+        let id_errors = validate_unique_cluster_ids(&k8s_config);
+        assert!(
+            id_errors.is_empty(),
+            "3-cluster IDs must be unique: {:?}",
+            id_errors
+        );
+
+        // 2. Duplicate ID detection still works
+        let mut bad_config = k8s_config.clone();
+        bad_config.config.clusters[2]
+            .cilium
+            .as_mut()
+            .unwrap()
+            .cluster_id = 1; // conflict with tower
+        let id_errors = validate_unique_cluster_ids(&bad_config);
+        assert_eq!(id_errors.len(), 1, "must detect duplicate cluster_id");
+        assert!(
+            id_errors[0].contains("tower"),
+            "must identify conflicting cluster"
+        );
+
+        // 3. Generate inventory for all 3 clusters
+        assert_eq!(k8s_config.config.clusters.len(), 3);
+        for cluster in &k8s_config.config.clusters {
+            let inv =
+                crate::core::kubespray::generate_inventory_baremetal(cluster).unwrap_or_else(|e| {
+                    panic!("inventory for '{}' failed: {}", cluster.cluster_name, e)
+                });
+            assert!(
+                inv.contains("[all]"),
+                "{}: must have [all]",
+                cluster.cluster_name
+            );
+            assert!(
+                inv.contains("[kube_control_plane]"),
+                "{}: must have control plane",
+                cluster.cluster_name
+            );
+        }
+
+        // 4. Generate vars for all 3 — all must share common K8s version
+        let mut all_vars = Vec::new();
+        for cluster in &k8s_config.config.clusters {
+            let vars =
+                crate::core::kubespray::generate_cluster_vars(cluster, &k8s_config.config.common);
+            assert!(
+                vars.contains("1.33.1"),
+                "{}: must use common k8s version",
+                cluster.cluster_name
+            );
+            assert!(
+                vars.contains("cilium"),
+                "{}: must use common CNI",
+                cluster.cluster_name
+            );
+            all_vars.push((cluster.cluster_name.clone(), vars));
+        }
+
+        // 5. CIDR isolation: no two clusters share pod or service CIDRs
+        let cidrs: Vec<(&str, &str, &str)> = k8s_config
+            .config
+            .clusters
+            .iter()
+            .map(|c| {
+                (
+                    c.cluster_name.as_str(),
+                    c.network.pod_cidr.as_str(),
+                    c.network.service_cidr.as_str(),
+                )
+            })
+            .collect();
+        for i in 0..cidrs.len() {
+            for j in (i + 1)..cidrs.len() {
+                assert_ne!(
+                    cidrs[i].1, cidrs[j].1,
+                    "pod CIDR collision between '{}' and '{}'",
+                    cidrs[i].0, cidrs[j].0
+                );
+                assert_ne!(
+                    cidrs[i].2, cidrs[j].2,
+                    "service CIDR collision between '{}' and '{}'",
+                    cidrs[i].0, cidrs[j].0
+                );
+            }
+        }
+
+        // 6. datax inventory must have exactly 3 nodes
+        let datax_inv =
+            crate::core::kubespray::generate_inventory_baremetal(&k8s_config.config.clusters[2])
+                .unwrap();
+        assert_eq!(
+            datax_inv.matches("ansible_host=").count(),
+            3,
+            "datax must have exactly 3 nodes"
+        );
+
+        // 7. Each cluster's vars must contain its own unique dns_domain
+        for (name, vars) in &all_vars {
+            let expected_domain = format!("{}.local", name);
+            assert!(
+                vars.contains(&expected_domain),
+                "{}: vars must contain dns_domain '{}'",
+                name,
+                expected_domain
+            );
+        }
+    }
 }
