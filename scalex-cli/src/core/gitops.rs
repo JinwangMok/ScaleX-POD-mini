@@ -132,6 +132,58 @@ pub fn generate_cilium_values(control_plane_ip: &str, service_port: u16) -> Stri
     )
 }
 
+/// ClusterMesh peer information for Cilium multi-cluster connectivity.
+pub struct ClusterMeshPeer {
+    pub name: String,
+    pub id: u32,
+    pub api_server_ip: String,
+}
+
+/// Generate Cilium Helm values with ClusterMesh enabled.
+/// Pure function: adds cluster identity and mesh configuration.
+pub fn generate_cilium_values_with_mesh(
+    control_plane_ip: &str,
+    service_port: u16,
+    cluster_name: &str,
+    cluster_id: u32,
+) -> String {
+    let base = generate_cilium_values(control_plane_ip, service_port);
+    format!(
+        "{base}cluster:\n  name: \"{cluster_name}\"\n  id: {cluster_id}\nclustermesh:\n  useAPIServer: true\n  apiserver:\n    service:\n      type: NodePort\n"
+    )
+}
+
+/// Generate a Cilium ClusterMesh connect manifest (Secret) for peering.
+/// Pure function: generates the connection config for a remote cluster.
+pub fn generate_clustermesh_peer_secret(local_cluster: &str, peer: &ClusterMeshPeer) -> String {
+    format!(
+        r#"apiVersion: v1
+kind: Secret
+metadata:
+  name: cilium-clustermesh-{peer_name}
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: cilium
+    clustermesh.cilium.io/peer: "{peer_name}"
+  annotations:
+    scalex.io/local-cluster: "{local_cluster}"
+    scalex.io/peer-cluster: "{peer_name}"
+type: Opaque
+stringData:
+  config.yaml: |
+    cluster:
+      name: "{peer_name}"
+      id: {peer_id}
+    endpoints:
+      - "https://{peer_ip}:2379"
+"#,
+        peer_name = peer.name,
+        peer_id = peer.id,
+        peer_ip = peer.api_server_ip,
+        local_cluster = local_cluster,
+    )
+}
+
 /// Generate a Kustomize kustomization.yaml for a Cilium Helm chart deployment.
 /// Pure function.
 pub fn generate_cilium_kustomization(cilium_version: &str) -> String {
@@ -738,5 +790,103 @@ spec:
                 "Tower file unexpectedly contains sandbox placeholder"
             );
         }
+    }
+
+    // ── ClusterMesh ──
+
+    #[test]
+    fn test_generate_cilium_values_with_mesh_contains_cluster_identity() {
+        let values = generate_cilium_values_with_mesh("192.168.88.100", 6443, "tower", 1);
+        assert!(values.contains("cluster:\n  name: \"tower\""));
+        assert!(values.contains("id: 1"));
+        assert!(values.contains("clustermesh:"));
+        assert!(values.contains("useAPIServer: true"));
+    }
+
+    #[test]
+    fn test_generate_cilium_values_with_mesh_preserves_base() {
+        let values = generate_cilium_values_with_mesh("192.168.88.100", 6443, "tower", 1);
+        assert!(values.contains("k8sServiceHost: \"192.168.88.100\""));
+        assert!(values.contains("kubeProxyReplacement: true"));
+        assert!(values.contains("hubble:"));
+        assert!(values.contains("gatewayAPI:"));
+    }
+
+    #[test]
+    fn test_generate_cilium_values_with_mesh_valid_yaml() {
+        let values = generate_cilium_values_with_mesh("192.168.88.110", 6443, "sandbox", 2);
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&values).expect("ClusterMesh values must be valid YAML");
+        assert_eq!(parsed["cluster"]["name"].as_str().unwrap(), "sandbox");
+        assert_eq!(parsed["cluster"]["id"].as_u64().unwrap(), 2);
+        assert_eq!(
+            parsed["clustermesh"]["useAPIServer"].as_bool().unwrap(),
+            true
+        );
+    }
+
+    #[test]
+    fn test_generate_clustermesh_peer_secret_structure() {
+        let peer = ClusterMeshPeer {
+            name: "sandbox".to_string(),
+            id: 2,
+            api_server_ip: "192.168.88.110".to_string(),
+        };
+        let secret = generate_clustermesh_peer_secret("tower", &peer);
+        assert!(secret.contains("kind: Secret"));
+        assert!(secret.contains("cilium-clustermesh-sandbox"));
+        assert!(secret.contains("namespace: kube-system"));
+        assert!(secret.contains("peer: \"sandbox\""));
+    }
+
+    #[test]
+    fn test_generate_clustermesh_peer_secret_valid_yaml() {
+        let peer = ClusterMeshPeer {
+            name: "sandbox".to_string(),
+            id: 2,
+            api_server_ip: "192.168.88.110".to_string(),
+        };
+        let secret = generate_clustermesh_peer_secret("tower", &peer);
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&secret).expect("ClusterMesh peer secret must be valid YAML");
+        assert_eq!(parsed["kind"].as_str().unwrap(), "Secret");
+        assert_eq!(
+            parsed["metadata"]["name"].as_str().unwrap(),
+            "cilium-clustermesh-sandbox"
+        );
+    }
+
+    #[test]
+    fn test_generate_clustermesh_peer_secret_contains_endpoint() {
+        let peer = ClusterMeshPeer {
+            name: "tower".to_string(),
+            id: 1,
+            api_server_ip: "192.168.88.100".to_string(),
+        };
+        let secret = generate_clustermesh_peer_secret("sandbox", &peer);
+        assert!(secret.contains("https://192.168.88.100:2379"));
+        assert!(secret.contains("name: \"tower\""));
+        assert!(secret.contains("id: 1"));
+        assert!(secret.contains("local-cluster: \"sandbox\""));
+    }
+
+    #[test]
+    fn test_generate_clustermesh_peer_secret_bidirectional() {
+        let tower_peer = ClusterMeshPeer {
+            name: "tower".to_string(),
+            id: 1,
+            api_server_ip: "192.168.88.100".to_string(),
+        };
+        let sandbox_peer = ClusterMeshPeer {
+            name: "sandbox".to_string(),
+            id: 2,
+            api_server_ip: "192.168.88.110".to_string(),
+        };
+        let secret_on_sandbox = generate_clustermesh_peer_secret("sandbox", &tower_peer);
+        let secret_on_tower = generate_clustermesh_peer_secret("tower", &sandbox_peer);
+
+        // Each secret references the OTHER cluster
+        assert!(secret_on_sandbox.contains("cilium-clustermesh-tower"));
+        assert!(secret_on_tower.contains("cilium-clustermesh-sandbox"));
     }
 }
