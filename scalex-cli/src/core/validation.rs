@@ -836,7 +836,7 @@ spec:
         assert_eq!(spec.spec.sdi_pools[1].placement.hosts, vec!["playbox-0"]);
 
         // HCL must generate only 1 provider (deduplicated)
-        let hcl = crate::core::tofu::generate_tofu_main(&spec);
+        let hcl = crate::core::tofu::generate_tofu_main(&spec, "jinwang");
         let provider_count = hcl.matches("provider \"libvirt\"").count();
         assert_eq!(
             provider_count, 1,
@@ -1072,8 +1072,8 @@ spec:
         let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
         let spec: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
 
-        let hcl1 = crate::core::tofu::generate_tofu_main(&spec);
-        let hcl2 = crate::core::tofu::generate_tofu_main(&spec);
+        let hcl1 = crate::core::tofu::generate_tofu_main(&spec, "jinwang");
+        let hcl2 = crate::core::tofu::generate_tofu_main(&spec, "jinwang");
         assert_eq!(
             hcl1, hcl2,
             "generate_tofu_main must be deterministic (idempotent)"
@@ -1158,6 +1158,7 @@ spec:
             .map(|n| crate::core::tofu::HostInfraInput {
                 name: n.name.clone(),
                 ip: n.node_ip.clone(),
+                ssh_user: n.admin_user.clone(),
             })
             .collect();
         let net = bm.network_defaults.as_ref().unwrap();
@@ -1175,7 +1176,7 @@ spec:
         );
 
         // Step 7: Generate HCL (VM pools)
-        let vm_hcl = crate::core::tofu::generate_tofu_main(&sdi);
+        let vm_hcl = crate::core::tofu::generate_tofu_main(&sdi, "jinwang");
         assert!(vm_hcl.contains("tower-cp-0"), "HCL missing tower VM");
         assert!(vm_hcl.contains("sandbox-cp-0"), "HCL missing sandbox CP VM");
         assert!(
@@ -1517,7 +1518,7 @@ spec:
         );
 
         // HCL must contain all 3 pools' VMs
-        let hcl = crate::core::tofu::generate_tofu_main(&sdi);
+        let hcl = crate::core::tofu::generate_tofu_main(&sdi, "jinwang");
         assert!(hcl.contains("tower-cp-0"), "HCL missing tower VM");
         assert!(hcl.contains("sandbox-cp-0"), "HCL missing sandbox CP");
         assert!(hcl.contains("datax-cp-0"), "HCL missing datax CP");
@@ -2021,13 +2022,14 @@ spec:
             serde_yaml::from_str(bm_content).unwrap();
 
         // --- First pass: generate all outputs ---
-        let hcl_1 = crate::core::tofu::generate_tofu_main(&sdi);
+        let hcl_1 = crate::core::tofu::generate_tofu_main(&sdi, "jinwang");
         let host_inputs: Vec<crate::core::tofu::HostInfraInput> = bm
             .target_nodes
             .iter()
             .map(|n| crate::core::tofu::HostInfraInput {
                 name: n.name.clone(),
                 ip: n.node_ip.clone(),
+                ssh_user: n.admin_user.clone(),
             })
             .collect();
         let net = bm.network_defaults.as_ref().unwrap();
@@ -2055,13 +2057,14 @@ spec:
             serde_yaml::from_str(bm_content).unwrap();
 
         // --- Second pass: regenerate all outputs ---
-        let hcl_2 = crate::core::tofu::generate_tofu_main(&sdi_2);
+        let hcl_2 = crate::core::tofu::generate_tofu_main(&sdi_2, "jinwang");
         let host_inputs_2: Vec<crate::core::tofu::HostInfraInput> = bm_2
             .target_nodes
             .iter()
             .map(|n| crate::core::tofu::HostInfraInput {
                 name: n.name.clone(),
                 ip: n.node_ip.clone(),
+                ssh_user: n.admin_user.clone(),
             })
             .collect();
         let net_2 = bm_2.network_defaults.as_ref().unwrap();
@@ -2461,5 +2464,88 @@ spec:
                 );
             }
         }
+    }
+
+    // --- Sprint 9a: GitOps YAML validation tests ---
+
+    /// Sandbox generator must have a placeholder URL that gets replaced after cluster init.
+    /// This test ensures the placeholder is detectable so CLI can find & replace it.
+    #[test]
+    fn test_sandbox_generator_has_detectable_placeholder_url() {
+        let content = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
+        // The placeholder URL must be present (not yet replaced with real cluster URL)
+        // OR if replaced, it must be a valid https:// URL
+        let has_placeholder = content.contains("https://sandbox-api:6443");
+        let has_real_url = content.contains("https://") && !content.contains("sandbox-api:6443");
+        assert!(
+            has_placeholder || has_real_url,
+            "sandbox-generator.yaml must have either placeholder 'https://sandbox-api:6443' \
+             or a real cluster URL. Got neither."
+        );
+
+        // Verify the YAML structure is valid
+        let parsed: serde_yaml::Value = serde_yaml::from_str(content)
+            .expect("sandbox-generator.yaml must be valid YAML");
+        assert!(
+            parsed.get("spec").is_some(),
+            "sandbox-generator.yaml must have a 'spec' field"
+        );
+    }
+
+    /// Cloudflare tunnel values.yaml must expose all required services.
+    #[test]
+    fn test_cloudflare_tunnel_ingress_completeness() {
+        let content =
+            include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
+
+        // Must have tunnel name
+        assert!(
+            content.contains("playbox-admin-static"),
+            "CF tunnel values.yaml missing tunnel name 'playbox-admin-static'"
+        );
+
+        // Must expose K8s API for external kubectl access
+        assert!(
+            content.contains("api.k8s.jinwang.dev"),
+            "CF tunnel missing K8s API hostname 'api.k8s.jinwang.dev'"
+        );
+        assert!(
+            content.contains("kubernetes.default"),
+            "CF tunnel missing kubernetes.default service target for K8s API"
+        );
+
+        // Must expose ArgoCD UI
+        assert!(
+            content.contains("cd.jinwang.dev"),
+            "CF tunnel missing ArgoCD hostname 'cd.jinwang.dev'"
+        );
+        assert!(
+            content.contains("argocd-server"),
+            "CF tunnel missing argocd-server service target"
+        );
+
+        // Must expose Keycloak for OIDC
+        assert!(
+            content.contains("auth.jinwang.dev"),
+            "CF tunnel missing Keycloak hostname 'auth.jinwang.dev'"
+        );
+
+        // Must have catch-all 404 fallback
+        assert!(
+            content.contains("http_status:404"),
+            "CF tunnel missing catch-all 404 fallback"
+        );
+
+        // Must reference existing secret for credentials
+        assert!(
+            content.contains("existingSecret"),
+            "CF tunnel must reference existingSecret for credentials"
+        );
+
+        // Must have noTLSVerify for K8s API (self-signed cert)
+        assert!(
+            content.contains("noTLSVerify: true"),
+            "CF tunnel must have noTLSVerify for K8s API endpoint"
+        );
     }
 }

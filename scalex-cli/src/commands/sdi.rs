@@ -238,8 +238,13 @@ fn run_init(
 
         std::fs::create_dir_all(&output_dir)?;
 
-        // Generate main.tf
-        let hcl = tofu::generate_tofu_main(&spec);
+        // Generate main.tf — ssh_user from baremetal config (first node as default)
+        let ssh_user = bm_config
+            .target_nodes
+            .first()
+            .map(|n| n.admin_user.as_str())
+            .unwrap_or("root");
+        let hcl = tofu::generate_tofu_main(&spec, ssh_user);
         let main_tf = output_dir.join("main.tf");
         if dry_run {
             println!(
@@ -850,6 +855,7 @@ pub fn build_host_infra_inputs(
         .map(|n| tofu::HostInfraInput {
             name: n.name.clone(),
             ip: n.node_ip.clone(),
+            ssh_user: n.admin_user.clone(),
         })
         .collect()
 }
@@ -1225,5 +1231,32 @@ mod tests {
         // Even with hard mode, no state dir means nothing to do
         let ops = plan_clean_operations(true, false, false, Some(4));
         assert_eq!(ops, vec![CleanOperation::NoState]);
+    }
+
+    // --- dir_is_empty tests ---
+
+    #[test]
+    fn test_dir_is_empty_nonexistent_returns_true() {
+        // Non-existent directory should be treated as empty
+        assert!(dir_is_empty(std::path::Path::new("/tmp/scalex_test_nonexistent_dir_xyz")));
+    }
+
+    #[test]
+    fn test_dir_is_empty_empty_dir_returns_true() {
+        let tmp = std::env::temp_dir().join("scalex_test_empty_dir");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(dir_is_empty(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_dir_is_empty_with_file_returns_false() {
+        let tmp = std::env::temp_dir().join("scalex_test_nonempty_dir");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("facts.json"), "{}").unwrap();
+        assert!(!dir_is_empty(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

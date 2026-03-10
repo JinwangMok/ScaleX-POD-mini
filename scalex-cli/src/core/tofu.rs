@@ -6,6 +6,7 @@ use crate::models::sdi::{NodeSpec, SdiSpec};
 pub struct HostInfraInput {
     pub name: String,
     pub ip: String,
+    pub ssh_user: String,
 }
 
 /// Generate OpenTofu HCL for host-level libvirt infrastructure.
@@ -28,10 +29,11 @@ pub fn generate_tofu_host_infra(
         hcl.push_str(&format!(
             r#"provider "libvirt" {{
   alias = "{name}"
-  uri   = "qemu+ssh://root@{ip}/system"
+  uri   = "qemu+ssh://{ssh_user}@{ip}/system"
 }}
 "#,
             name = host.name,
+            ssh_user = host.ssh_user,
             ip = host.ip,
         ));
         hcl.push('\n');
@@ -69,7 +71,7 @@ pub fn generate_tofu_host_infra(
 
 /// Generate OpenTofu HCL for a complete SDI spec.
 /// Pure function: returns HCL string without writing files.
-pub fn generate_tofu_main(spec: &SdiSpec) -> String {
+pub fn generate_tofu_main(spec: &SdiSpec, ssh_user: &str) -> String {
     let mut hcl = String::new();
 
     // Terraform block
@@ -79,7 +81,7 @@ pub fn generate_tofu_main(spec: &SdiSpec) -> String {
     // Provider blocks — one per unique host
     let hosts = collect_unique_hosts(spec);
     for host in &hosts {
-        hcl.push_str(&generate_provider_block(host));
+        hcl.push_str(&generate_provider_block(host, ssh_user));
         hcl.push('\n');
     }
 
@@ -159,7 +161,7 @@ fn generate_terraform_block() -> String {
     .to_string()
 }
 
-fn generate_provider_block(host: &str) -> String {
+fn generate_provider_block(host: &str, ssh_user: &str) -> String {
     // For localhost, use local qemu connection; otherwise SSH
     if host == "localhost" {
         r#"provider "libvirt" {
@@ -171,7 +173,7 @@ fn generate_provider_block(host: &str) -> String {
         format!(
             r#"provider "libvirt" {{
   alias = "{host}"
-  uri   = "qemu+ssh://root@{host}/system"
+  uri   = "qemu+ssh://{ssh_user}@{host}/system"
 }}
 "#
         )
@@ -391,7 +393,7 @@ mod tests {
     #[test]
     fn test_generate_tofu_contains_provider() {
         let spec = make_test_spec();
-        let hcl = generate_tofu_main(&spec);
+        let hcl = generate_tofu_main(&spec, "root");
         assert!(hcl.contains("provider \"libvirt\""));
         assert!(hcl.contains("playbox-0"));
     }
@@ -399,7 +401,7 @@ mod tests {
     #[test]
     fn test_generate_tofu_contains_vm() {
         let spec = make_test_spec();
-        let hcl = generate_tofu_main(&spec);
+        let hcl = generate_tofu_main(&spec, "root");
         assert!(hcl.contains("libvirt_domain"));
         assert!(hcl.contains("tower-cp-0"));
         assert!(hcl.contains("memory = 3072"));
@@ -417,7 +419,7 @@ mod tests {
     fn test_generate_tofu_uses_spec_gateway() {
         let mut spec = make_test_spec();
         spec.resource_pool.network.gateway = "10.0.0.1".to_string();
-        let hcl = generate_tofu_main(&spec);
+        let hcl = generate_tofu_main(&spec, "root");
         // Gateway must come from spec, not hardcoded
         assert!(hcl.contains("gateway4: 10.0.0.1"));
     }
@@ -434,6 +436,7 @@ mod tests {
         let hosts = vec![HostInfraInput {
             name: "playbox-0".to_string(),
             ip: "192.168.88.8".to_string(),
+            ssh_user: "admin".to_string(),
         }];
         let hcl = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
 
@@ -453,8 +456,8 @@ mod tests {
             "missing provider block"
         );
         assert!(
-            hcl.contains("qemu+ssh://root@192.168.88.8/system"),
-            "missing SSH URI for host"
+            hcl.contains("qemu+ssh://admin@192.168.88.8/system"),
+            "SSH URI must use ssh_user from HostInfraInput"
         );
 
         // Must create a libvirt storage pool on the host
@@ -474,26 +477,30 @@ mod tests {
             HostInfraInput {
                 name: "playbox-0".to_string(),
                 ip: "192.168.88.8".to_string(),
+                ssh_user: "jinwang".to_string(),
             },
             HostInfraInput {
                 name: "playbox-1".to_string(),
                 ip: "192.168.88.9".to_string(),
+                ssh_user: "jinwang".to_string(),
             },
             HostInfraInput {
                 name: "playbox-2".to_string(),
                 ip: "192.168.88.10".to_string(),
+                ssh_user: "jinwang".to_string(),
             },
             HostInfraInput {
                 name: "playbox-3".to_string(),
                 ip: "192.168.88.11".to_string(),
+                ssh_user: "jinwang".to_string(),
             },
         ];
         let hcl = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
 
-        // All 4 hosts must have providers
+        // All 4 hosts must have providers with correct ssh_user
         for host in &hosts {
             assert!(
-                hcl.contains(&format!("qemu+ssh://root@{}/system", host.ip)),
+                hcl.contains(&format!("qemu+ssh://{}@{}/system", host.ssh_user, host.ip)),
                 "missing provider for {} (ip: {})",
                 host.name,
                 host.ip
@@ -509,15 +516,51 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_tofu_main_uses_admin_user_not_root() {
+        let spec = make_test_spec();
+        let hcl = generate_tofu_main(&spec, "jinwang");
+        // Must use admin_user, not hardcoded root
+        assert!(
+            hcl.contains("qemu+ssh://jinwang@playbox-0/system"),
+            "SSH URI must use admin_user 'jinwang', not 'root'. Got:\n{}",
+            hcl
+        );
+        assert!(
+            !hcl.contains("root@"),
+            "SSH URI must NOT contain hardcoded 'root@'"
+        );
+    }
+
+    #[test]
+    fn test_generate_tofu_host_infra_uses_ssh_user() {
+        let hosts = vec![HostInfraInput {
+            name: "playbox-0".to_string(),
+            ip: "192.168.88.8".to_string(),
+            ssh_user: "jinwang".to_string(),
+        }];
+        let hcl = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
+        assert!(
+            hcl.contains("qemu+ssh://jinwang@192.168.88.8/system"),
+            "SSH URI must use ssh_user 'jinwang', not 'root'"
+        );
+        assert!(
+            !hcl.contains("root@"),
+            "SSH URI must NOT contain hardcoded 'root@'"
+        );
+    }
+
+    #[test]
     fn test_generate_tofu_host_infra_idempotent() {
         let hosts = vec![
             HostInfraInput {
                 name: "playbox-0".to_string(),
                 ip: "192.168.88.8".to_string(),
+                ssh_user: "jinwang".to_string(),
             },
             HostInfraInput {
                 name: "playbox-1".to_string(),
                 ip: "192.168.88.9".to_string(),
+                ssh_user: "jinwang".to_string(),
             },
         ];
         let hcl1 = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
