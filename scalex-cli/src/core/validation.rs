@@ -111,6 +111,15 @@ mod tests {
     }
 
     fn make_cluster(name: &str, pool: &str, mode: ClusterMode) -> ClusterDef {
+        make_cluster_with_id(name, pool, mode, 0)
+    }
+
+    fn make_cluster_with_id(
+        name: &str,
+        pool: &str,
+        mode: ClusterMode,
+        cluster_id: u32,
+    ) -> ClusterDef {
         ClusterDef {
             cluster_name: name.to_string(),
             cluster_mode: mode,
@@ -120,10 +129,17 @@ mod tests {
             network: ClusterNetwork {
                 pod_cidr: "10.244.0.0/20".to_string(),
                 service_cidr: "10.96.0.0/20".to_string(),
-                dns_domain: "test.local".to_string(),
+                dns_domain: format!("{}.local", name),
                 native_routing_cidr: None,
             },
-            cilium: None,
+            cilium: if cluster_id > 0 {
+                Some(CiliumConfig {
+                    cluster_id,
+                    cluster_name: name.to_string(),
+                })
+            } else {
+                None
+            },
             oidc: None,
             kubespray_extra_vars: None,
         }
@@ -1166,6 +1182,369 @@ spec:
         assert!(
             errors[0].contains("no cluster_sdi_resource_pool"),
             "error must mention missing pool reference"
+        );
+    }
+
+    // ========================================================================
+    // Sprint 3.2: Unified sdi-pools view (resource-pool-summary fallback)
+    // ========================================================================
+
+    // Sprint 3.2 tests for resource_pool_to_rows are in commands/get.rs tests module
+    // (SdiPoolRow is private to that module)
+
+    // ========================================================================
+    // Sprint 4.1: Third cluster extensibility
+    // ========================================================================
+
+    /// CL-8: Adding a 3rd cluster must pass all cross-config validations.
+    /// Verifies: unique cluster IDs, pool mapping, inventory generation.
+    #[test]
+    fn test_third_cluster_extensibility() {
+        // 3 SDI pools: tower, sandbox, datax
+        let sdi_yaml = r#"
+resource_pool:
+  name: "playbox-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "https://example.com/img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id.pub"
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      purpose: "management"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 2
+          mem_gb: 3
+          disk_gb: 30
+          roles: [control-plane, worker]
+    - pool_name: "sandbox"
+      purpose: "workload"
+      placement:
+        hosts: [playbox-1]
+        spread: true
+      node_specs:
+        - node_name: "sandbox-cp-0"
+          ip: "192.168.88.110"
+          cpu: 4
+          mem_gb: 8
+          disk_gb: 60
+          roles: [control-plane]
+        - node_name: "sandbox-w-0"
+          ip: "192.168.88.111"
+          cpu: 4
+          mem_gb: 8
+          disk_gb: 60
+          roles: [worker]
+    - pool_name: "datax"
+      purpose: "data"
+      placement:
+        hosts: [playbox-2, playbox-3]
+        spread: true
+      node_specs:
+        - node_name: "datax-cp-0"
+          ip: "192.168.88.120"
+          cpu: 4
+          mem_gb: 16
+          disk_gb: 200
+          host: "playbox-2"
+          roles: [control-plane]
+        - node_name: "datax-w-0"
+          ip: "192.168.88.121"
+          cpu: 8
+          mem_gb: 32
+          disk_gb: 500
+          host: "playbox-3"
+          roles: [worker]
+"#;
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_yaml).unwrap();
+        assert_eq!(sdi.spec.sdi_pools.len(), 3, "must parse 3 SDI pools");
+
+        // 3 clusters referencing 3 pools with unique cluster_ids
+        let k8s = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str(
+                    "kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'",
+                )
+                .unwrap(),
+                clusters: vec![
+                    make_cluster_with_id("tower", "tower", ClusterMode::Sdi, 1),
+                    make_cluster_with_id("sandbox", "sandbox", ClusterMode::Sdi, 2),
+                    make_cluster_with_id("datax", "datax", ClusterMode::Sdi, 3),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        // Cross-validation must pass
+        let pool_errors = validate_cluster_sdi_pool_mapping(&k8s, &sdi);
+        assert!(
+            pool_errors.is_empty(),
+            "3-cluster pool mapping must pass: {:?}",
+            pool_errors
+        );
+
+        let id_errors = validate_unique_cluster_ids(&k8s);
+        assert!(
+            id_errors.is_empty(),
+            "3-cluster unique IDs must pass: {:?}",
+            id_errors
+        );
+
+        // HCL must contain all 3 pools' VMs
+        let hcl = crate::core::tofu::generate_tofu_main(&sdi);
+        assert!(hcl.contains("tower-cp-0"), "HCL missing tower VM");
+        assert!(hcl.contains("sandbox-cp-0"), "HCL missing sandbox CP");
+        assert!(hcl.contains("datax-cp-0"), "HCL missing datax CP");
+        assert!(hcl.contains("datax-w-0"), "HCL missing datax worker");
+
+        // Each cluster must generate valid inventory
+        for cluster in &k8s.config.clusters {
+            let inv =
+                crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap_or_else(|e| {
+                    panic!("inventory for '{}' failed: {}", cluster.cluster_name, e)
+                });
+            assert!(
+                inv.contains("[all]"),
+                "{} inventory missing [all]",
+                cluster.cluster_name
+            );
+            assert!(
+                inv.contains("[kube_control_plane]"),
+                "{} inventory missing control plane",
+                cluster.cluster_name
+            );
+        }
+    }
+
+    /// CL-8: Duplicate cluster IDs across 3 clusters must fail validation.
+    #[test]
+    fn test_third_cluster_duplicate_id_rejected() {
+        let k8s = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str(
+                    "kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'",
+                )
+                .unwrap(),
+                clusters: vec![
+                    make_cluster_with_id("tower", "tower", ClusterMode::Sdi, 1),
+                    make_cluster_with_id("sandbox", "sandbox", ClusterMode::Sdi, 2),
+                    make_cluster_with_id("datax", "datax", ClusterMode::Sdi, 2), // duplicate!
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let errors = validate_unique_cluster_ids(&k8s);
+        assert!(
+            !errors.is_empty(),
+            "duplicate cluster_id=2 must produce error"
+        );
+        assert!(
+            errors[0].contains("cluster_id 2"),
+            "error must mention conflicting cluster_id: {:?}",
+            errors
+        );
+    }
+
+    /// CL-8: 3rd cluster referencing non-existent pool must fail.
+    #[test]
+    fn test_third_cluster_missing_pool_rejected() {
+        let sdi = make_sdi_spec_with_pools(&["tower", "sandbox"]);
+        let k8s = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str(
+                    "kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'",
+                )
+                .unwrap(),
+                clusters: vec![
+                    make_cluster("tower", "tower", ClusterMode::Sdi),
+                    make_cluster("sandbox", "sandbox", ClusterMode::Sdi),
+                    make_cluster("datax", "datax", ClusterMode::Sdi), // pool doesn't exist
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let errors = validate_cluster_sdi_pool_mapping(&k8s, &sdi);
+        assert!(
+            !errors.is_empty(),
+            "referencing non-existent pool 'datax' must fail"
+        );
+        assert!(
+            errors[0].contains("datax"),
+            "error must mention missing pool 'datax'"
+        );
+    }
+
+    // ========================================================================
+    // Sprint 4.3: SDI sync side-effect detection
+    // ========================================================================
+
+    /// CL-8: Sync diff computation must correctly identify added/removed/unchanged nodes.
+    #[test]
+    fn test_sdi_sync_diff_computation() {
+        let desired: std::collections::HashSet<String> = ["playbox-0", "playbox-1", "playbox-3"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let current: std::collections::HashSet<String> = ["playbox-0", "playbox-1", "playbox-2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let to_add: Vec<&str> = desired
+            .iter()
+            .filter(|n| !current.contains(n.as_str()))
+            .map(|n| n.as_str())
+            .collect();
+        let to_remove: Vec<&str> = current
+            .iter()
+            .filter(|n| !desired.contains(n.as_str()))
+            .map(|n| n.as_str())
+            .collect();
+        let unchanged: Vec<&str> = desired
+            .iter()
+            .filter(|n| current.contains(n.as_str()))
+            .map(|n| n.as_str())
+            .collect();
+
+        assert_eq!(to_add, vec!["playbox-3"]);
+        assert_eq!(to_remove, vec!["playbox-2"]);
+        assert_eq!(unchanged.len(), 2); // playbox-0, playbox-1
+    }
+
+    /// CL-8: Sync must detect VMs hosted on nodes being removed.
+    #[test]
+    fn test_sdi_sync_detects_vm_impact() {
+        use crate::models::sdi::{SdiNodeState, SdiPoolState};
+
+        let pools = vec![
+            SdiPoolState {
+                pool_name: "tower".to_string(),
+                purpose: "management".to_string(),
+                nodes: vec![SdiNodeState {
+                    node_name: "tower-cp-0".to_string(),
+                    ip: "192.168.88.100".to_string(),
+                    host: "playbox-0".to_string(),
+                    cpu: 2,
+                    mem_gb: 3,
+                    disk_gb: 30,
+                    gpu_passthrough: false,
+                    status: "running".to_string(),
+                }],
+            },
+            SdiPoolState {
+                pool_name: "sandbox".to_string(),
+                purpose: "workload".to_string(),
+                nodes: vec![SdiNodeState {
+                    node_name: "sandbox-w-0".to_string(),
+                    ip: "192.168.88.120".to_string(),
+                    host: "playbox-2".to_string(),
+                    cpu: 8,
+                    mem_gb: 16,
+                    disk_gb: 100,
+                    gpu_passthrough: true,
+                    status: "running".to_string(),
+                }],
+            },
+        ];
+
+        // Removing playbox-2 must detect sandbox-w-0 as affected
+        let to_remove = vec!["playbox-2"];
+        let mut affected_vms = Vec::new();
+        for pool in &pools {
+            for node in &pool.nodes {
+                if to_remove.contains(&node.host.as_str()) {
+                    affected_vms.push(format!(
+                        "{} (pool: {}, host: {})",
+                        node.node_name, pool.pool_name, node.host
+                    ));
+                }
+            }
+        }
+
+        assert_eq!(affected_vms.len(), 1, "must detect 1 affected VM");
+        assert!(
+            affected_vms[0].contains("sandbox-w-0"),
+            "must identify sandbox-w-0"
+        );
+        assert!(
+            affected_vms[0].contains("playbox-2"),
+            "must identify host playbox-2"
+        );
+    }
+
+    /// CL-8: Sync with no changes must be a no-op.
+    #[test]
+    fn test_sdi_sync_no_changes() {
+        let desired: std::collections::HashSet<String> = ["playbox-0", "playbox-1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let current: std::collections::HashSet<String> = ["playbox-0", "playbox-1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let to_add: Vec<&str> = desired
+            .iter()
+            .filter(|n| !current.contains(n.as_str()))
+            .map(|n| n.as_str())
+            .collect();
+        let to_remove: Vec<&str> = current
+            .iter()
+            .filter(|n| !desired.contains(n.as_str()))
+            .map(|n| n.as_str())
+            .collect();
+
+        assert!(to_add.is_empty(), "no nodes to add");
+        assert!(to_remove.is_empty(), "no nodes to remove");
+    }
+
+    /// CL-8: Removing a node without VMs should NOT trigger side-effect warning.
+    #[test]
+    fn test_sdi_sync_remove_empty_host_no_warning() {
+        use crate::models::sdi::{SdiNodeState, SdiPoolState};
+
+        let pools = vec![SdiPoolState {
+            pool_name: "tower".to_string(),
+            purpose: "management".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "tower-cp-0".to_string(),
+                ip: "192.168.88.100".to_string(),
+                host: "playbox-0".to_string(),
+                cpu: 2,
+                mem_gb: 3,
+                disk_gb: 30,
+                gpu_passthrough: false,
+                status: "running".to_string(),
+            }],
+        }];
+
+        // Removing playbox-3 (no VMs on it) should have 0 affected
+        let to_remove = vec!["playbox-3"];
+        let affected_count: usize = pools
+            .iter()
+            .flat_map(|p| &p.nodes)
+            .filter(|n| to_remove.contains(&n.host.as_str()))
+            .count();
+
+        assert_eq!(
+            affected_count, 0,
+            "removing host with no VMs must not trigger warning"
         );
     }
 

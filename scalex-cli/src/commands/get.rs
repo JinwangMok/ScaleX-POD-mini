@@ -211,44 +211,43 @@ fn get_clusters(clusters_dir: &std::path::Path) -> anyhow::Result<()> {
 
 fn get_sdi_pools(sdi_dir: &std::path::Path) -> anyhow::Result<()> {
     let state_path = sdi_dir.join("sdi-state.json");
-    if !state_path.exists() {
+    let summary_path = sdi_dir.join("resource-pool-summary.json");
+
+    if state_path.exists() {
+        // VM pools created via `sdi init <spec>`
+        let content = std::fs::read_to_string(&state_path)?;
+        let pools: Vec<SdiPoolState> = serde_json::from_str(&content)?;
+        let rows = sdi_pools_to_rows(&pools);
+
+        if rows.is_empty() {
+            println!("No SDI pools found.");
+            return Ok(());
+        }
+
+        let table = Table::new(&rows).to_string();
+        println!("{}", table);
+    } else if summary_path.exists() {
+        // Bare-metal resource pool via `sdi init` (no spec)
+        let content = std::fs::read_to_string(&summary_path)?;
+        let summary: crate::core::resource_pool::ResourcePoolSummary =
+            serde_json::from_str(&content)?;
+        let rows = resource_pool_to_rows(&summary);
+
+        if rows.is_empty() {
+            println!("No bare-metal resources found.");
+            return Ok(());
+        }
+
+        println!("[Unified Bare-Metal Resource Pool — run `sdi init <spec>` to create VM pools]");
+        let table = Table::new(&rows).to_string();
+        println!("{}", table);
+    } else {
         anyhow::bail!(
-            "SDI state not found at '{}'. Run `scalex sdi init <spec>` first.",
-            state_path.display()
+            "SDI state not found at '{}'. Run `scalex sdi init` first.",
+            sdi_dir.display()
         );
     }
 
-    let content = std::fs::read_to_string(&state_path)?;
-    let pools: Vec<SdiPoolState> = serde_json::from_str(&content)?;
-
-    let mut rows: Vec<SdiPoolRow> = Vec::new();
-    for pool in &pools {
-        for node in &pool.nodes {
-            rows.push(SdiPoolRow {
-                pool: pool.pool_name.clone(),
-                node: node.node_name.clone(),
-                ip: node.ip.clone(),
-                host: node.host.clone(),
-                cpu: node.cpu,
-                mem_gb: node.mem_gb,
-                disk_gb: node.disk_gb,
-                gpu: if node.gpu_passthrough {
-                    "VFIO".to_string()
-                } else {
-                    "-".to_string()
-                },
-                status: node.status.clone(),
-            });
-        }
-    }
-
-    if rows.is_empty() {
-        println!("No SDI pools found.");
-        return Ok(());
-    }
-
-    let table = Table::new(&rows).to_string();
-    println!("{}", table);
     Ok(())
 }
 
@@ -401,8 +400,36 @@ fn facts_to_row(facts: &NodeFacts) -> BaremetalRow {
     }
 }
 
+/// Convert ResourcePoolSummary (bare-metal) to SdiPoolRow list for unified display. Pure function.
+fn resource_pool_to_rows(
+    summary: &crate::core::resource_pool::ResourcePoolSummary,
+) -> Vec<SdiPoolRow> {
+    summary
+        .nodes
+        .iter()
+        .map(|node| SdiPoolRow {
+            pool: "baremetal".to_string(),
+            node: node.node_name.clone(),
+            ip: "-".to_string(),
+            host: node.node_name.clone(),
+            cpu: node.cpu_cores,
+            mem_gb: (node.memory_mb / 1024) as u32,
+            disk_gb: (node.disk_count as u32) * 500, // approximate
+            gpu: if node.gpu_count > 0 {
+                format!("{}x", node.gpu_count)
+            } else {
+                "-".to_string()
+            },
+            status: if node.has_bridge {
+                "ready".to_string()
+            } else {
+                "needs-bridge".to_string()
+            },
+        })
+        .collect()
+}
+
 /// Convert SdiPoolState list to flat row list for display. Pure function.
-#[allow(dead_code)]
 fn sdi_pools_to_rows(pools: &[SdiPoolState]) -> Vec<SdiPoolRow> {
     pools
         .iter()
@@ -731,5 +758,78 @@ dns_domain: "tower.local"
     fn test_extract_cluster_name_from_vars_missing() {
         let content = "kube_version: \"1.33.1\"\n";
         assert_eq!(extract_cluster_name_from_vars(content), None);
+    }
+
+    // ── Sprint 3.2: resource_pool_to_rows tests ──
+
+    #[test]
+    fn test_resource_pool_to_rows_basic() {
+        use crate::core::resource_pool::{NodeResourceSummary, ResourcePoolSummary};
+
+        let summary = ResourcePoolSummary {
+            total_nodes: 2,
+            total_cpu_cores: 24,
+            total_cpu_threads: 48,
+            total_memory_mb: 65536,
+            total_gpu_count: 1,
+            total_disk_count: 4,
+            nodes: vec![
+                NodeResourceSummary {
+                    node_name: "playbox-0".to_string(),
+                    cpu_model: "Intel Xeon".to_string(),
+                    cpu_cores: 8,
+                    cpu_threads: 16,
+                    memory_mb: 32768,
+                    gpu_count: 1,
+                    gpu_models: vec!["RTX 3060".to_string()],
+                    disk_count: 2,
+                    nic_count: 2,
+                    kernel_version: "6.8.0".to_string(),
+                    has_bridge: true,
+                },
+                NodeResourceSummary {
+                    node_name: "playbox-1".to_string(),
+                    cpu_model: "Intel Xeon".to_string(),
+                    cpu_cores: 16,
+                    cpu_threads: 32,
+                    memory_mb: 32768,
+                    gpu_count: 0,
+                    gpu_models: vec![],
+                    disk_count: 2,
+                    nic_count: 1,
+                    kernel_version: "6.8.0".to_string(),
+                    has_bridge: false,
+                },
+            ],
+        };
+
+        let rows = resource_pool_to_rows(&summary);
+        assert_eq!(rows.len(), 2, "must produce 1 row per bare-metal node");
+        assert_eq!(rows[0].pool, "baremetal");
+        assert_eq!(rows[0].node, "playbox-0");
+        assert_eq!(rows[0].cpu, 8);
+        assert_eq!(rows[0].mem_gb, 32); // 32768/1024
+        assert_eq!(rows[0].gpu, "1x");
+        assert_eq!(rows[0].status, "ready"); // has_bridge=true
+        assert_eq!(rows[1].node, "playbox-1");
+        assert_eq!(rows[1].gpu, "-"); // no GPU
+        assert_eq!(rows[1].status, "needs-bridge"); // has_bridge=false
+    }
+
+    #[test]
+    fn test_resource_pool_to_rows_empty() {
+        use crate::core::resource_pool::ResourcePoolSummary;
+
+        let summary = ResourcePoolSummary {
+            total_nodes: 0,
+            total_cpu_cores: 0,
+            total_cpu_threads: 0,
+            total_memory_mb: 0,
+            total_gpu_count: 0,
+            total_disk_count: 0,
+            nodes: vec![],
+        };
+        let rows = resource_pool_to_rows(&summary);
+        assert!(rows.is_empty());
     }
 }
