@@ -6,7 +6,7 @@
 
 ## Current Status (Sprint 11a COMPLETE — 2026-03-11)
 
-- **Tests**: 313 pass / clippy 0 warnings / fmt clean
+- **Tests**: 315 pass / clippy 0 warnings / fmt clean
 - **Code**: ~13,800 lines Rust, 27 source files
 - **GitOps**: 42 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
@@ -307,7 +307,7 @@ _generated/
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| core/validation | 63 | pool mapping, cluster IDs, CIDR, DNS, single-node, baremetal, idempotency, sync wave, AppProject, sdi-init resource pool |
+| core/validation | 65 | pool mapping, cluster IDs, CIDR, DNS, single-node, baremetal, idempotency, sync wave, AppProject, sdi-init resource pool, E2E pipeline, SSH |
 | core/gitops | 39 | ApplicationSet, kustomization, sync waves, Cilium, ClusterMesh, generators |
 | core/kubespray | 32 | inventory (SDI + baremetal), cluster vars, OIDC, Cilium, single-node |
 | commands/status | 21 | platform status reporting |
@@ -324,7 +324,7 @@ _generated/
 | core/resource_pool | 5 | aggregation, table |
 | commands/facts | 4 | facts gathering |
 | core/ssh | 5 | SSH command building, ProxyJump key, reachable_node_ip key |
-| **TOTAL** | **313** | |
+| **TOTAL** | **315** | |
 
 ---
 

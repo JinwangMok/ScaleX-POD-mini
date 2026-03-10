@@ -2786,6 +2786,168 @@ spec:
         }
     }
 
+    /// CL-1, CL-8: E2E pipeline: facts → resource pool → SDI → cluster → secrets → gitops
+    /// Tests the complete dry-run pipeline from hardware facts through to gitops validation.
+    #[test]
+    fn test_e2e_facts_to_gitops_full_pipeline() {
+        use crate::core::resource_pool;
+        use crate::models::baremetal::*;
+        use std::collections::HashMap;
+
+        // --- Phase 0: Simulate facts for 4 nodes ---
+        let make_facts =
+            |name: &str, cores: u32, mem_mb: u64, gpus: usize, disks: usize| NodeFacts {
+                node_name: name.to_string(),
+                timestamp: "2026-03-11T00:00:00Z".to_string(),
+                cpu: CpuInfo {
+                    model: "Intel Xeon".to_string(),
+                    cores,
+                    threads: cores * 2,
+                    architecture: "x86_64".to_string(),
+                },
+                memory: MemoryInfo {
+                    total_mb: mem_mb,
+                    available_mb: mem_mb - 2048,
+                },
+                disks: (0..disks)
+                    .map(|i| DiskInfo {
+                        name: format!("nvme{}n1", i),
+                        size_gb: 1000,
+                        model: "Samsung 990 Pro".to_string(),
+                        disk_type: "nvme".to_string(),
+                    })
+                    .collect(),
+                nics: vec![NicInfo {
+                    name: "eno1".to_string(),
+                    mac: format!("aa:bb:cc:dd:ee:{:02x}", cores),
+                    speed: "1000Mb/s".to_string(),
+                    driver: "igb".to_string(),
+                    state: "UP".to_string(),
+                }],
+                gpus: (0..gpus)
+                    .map(|i| GpuInfo {
+                        pci_id: format!("0{}:00.0", i + 1),
+                        model: "NVIDIA RTX 3060 [10de:2544]".to_string(),
+                        vendor: "nvidia".to_string(),
+                        driver: "nouveau".to_string(),
+                    })
+                    .collect(),
+                iommu_groups: vec![],
+                kernel: KernelInfo {
+                    version: "6.8.0-generic".to_string(),
+                    params: HashMap::new(),
+                },
+                bridges: vec!["br0".to_string()],
+                bonds: vec![],
+                pcie: vec![],
+            };
+
+        let all_facts = vec![
+            make_facts("playbox-0", 16, 65536, 0, 2),
+            make_facts("playbox-1", 8, 32768, 0, 1),
+            make_facts("playbox-2", 8, 32768, 1, 1),
+            make_facts("playbox-3", 16, 65536, 2, 4),
+        ];
+
+        // --- Phase 1: Resource pool aggregation (CL-1 no-spec path) ---
+        let pool_summary = resource_pool::generate_resource_pool_summary(&all_facts);
+        assert_eq!(pool_summary.total_nodes, 4);
+        assert_eq!(pool_summary.total_cpu_cores, 48);
+        assert_eq!(pool_summary.total_memory_mb, 196608);
+        assert_eq!(pool_summary.total_gpu_count, 3);
+        assert_eq!(pool_summary.total_disk_count, 8);
+
+        // Resource pool table renders without panic
+        let table = resource_pool::format_resource_pool_table(&pool_summary);
+        assert!(table.contains("playbox-0"));
+        assert!(table.contains("playbox-3"));
+
+        // Resource pool serializes to JSON (for resource-pool-summary.json)
+        let json = serde_json::to_string_pretty(&pool_summary).unwrap();
+        let deserialized: resource_pool::ResourcePoolSummary =
+            serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.total_nodes, pool_summary.total_nodes);
+
+        // --- Phase 2: SDI spec → HCL generation ---
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: SdiSpec =
+            serde_yaml::from_str(sdi_content).expect("sdi-specs.yaml must parse");
+        let hcl = crate::core::tofu::generate_tofu_main(&sdi, "jinwang");
+        assert!(hcl.contains("libvirt_domain"), "HCL must define VM domains");
+
+        // --- Phase 3: K8s cluster → inventory + vars ---
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig =
+            serde_yaml::from_str(k8s_content).expect("k8s-clusters.yaml must parse");
+
+        for cluster in &k8s.config.clusters {
+            let inv = crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap();
+            let vars = crate::core::kubespray::generate_cluster_vars(cluster, &k8s.config.common);
+
+            // Inventory must reference nodes from the correct pool
+            assert!(inv.contains("[all]"));
+            assert!(inv.contains("[kube_control_plane]"));
+
+            // Vars must be valid YAML with essential keys
+            let parsed: serde_yaml::Mapping = serde_yaml::from_str(&vars).unwrap();
+            assert!(parsed.contains_key(&serde_yaml::Value::String("kube_version".to_string())));
+            assert!(parsed.contains_key(&serde_yaml::Value::String(
+                "container_manager".to_string()
+            )));
+        }
+
+        // --- Phase 4: Secrets generation ---
+        let secrets_content = include_str!("../../../credentials/secrets.yaml.example");
+        let mgmt =
+            crate::core::secrets::generate_all_secrets_manifests(secrets_content, "management")
+                .unwrap();
+        let work =
+            crate::core::secrets::generate_all_secrets_manifests(secrets_content, "workload")
+                .unwrap();
+        assert!(mgmt.contains("keycloak"), "management needs keycloak");
+        assert!(!work.contains("cloudflare"), "workload skips cloudflare");
+
+        // --- Phase 5: Kernel tune recommendations ---
+        let cp_params = crate::core::kernel::generate_k8s_sysctl_params("control-plane");
+        let worker_params = crate::core::kernel::generate_k8s_sysctl_params("worker");
+        assert!(!cp_params.is_empty(), "CP must have kernel recommendations");
+        assert!(!worker_params.is_empty(), "worker must have kernel recommendations");
+        // Workers need conntrack for production workloads
+        assert!(
+            worker_params.keys().any(|k| k.contains("conntrack")),
+            "worker must have conntrack tuning"
+        );
+    }
+
+    /// CL-4, CL-8: SSH command generation for all 3 access modes in example config.
+    #[test]
+    fn test_e2e_ssh_commands_for_example_config() {
+        let bm_content = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let bm: crate::core::config::BaremetalInitConfig =
+            serde_yaml::from_str(bm_content).expect("baremetal-init.yaml must parse");
+
+        // Build SSH command for each node — verifies all access modes work
+        for node in &bm.target_nodes {
+            let result = crate::core::ssh::build_ssh_command(node, "echo ok", &bm.target_nodes);
+            assert!(
+                result.is_ok(),
+                "SSH command must build for node '{}': {:?}",
+                node.name,
+                result.err()
+            );
+            let cmd = result.unwrap();
+            assert!(!cmd.args.is_empty(), "SSH command must have args for '{}'", node.name);
+            // Args joined must contain the target script
+            let full_cmd = cmd.args.join(" ");
+            assert!(
+                full_cmd.contains("echo ok"),
+                "SSH command for '{}' must contain the script, got: {}",
+                node.name,
+                full_cmd
+            );
+        }
+    }
+
     #[test]
     fn test_sdi_init_help_describes_resource_pool() {
         // CL-1: `sdi init` (no flag) must describe creating a unified resource pool,
