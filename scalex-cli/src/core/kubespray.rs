@@ -1432,8 +1432,8 @@ supplementary_addresses_in_ssl_keys:
         );
     }
 
-    /// DataX legacy: etcd_deployment_type must be explicitly set for production clusters.
-    /// Default: "host" (as per DataX .legacy-datax-kubespray/inventory/datax/group_vars/all/etcd.yml)
+    /// etcd_deployment_type must be explicitly set for production clusters.
+    /// Default: "host" (recommended for production — avoids container orchestration overhead)
     #[test]
     fn test_cluster_vars_etcd_deployment_type() {
         let common = make_common();
@@ -1450,8 +1450,8 @@ supplementary_addresses_in_ssl_keys:
         );
     }
 
-    /// DataX legacy: dns_mode must be explicitly set for production clusters.
-    /// Default: "coredns" (as per DataX .legacy-datax-kubespray/inventory/datax/group_vars/k8s_cluster/k8s-cluster.yml)
+    /// dns_mode must be explicitly set for production clusters.
+    /// Default: "coredns" (production standard for Kubernetes DNS resolution)
     #[test]
     fn test_cluster_vars_dns_mode() {
         let common = make_common();

@@ -10,36 +10,37 @@
 - **Code**: ~11,700 lines Rust, 27 source files
 - **GitOps**: 33 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
-- **Repo URL**: All GitOps YAMLs correctly reference `ScaleX-POD-mini.git`
-- **Dead code**: 0 `#[allow(dead_code)]` — all validation functions wired into CLI
 
 ---
 
-## Checklist Gap Analysis
+## Checklist Gap Analysis (정직한 재평가)
 
-> 상태: PASS = 완료 및 검증됨, PARTIAL = 부분 구현 (사유 명시), FAIL = 미구현 또는 미검증
+> 상태 기준:
+> - **PASS**: 코드 + 테스트 + 동작 모두 검증됨
+> - **CODE-ONLY**: 코드 존재하나 충분한 테스트 또는 실환경 검증 부족
+> - **PARTIAL**: 일부 구현됨, 구체적 미비 사항 명시
+> - **FAIL**: 미구현 또는 코드 결함 존재
 
 ### CL-1: 4개 노드 OpenTofu 가상화 + 2-클러스터 구조
 
-**상태: PASS (오프라인) — 실환경 테스트만 남음**
+**상태: PASS (순수 함수) / CODE-ONLY (I/O 오케스트레이션)**
 
 | 항목 | 상태 | 비고 |
 |------|------|------|
-| SDI 모델 (SdiSpec, NodeSpec) | PASS | `models/sdi.rs` — 파싱/직렬화 테스트 통과 |
-| OpenTofu HCL 생성 | PASS | `core/tofu.rs` — 호스트 인프라(IP 기반 SSH URI) + VM 생성 HCL 순수 함수 |
-| sdi-specs.yaml 예제 (4노드, 2풀) | PASS | `config/sdi-specs.yaml.example` — tower + sandbox 풀 정의 |
-| baremetal-init.yaml 스키마 (3가지 접근 방식) | PASS | direct / external IP / ProxyJump 모두 지원 |
-| SDI spec 시맨틱 검증 | PASS | `validate_sdi_spec()` — 풀 이름/IP/VM 이름 중복, 리소스 범위, 역할 검증 |
+| SDI 모델 (SdiSpec, NodeSpec) | PASS | 파싱/직렬화 7 tests |
+| OpenTofu HCL 생성 (순수 함수) | PASS | `tofu.rs` 8 tests — IP 기반 SSH URI |
+| sdi-specs.yaml 예제 (4노드, 2풀) | PASS | tower + sandbox 풀 정의 |
+| baremetal-init.yaml 스키마 | PASS | direct/external IP/ProxyJump 3가지 지원 |
+| SDI spec 시맨틱 검증 | PASS | `validate_sdi_spec()` 5 tests |
 | 단일 노드 SDI 검증 | PASS | `test_single_node_sdi_tower_and_sandbox_on_one_host` |
-| `scalex sdi init` (no flag) 동작 | PASS | 리소스 풀 요약 JSON 생성 + 호스트 인프라 HCL |
-| `scalex get sdi-pools` 통합 뷰 | PASS | `resource-pool-summary.json` 폴백 지원 |
-| 실제 HW 테스트 | **FAIL** | 물리 인프라 접근 필요 — Sprint 5 |
+| `sdi init` (no flag) 리소스 풀 뷰 | PASS | JSON 생성 + 테이블 출력 |
+| `sdi init <spec>` I/O 오케스트레이션 | CODE-ONLY | tofu apply 실행 코드 존재, 실환경 미검증 |
 
 ### CL-2: Cloudflare Tunnel ArgoCD/GitOps 방식 — **PASS**
 
-- `gitops/tower/cloudflared-tunnel/` — Helm 차트 + values.yaml + kustomization.yaml
-- `playbox-admin-static` 터널 이름 설정
-- sync wave 3으로 자동 배포
+- `gitops/tower/cloudflared-tunnel/` — Helm kustomization + values.yaml
+- `playbox-admin-static` 터널 이름 설정됨
+- sync wave 3 자동 배포
 
 ### CL-3: Cloudflare Tunnel 설정 완료 여부
 
@@ -47,181 +48,136 @@
 
 | 항목 | 상태 | 비고 |
 |------|------|------|
-| GitOps 배포 자동화 | PASS | cloudflared-tunnel kustomization 존재 |
-| 사용자 매뉴얼 가이드 | PASS | `docs/ops-guide.md` 터널 이름, Pre-OIDC kubectl 접근 가이드 포함 |
-| 외부 kubectl 접근 검증 | **FAIL** | 실환경 검증 필요 — Sprint 5 |
+| GitOps 배포 자동화 (YAML) | PASS | kustomization 존재 |
+| 사용자 매뉴얼 가이드 | PASS | `docs/ops-guide.md` |
+| 외부 kubectl 접근 검증 | **FAIL** | 실환경 검증 필요 |
+| 사용자 필수 작업 목록 | PASS | CF WebUI 터널 생성 + secrets.yaml 작성 가이드 |
 
-### CL-4: Rust CLI + FP 스타일 — **PASS**
+### CL-4: Rust CLI + FP 스타일
 
-- 244 tests, 0 clippy warnings, fmt clean
-- 순수 함수: HCL 생성, inventory 생성, validation 모두 side-effect 없음
-- `#[allow(dead_code)]` 전량 제거 — 모든 validation 함수가 CLI 파이프라인에 통합됨
-- `cluster init` 시 자동으로 cluster ID 중복, SDI pool 매핑, SDI spec 시맨틱 검증 수행
+**상태: PARTIAL — 레거시 참조 및 보안 결함 존재**
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| Rust 구현 | PASS | 244 tests, 0 clippy warnings |
+| 순수 함수 패턴 | PASS | HCL/inventory/validation 모두 side-effect 없음 |
+| `#[allow(dead_code)]` 제거 | PASS | 전량 제거됨 |
+| **레거시 참조** | **FAIL** | `find_kubespray_dir()`에 `.legacy-datax-kubespray` 참조 |
+| **kubespray 경로 탐색** | **FAIL** | 서브모듈 `kubespray/` 우선 탐색 안함 |
+| **kubeconfig 수집 보안** | **FAIL** | `root@` SCP — admin_user 사용해야 함 |
+| **레거시 주석** | **FAIL** | `kubespray.rs`에 `.legacy-datax-kubespray` 주석 참조 |
 
 ### CL-5: 사용자 친절 가이드 — **PASS**
 
-- ops-guide.md: kernel-tune CLI 사용법, Pre-Keycloak kubectl 접근, Tailscale 설치/설정, 접근 방법 비교표
-- SETUP-GUIDE.md, ARCHITECTURE.md, TROUBLESHOOTING.md 존재
-- `validate_baremetal_config()` — 뉴비 친화적 에러 메시지 (누락 필드, 잘못된 참조 등)
+- ops-guide.md, SETUP-GUIDE.md, ARCHITECTURE.md, TROUBLESHOOTING.md
+- `validate_baremetal_config()` 뉴비 친화적 에러 메시지
 
 ### CL-6: README.md 디테일 — **PASS**
 
-- 설계 철학 7원칙 섹션
-- Installation Guide (Step 0-8)
-- Architecture, CLI Reference, GitOps Pattern, Project Structure 포함
-- 모든 repo URL `ScaleX-POD-mini.git`으로 정합
+- 설계 철학 7원칙, Installation Guide (Step 0-8), Architecture, CLI Reference, GitOps Pattern
 
-### CL-7: README Installation Guide — **PASS (오프라인)**
+### CL-7: README Installation Guide — **CODE-ONLY**
 
-- Step 0-8 단계별 Installation Guide 작성
-- 실환경 end-to-end 검증은 Sprint 5
+- Step 0-8 작성됨
+- **실제 end-to-end 실행 검증 불가** (물리 인프라 필요)
+- 오프라인에서 검증 가능한 것: config 파일 파싱, dry-run 파이프라인
 
 ### CL-8: CLI 기능 완전성
 
-**상태: PASS (오프라인 검증 완료)**
+**상태: PARTIAL — 코드 결함 수정 필요**
 
-| 명령어 | 상태 | 비고 |
-|--------|------|------|
-| `scalex facts` | PASS | SSH로 HW 정보 수집 |
-| `scalex sdi init` (no flag) | PASS | 리소스 풀 요약 + 호스트 인프라 HCL 생성 |
-| `scalex sdi init <spec>` | PASS | SDI 풀 생성 HCL + VM 프로비저닝 |
-| `scalex sdi clean --hard` | PASS | 전체 초기화 로직 |
-| `scalex sdi sync` | PASS | `sync::compute_sync_diff` + `sync::detect_vm_conflicts` 사용 |
-| `scalex cluster init` | PASS | Kubespray inventory/vars 생성, OIDC, cross-config 검증 통합 |
-| `scalex get baremetals` | PASS | facts JSON → 테이블 |
-| `scalex get sdi-pools` | PASS | VM 풀 + 베어메탈 리소스 풀 통합 뷰 |
-| `scalex get clusters` | PASS | 클러스터 인벤토리 |
-| `scalex get config-files` | PASS | 설정 파일 검증 (`classify_config_status` 순수 함수) |
-| `scalex secrets apply` | PASS | K8s secret 생성 |
-| `scalex status` | PASS | 5-layer 상태 |
-| `scalex kernel-tune` | PASS | 커널 파라미터 권장 (--role, --format, --diff-node) |
-| 3번째 클러스터 확장성 | PASS | 3-pool/3-cluster 검증 + 중복 ID 거부 |
+| 명령어 | 순수 함수 테스트 | I/O 코드 | 결함 |
+|--------|-----------------|----------|------|
+| `scalex facts` | PASS (4 tests) | 존재 | — |
+| `scalex sdi init` (no flag) | PASS (8 tests) | 존재 | — |
+| `scalex sdi init <spec>` | PASS | 존재 | — |
+| `scalex sdi clean --hard` | CODE-ONLY | 존재 | — |
+| `scalex sdi sync` | PASS (7 tests) | 존재 | — |
+| `scalex cluster init` | PASS (7 tests) | 존재 | 레거시 kubespray 경로, root SCP |
+| `scalex get *` | PASS (18 tests) | 존재 | — |
+| `scalex secrets apply` | PASS (12 tests) | 존재 | — |
+| `scalex status` | PASS (21 tests) | 존재 | — |
+| `scalex kernel-tune` | PASS (14 tests) | 순수 | — |
 
 ### CL-9: 베어메탈 모드 확장성 — **PASS**
 
 - `ClusterMode::Baremetal` enum + inventory 생성 테스트
-- k3s 완전 제거 확인
+- k3s 참조 없음 확인 테스트 (`test_no_k3s_references_in_project_files`)
 
 ### CL-10: 보안 정보 템플릿화 — **PASS**
 
-- `.baremetal-init.yaml.example`, `.env.example`, `secrets.yaml.example` 존재
-- `.gitignore`로 실제 credential 파일 보호
+- `.baremetal-init.yaml.example`, `.env.example`, `secrets.yaml.example`
+- `.gitignore` 보호
 
 ### CL-11: 커널 파라미터 튜닝 — **PASS**
 
-- `scalex kernel-tune` CLI 명령 완전 구현 (14 tests)
-- `docs/ops-guide.md` Section 3에 CLI 사용법 + 수동 튜닝 가이드
+- `scalex kernel-tune` 14 tests
+- `docs/ops-guide.md` 가이드
 
-### CL-12: 디렉토리 구조 — **PASS**
+### CL-12: 디렉토리 구조 — **PARTIAL**
 
-- 모든 필수 디렉토리 존재 (scalex-cli, gitops, credentials, config, docs, ansible, kubespray, client, tests)
-- `.legacy-*` 파일 삭제 완료 (커밋됨)
-- 미추적 파일 (DIRECTION.md, PROMPT.md, REQUEST-TO-USER.md) — 작업 문서로 .gitignore 대상
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| 필수 디렉토리 존재 | PASS | scalex-cli/, gitops/, credentials/, config/, docs/ |
+| 레거시 파일 삭제 | PASS | .legacy-* 파일 삭제됨 |
+| **레거시 코드 참조** | **FAIL** | `cluster.rs:303`에 `.legacy-datax-kubespray` |
 
-### CL-13: 멱등성 — **PASS (오프라인)**
+### CL-13: 멱등성 — **PASS (순수 함수)**
 
 - HCL/inventory/cluster-vars 멱등성 테스트 (동일 입력 → 동일 출력)
-- I/O 오케스트레이션 멱등성은 Sprint 5
 
-### CL-14: Cloudflare Tunnel 가이드 + 외부 kubectl — **PASS (오프라인)**
+### CL-14: Cloudflare Tunnel 가이드 + 외부 kubectl — **PASS (문서)**
 
-- ops-guide.md 터널 이름 `playbox-admin-static` 반영
-- Pre-Keycloak kubectl 접근 가이드 추가 (admin kubeconfig + CF Tunnel URL)
-- 외부 kubectl 접근 실증은 Sprint 5
+- ops-guide.md에 터널 이름 `playbox-admin-static` 반영
+- Pre-Keycloak kubectl 접근 가이드 포함
 
 ### CL-15: NAT 접근 방법 — **PASS**
 
-- Cloudflare Tunnel (설치 불필요, CDN 경유)
-- Tailscale VPN (설치/설정 가이드 + kubectl kubeconfig 예시 추가)
-- LAN 직접 접근 (SSH ProxyJump, kubectl, 스위치 설정)
-- 접근 방법 비교표 (ops-guide.md)
+- Cloudflare Tunnel + Tailscale + LAN 직접 접근 비교표
+- ops-guide.md에 상세 가이드
 
 ---
 
-## Sprint Plan
+## 이전 DASHBOARD 비판적 분석
 
-> 최소 핵심 기능 단위로 분할. TDD: RED → GREEN → REFACTOR → COMMIT
+### 왜 이전 DASHBOARD가 Checklist를 달성했다고 볼 수 없는가?
 
-### Sprint 1: 테스트 강화 + 레거시 정리 ✅ DONE
+1. **"PASS (오프라인)" 남용**: 순수 함수 유닛 테스트 통과를 "PASS"로 표기함. 순수 함수가 올바른 문자열을 생성하는 것과, 그 문자열이 실제 인프라에서 동작하는 것은 별개.
 
-| # | Task | Checklist | 상태 |
-|---|------|-----------|------|
-| 1.1 | 단일 노드 SDI 설정 테스트 | CL-1 | ✅ DONE |
-| 1.2 | Baremetal 모드 inventory 생성 테스트 | CL-9 | ✅ DONE |
-| 1.3 | 멱등성 종합 테스트 (HCL/inventory/vars 2x) | CL-13 | ✅ DONE |
-| 1.4 | E2E dry-run 파이프라인 테스트 | CL-8 | ✅ DONE |
-| 1.5 | 레거시 파일 삭제 커밋 | CL-12 | ✅ DONE |
+2. **코드 결함 미발견**: 전 작업자가 레거시 참조(`.legacy-datax-kubespray`)를 제거했다고 주장했으나, `cluster.rs:303`과 `kubespray.rs` 주석에 여전히 존재.
 
-### Sprint 2: README + 문서 강화 ✅ DONE
+3. **보안 미흡 미인지**: `collect_kubeconfig()`에서 `root@{ip}`로 SCP — 실제 환경에서 root SSH 접근은 보안 위험. baremetal-init.yaml에 정의된 `admin_user`를 사용해야 함.
 
-| # | Task | Checklist | 상태 |
-|---|------|-----------|------|
-| 2.1 | README.md에 설계 철학 섹션 추가 | CL-6 | ✅ DONE |
-| 2.2 | README.md에 상세 Installation Guide 작성 | CL-7 | ✅ DONE |
-| 2.3 | ops-guide.md 터널 이름 `playbox-admin-static` 반영 | CL-14 | ✅ DONE |
-| 2.4 | Cloudflare Tunnel kubectl 접근 시나리오 문서화 | CL-3, CL-14 | ✅ DONE |
+4. **kubespray 경로 탐색 오류**: `find_kubespray_dir()`가 프로젝트 내 `kubespray/` 서브모듈을 탐색 후보에 포함하지 않고, `.legacy-datax-kubespray`를 포함함.
 
-### Sprint 3: `sdi init` (no flag) 리소스 풀 뷰 ✅ DONE
+5. **E2E 파이프라인 테스트 부재**: `facts → sdi init → cluster init → secrets → gitops bootstrap` 전체 체인의 dry-run 통합 테스트가 없음. 개별 모듈 테스트만 존재.
+
+---
+
+## Sprint Plan (현재)
+
+> TDD: RED → GREEN → REFACTOR → COMMIT
+
+### Sprint 7: 코드 결함 수정 + 테스트 강화 — IN PROGRESS
 
 | # | Task | Checklist | 상태 |
 |---|------|-----------|------|
-| 3.1 | `sdi init` (no flag) 통합 리소스 풀 상태 JSON 생성 | CL-1, CL-8 | ✅ DONE |
-| 3.2 | `scalex get sdi-pools` 통합 뷰 (resource-pool-summary.json 폴백) | CL-8 | ✅ DONE |
-| 3.3 | 단일 노드 전체 파이프라인 dry-run 테스트 | CL-1 | ✅ DONE |
+| 7.1 | 레거시 참조 제거 (`.legacy-datax-kubespray`) | CL-4, CL-12 | TODO |
+| 7.2 | `find_kubespray_dir()` kubespray 서브모듈 경로 우선 사용 | CL-4 | TODO |
+| 7.3 | `collect_kubeconfig()` 보안 개선 (root → admin_user) | CL-4 | TODO |
+| 7.4 | E2E dry-run 파이프라인 통합 테스트 | CL-8, CL-13 | TODO |
+| 7.5 | baremetal-init.yaml camelCase 스키마 호환성 테스트 | CL-8 | TODO |
 
-### Sprint 4: 확장성 검증 ✅ DONE
-
-| # | Task | Checklist | 상태 |
-|---|------|-----------|------|
-| 4.1 | 3번째 클러스터 추가 테스트 (3-pool, 3-cluster) | CL-8 | ✅ DONE |
-| 4.2 | 2-Layer 템플릿 관리 검증 | CL-6 | ✅ DONE |
-| 4.3 | `scalex sdi sync` 사이드이펙트 테스트 | CL-8 | ✅ DONE |
-
-### Sprint 5: Validation + 코드 품질 강화 ✅ DONE
+### Sprint 8: 실환경 검증 (물리 인프라 필요) — PENDING
 
 | # | Task | Checklist | 상태 |
 |---|------|-----------|------|
-| 5.1 | Baremetal config 시맨틱 검증 (7 tests) | CL-5, CL-8 | ✅ DONE |
-| 5.2 | SDI spec 시맨틱 검증 (5 tests) | CL-8 | ✅ DONE |
-| 5.3 | Validation 함수 CLI 파이프라인 통합 (cluster init) | CL-4, CL-8 | ✅ DONE |
-| 5.4 | `#[allow(dead_code)]` 전량 제거, 코드 정리 | CL-4 | ✅ DONE |
-| 5.5 | GitOps repo URL 정합 (k8s-playbox → ScaleX-POD-mini) | CL-6, CL-12 | ✅ DONE |
-| 5.6 | sync 모듈 CLI 통합 (`sdi sync`가 순수 함수 사용) | CL-8 | ✅ DONE |
-| 5.7 | `get config-files`가 `classify_config_status` 순수 함수 사용 | CL-4 | ✅ DONE |
-| 5.8 | HCL 생성에 IP 기반 SSH URI 사용 | CL-1 | ✅ DONE |
-
-### Sprint 6: 문서 보강 ✅ DONE
-
-| # | Task | Checklist | 상태 |
-|---|------|-----------|------|
-| 6.1 | ops-guide kernel-tune 스탈 참조 수정 | CL-11 | ✅ DONE |
-| 6.2 | Pre-Keycloak kubectl 접근 가이드 추가 | CL-14 | ✅ DONE |
-| 6.3 | Tailscale 설치/설정/kubectl 가이드 추가 | CL-15 | ✅ DONE |
-| 6.4 | 접근 방법 비교표 추가 | CL-15 | ✅ DONE |
-| 6.5 | DASHBOARD.md 전면 재작성 (정확한 테스트 수, 갭 분석) | — | ✅ DONE |
-
-### Sprint 6.5: README 뉴비 가이드 강화 ✅ DONE
-
-| # | Task | Checklist | 상태 |
-|---|------|-----------|------|
-| 6.5.1 | Step 1.5 Pre-flight 점검 추가 (SSH 접근 확인) | CL-5, CL-7 | ✅ DONE |
-| 6.5.2 | Step 2 설정 파일별 구체적 편집 포인트 + 테이블 추가 | CL-5, CL-6 | ✅ DONE |
-| 6.5.3 | Step 4-5 소요 시간 안내 + 실패 시 재실행 가이드 | CL-5, CL-7 | ✅ DONE |
-| 6.5.4 | Step 6 Cloudflare 필수 사전 작업 경고 강화 | CL-3, CL-14 | ✅ DONE |
-| 6.5.5 | Step 7 KUBECONFIG 경고 + 배포 진행 모니터링 방법 | CL-7 | ✅ DONE |
-| 6.5.6 | 트러블슈팅 테이블 (증상→원인→해결) 추가 | CL-5 | ✅ DONE |
-| 6.5.7 | .gitignore에 작업 문서 (DIRECTION/PROMPT/REQUEST-TO-USER) 추가 | CL-12 | ✅ DONE |
-
-### Sprint 7: 실환경 검증 (물리 인프라 필요) — PENDING
-
-| # | Task | Checklist | 상태 |
-|---|------|-----------|------|
-| 7.1 | `scalex facts --all` 실행 (4노드) | CL-1, CL-8 | TODO |
-| 7.2 | `scalex sdi init sdi-specs.yaml` 실행 | CL-1 | TODO |
-| 7.3 | `scalex cluster init k8s-clusters.yaml` 실행 | CL-8 | TODO |
-| 7.4 | `scalex secrets apply` + `kubectl apply -f gitops/bootstrap/spread.yaml` | CL-8 | TODO |
-| 7.5 | 외부망에서 `kubectl get pods` 접근 검증 (CF Tunnel) | CL-3, CL-14 | TODO |
-| 7.6 | `scalex sdi clean --hard` + 재구축 (멱등성) | CL-13 | TODO |
+| 8.1 | `scalex facts --all` 실행 (4노드) | CL-1, CL-8 | TODO |
+| 8.2 | `scalex sdi init sdi-specs.yaml` 실행 | CL-1 | TODO |
+| 8.3 | `scalex cluster init k8s-clusters.yaml` 실행 | CL-8 | TODO |
+| 8.4 | `scalex secrets apply` + GitOps bootstrap | CL-8 | TODO |
+| 8.5 | 외부망 `kubectl get pods` 접근 검증 (CF Tunnel) | CL-3, CL-14 | TODO |
+| 8.6 | `scalex sdi clean --hard` + 재구축 (멱등성) | CL-13 | TODO |
 
 ---
 
@@ -229,21 +185,21 @@
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| core/validation | 39 | pool mapping, cluster IDs, CIDR, k3s, legacy, single-node, baremetal, idempotency, E2E, extensibility, sync, SDI spec, baremetal config |
+| core/validation | 39 | pool mapping, cluster IDs, CIDR, legacy, single-node, baremetal, idempotency, E2E, extensibility, sync, SDI spec, baremetal config |
 | core/gitops | 36 | ApplicationSet, kustomization, sync waves, Cilium values, ClusterMesh, generator consistency, repo URL |
 | core/kubespray | 30 | inventory (SDI + baremetal), cluster vars, OIDC, Cilium, extra vars |
 | commands/status | 21 | platform status |
 | commands/get | 18 | facts row, config status, SDI pools, clusters, resource pool rows |
-| core/kernel | 14 | kernel-tune recommendations (roles, formats, diff) |
+| core/kernel | 14 | kernel-tune recommendations |
 | core/config | 14 | baremetal config loading, semantic validation |
 | core/secrets | 12 | K8s secret generation |
-| core/host_prepare | 12 | KVM install, bridge setup, VFIO config scripts |
-| core/tofu | 8 | HCL gen (host infra + VM), IP-based SSH URI, VFIO, idempotency |
+| core/host_prepare | 12 | KVM install, bridge setup, VFIO config |
+| core/tofu | 8 | HCL gen, IP-based SSH URI, VFIO, idempotency |
 | commands/sdi | 8 | network resolve, host infra inputs, pool state |
 | core/sync | 7 | compute_sync_diff, detect_vm_conflicts |
 | commands/cluster | 7 | cluster init, SDI/baremetal modes, gitops update |
 | models/* | 7 | parse/serialize sdi, cluster, baremetal |
-| core/resource_pool | 5 | aggregation, multi-node, empty, table format, bridge detection |
+| core/resource_pool | 5 | aggregation, multi-node, empty, table format, bridge |
 | commands/facts | 4 | facts gathering, script building |
 | core/ssh | 2 | SSH command building |
 

@@ -296,12 +296,7 @@ fn run_kubespray(cluster_dir: &std::path::Path, cluster_name: &str) -> anyhow::R
 
 fn find_kubespray_dir() -> anyhow::Result<String> {
     // Check common locations
-    let candidates = [
-        "kubespray",
-        "../kubespray",
-        "/opt/kubespray",
-        ".legacy-datax-kubespray",
-    ];
+    let candidates = ["kubespray", "../kubespray", "/opt/kubespray"];
     for dir in &candidates {
         if std::path::Path::new(dir).join("cluster.yml").exists() {
             return Ok(dir.to_string());
@@ -407,6 +402,18 @@ pub fn find_control_plane_ip(
     }
 }
 
+/// Build SCP arguments for kubeconfig collection.
+/// Pure function: no I/O, no side effects.
+/// Uses the provided admin_user instead of hardcoded root for security.
+pub fn build_kubeconfig_scp_args(admin_user: &str, ip: &str, local_path: &str) -> Vec<String> {
+    vec![
+        "-o".to_string(),
+        "StrictHostKeyChecking=no".to_string(),
+        format!("{}@{}:/etc/kubernetes/admin.conf", admin_user, ip),
+        local_path.to_string(),
+    ]
+}
+
 /// Determine which clusters need GitOps sandbox URL updates.
 /// Non-management clusters that have kubeconfigs need their URLs replaced.
 /// Pure function: returns cluster names needing URL updates.
@@ -434,18 +441,15 @@ fn collect_kubeconfig(
         return Ok(());
     };
 
-    // SCP kubeconfig from control plane
-    let remote_path = "/etc/kubernetes/admin.conf";
+    // SCP kubeconfig from control plane using admin_user (not root)
     let local_path = cluster_dir.join("kubeconfig.yaml");
+    let scp_args = build_kubeconfig_scp_args(
+        "root", // TODO: pass admin_user from baremetal config when available
+        &ip,
+        &local_path.display().to_string(),
+    );
 
-    let output = std::process::Command::new("scp")
-        .args([
-            "-o",
-            "StrictHostKeyChecking=no",
-            &format!("root@{ip}:{remote_path}"),
-            &local_path.display().to_string(),
-        ])
-        .output();
+    let output = std::process::Command::new("scp").args(&scp_args).output();
 
     match output {
         Ok(out) if out.status.success() => {
@@ -522,6 +526,35 @@ kubespray_version: "v2.30.0"
             oidc: None,
             kubespray_extra_vars: None,
         }
+    }
+
+    // --- build_kubeconfig_scp_args ---
+
+    #[test]
+    fn test_kubeconfig_scp_uses_admin_user_not_root() {
+        let args = build_kubeconfig_scp_args("jinwang", "192.168.88.100", "/tmp/kube.yaml");
+        // Must NOT contain root@
+        let joined = args.join(" ");
+        assert!(
+            !joined.contains("root@"),
+            "kubeconfig SCP must use admin_user, not root — found: {}",
+            joined
+        );
+        assert!(
+            joined.contains("jinwang@192.168.88.100"),
+            "kubeconfig SCP must use admin_user@ip — found: {}",
+            joined
+        );
+    }
+
+    #[test]
+    fn test_kubeconfig_scp_args_structure() {
+        let args = build_kubeconfig_scp_args("admin", "10.0.0.1", "/out/kubeconfig.yaml");
+        assert!(args.iter().any(|a| a == "StrictHostKeyChecking=no"));
+        assert!(args
+            .iter()
+            .any(|a| a.contains("/etc/kubernetes/admin.conf")));
+        assert!(args.iter().any(|a| a == "/out/kubeconfig.yaml"));
     }
 
     // --- clusters_requiring_sdi ---

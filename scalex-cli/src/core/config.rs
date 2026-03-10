@@ -453,6 +453,64 @@ targetNodes:
             .any(|e| e.contains("nonexistent") && e.contains("not in targetNodes")));
     }
 
+    /// Parse the EXACT YAML format from the user's Checklist (CL-8).
+    /// All 3 access modes: direct, external IP (Tailscale), ProxyJump.
+    /// Includes sshKeyPathOfReachableNode which is the rarest field.
+    #[test]
+    fn test_parse_checklist_yaml_all_three_access_modes() {
+        let yaml = r#"
+targetNodes:
+  - name: "playbox-0"
+    direct_reachable: true
+    node_ip: "192.168.88.8"
+    adminUser: "jinwang"
+    sshAuthMode: "password"
+    sshPassword: "PLAYBOX_0_PASSWORD"
+    sshKeyPath: "EXAMPLE_SSH_KEY_PATH"
+  - name: "playbox-0-ts"
+    direct_reachable: false
+    reachable_node_ip: "100.64.0.1"
+    node_ip: "192.168.88.8"
+    adminUser: "jinwang"
+    sshAuthMode: "password"
+    sshPassword: "PLAYBOX_0_PASSWORD"
+    sshKeyPath: "EXAMPLE_SSH_KEY_PATH"
+  - name: "playbox-1"
+    direct_reachable: false
+    reachable_via: ["playbox-0"]
+    node_ip: "192.168.88.9"
+    adminUser: "jinwang"
+    sshAuthMode: "key"
+    sshKeyPathOfReachableNode: "EXAMPLE_SSH_KEY_PATH"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.target_nodes.len(), 3);
+
+        // Case 1: direct reachable
+        let case1 = &config.target_nodes[0];
+        assert!(case1.direct_reachable);
+        assert_eq!(case1.admin_user, "jinwang");
+        assert_eq!(case1.ssh_auth_mode, SshAuthMode::Password);
+        assert_eq!(case1.ssh_password, Some("PLAYBOX_0_PASSWORD".to_string()));
+        assert_eq!(case1.ssh_key_path, Some("EXAMPLE_SSH_KEY_PATH".to_string()));
+
+        // Case 2: external IP (Tailscale)
+        let case2 = &config.target_nodes[1];
+        assert!(!case2.direct_reachable);
+        assert_eq!(case2.reachable_node_ip, Some("100.64.0.1".to_string()));
+        assert_eq!(case2.node_ip, "192.168.88.8");
+
+        // Case 3: ProxyJump via another node
+        let case3 = &config.target_nodes[2];
+        assert!(!case3.direct_reachable);
+        assert_eq!(case3.reachable_via, Some(vec!["playbox-0".to_string()]));
+        assert_eq!(case3.ssh_auth_mode, SshAuthMode::Key);
+        assert_eq!(
+            case3.ssh_key_path_of_reachable_node,
+            Some("EXAMPLE_SSH_KEY_PATH".to_string())
+        );
+    }
+
     /// Verify the actual .example file content can be parsed by our code.
     /// This catches drift between example files and parsing logic.
     #[test]

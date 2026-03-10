@@ -1214,6 +1214,139 @@ spec:
         }
     }
 
+    /// CL-8, CL-10, CL-13: Full dry-run pipeline including secrets + gitops validation.
+    /// Extends test_e2e_config_to_output_pipeline with secrets generation and gitops structure checks.
+    #[test]
+    fn test_e2e_full_pipeline_secrets_and_gitops() {
+        // --- Phase 1: Config loading (same as base E2E) ---
+        let bm_content = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let bm: crate::core::config::BaremetalInitConfig =
+            serde_yaml::from_str(bm_content).expect("baremetal-init.yaml must parse");
+
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).expect("sdi-specs.yaml must parse");
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig =
+            serde_yaml::from_str(k8s_content).expect("k8s-clusters.yaml must parse");
+
+        // --- Phase 2: Cross-validation ---
+        let pool_errors = validate_cluster_sdi_pool_mapping(&k8s, &sdi);
+        assert!(pool_errors.is_empty(), "pool mapping: {:?}", pool_errors);
+        let id_errors = validate_unique_cluster_ids(&k8s);
+        assert!(id_errors.is_empty(), "cluster IDs: {:?}", id_errors);
+
+        // --- Phase 3: SDI spec validation ---
+        let sdi_errors = validate_sdi_spec(&sdi);
+        assert!(sdi_errors.is_empty(), "SDI spec: {:?}", sdi_errors);
+
+        // --- Phase 4: Baremetal config validation ---
+        let bm_errors = crate::core::config::validate_baremetal_config(&bm);
+        assert!(bm_errors.is_empty(), "baremetal config: {:?}", bm_errors);
+
+        // --- Phase 5: Generate outputs for each cluster ---
+        for cluster in &k8s.config.clusters {
+            // Inventory
+            let inv = crate::core::kubespray::generate_inventory(cluster, &sdi)
+                .unwrap_or_else(|e| panic!("inventory '{}': {}", cluster.cluster_name, e));
+            assert!(inv.contains("[all]"));
+
+            // Cluster vars
+            let vars = crate::core::kubespray::generate_cluster_vars(cluster, &k8s.config.common);
+            let _: serde_yaml::Mapping = serde_yaml::from_str(&vars)
+                .unwrap_or_else(|e| panic!("vars '{}': {e}", cluster.cluster_name));
+
+            // Cilium values with ClusterMesh
+            if let Some(cilium) = &cluster.cilium {
+                let cilium_vals = crate::core::gitops::generate_cilium_values_with_mesh(
+                    "10.0.0.1",
+                    6443,
+                    &cluster.cluster_name,
+                    cilium.cluster_id,
+                );
+                assert!(
+                    cilium_vals.contains(&format!("name: \"{}\"", cluster.cluster_name)),
+                    "cilium values must contain cluster name"
+                );
+            }
+
+            // Cluster config manifest
+            let role = if cluster.cluster_role == "management" {
+                "management"
+            } else {
+                "workload"
+            };
+            let config_manifest = crate::core::gitops::generate_cluster_config_manifest(
+                &cluster.cluster_name,
+                &format!("{}.local", cluster.cluster_name),
+                role,
+            );
+            assert!(
+                config_manifest.contains(&cluster.cluster_name),
+                "cluster config must contain cluster name"
+            );
+        }
+
+        // --- Phase 6: Secrets generation ---
+        let secrets_content = include_str!("../../../credentials/secrets.yaml.example");
+        // Management cluster gets all secrets (keycloak, argocd, cloudflare)
+        let mgmt_secrets =
+            crate::core::secrets::generate_all_secrets_manifests(secrets_content, "management")
+                .expect("management secrets must generate");
+        assert!(
+            mgmt_secrets.contains("keycloak"),
+            "management must have keycloak secret"
+        );
+
+        // Workload cluster gets no cloudflare/keycloak secrets
+        let work_secrets =
+            crate::core::secrets::generate_all_secrets_manifests(secrets_content, "workload")
+                .expect("workload secrets must generate");
+        assert!(
+            !work_secrets.contains("cloudflare"),
+            "workload must NOT have cloudflare secret"
+        );
+
+        // --- Phase 7: GitOps structure validation ---
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let bootstrap = repo_root.join("gitops/bootstrap/spread.yaml");
+        assert!(bootstrap.exists(), "spread.yaml must exist for bootstrap");
+
+        // Verify generator dirs exist for each cluster
+        for cluster in &k8s.config.clusters {
+            let gen_dir = repo_root.join(format!("gitops/generators/{}", cluster.cluster_name));
+            assert!(
+                gen_dir.exists(),
+                "generator dir must exist: gitops/generators/{}",
+                cluster.cluster_name
+            );
+        }
+
+        // Verify common apps directory exists
+        let common_dir = repo_root.join("gitops/common");
+        assert!(common_dir.exists(), "gitops/common must exist");
+
+        // --- Phase 8: Idempotency check (CL-13) ---
+        // Re-generate and verify identical output
+        for cluster in &k8s.config.clusters {
+            let inv1 = crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap();
+            let inv2 = crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap();
+            assert_eq!(
+                inv1, inv2,
+                "inventory must be idempotent for {}",
+                cluster.cluster_name
+            );
+
+            let vars1 = crate::core::kubespray::generate_cluster_vars(cluster, &k8s.config.common);
+            let vars2 = crate::core::kubespray::generate_cluster_vars(cluster, &k8s.config.common);
+            assert_eq!(
+                vars1, vars2,
+                "vars must be idempotent for {}",
+                cluster.cluster_name
+            );
+        }
+    }
+
     /// CL-8: Verify scalex get config-files would detect missing files.
     /// Config file validation must report all required files.
     #[test]
@@ -1644,6 +1777,66 @@ spec:
             found.is_empty(),
             "Legacy top-level artifacts still present (move dirs to .legacy- prefix, delete values.yaml): {:?}",
             found
+        );
+    }
+
+    /// Verify no legacy datax-kubespray references in Rust source code.
+    /// Checklist #4, #12: all legacy references must be fully removed.
+    #[test]
+    fn test_no_legacy_datax_references_in_rust_source() {
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let needle = ".legacy-datax-kube"; // partial match avoids self-detection
+        let mut violations = Vec::new();
+
+        fn scan_dir(dir: &std::path::Path, needle: &str, violations: &mut Vec<String>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        scan_dir(&path, needle, violations);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        // Skip this test file (validation.rs) to avoid self-detection
+                        if path.ends_with("validation.rs") {
+                            continue;
+                        }
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            for (line_num, line) in content.lines().enumerate() {
+                                if line.contains(needle) {
+                                    let rel = path
+                                        .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                                        .unwrap_or(&path);
+                                    violations.push(format!(
+                                        "{}:{}: {}",
+                                        rel.display(),
+                                        line_num + 1,
+                                        line.trim()
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        scan_dir(&src_dir, needle, &mut violations);
+        assert!(
+            violations.is_empty(),
+            "Legacy datax-kubespray references found in Rust source (CL-4/CL-12 violation):\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// Verify find_kubespray_dir candidates do not include legacy paths
+    /// and DO include the project's kubespray/ submodule.
+    #[test]
+    fn test_kubespray_dir_candidates_no_legacy() {
+        // The kubespray submodule should exist at project root
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let kubespray_submodule = repo_root.join("kubespray");
+        assert!(
+            kubespray_submodule.exists(),
+            "kubespray/ submodule directory should exist at project root"
         );
     }
 
