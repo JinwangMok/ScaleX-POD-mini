@@ -6,8 +6,8 @@
 
 ## Current Status (Sprint 9a complete)
 
-- **Tests**: 297 pass / clippy 0 warnings / fmt clean
-- **Code**: ~12,700 lines Rust, 27 source files
+- **Tests**: 300 pass / clippy 0 warnings / fmt clean
+- **Code**: ~12,800 lines Rust, 27 source files
 - **GitOps**: 41 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
 
@@ -215,7 +215,8 @@ TDD 원칙에서 "테스트"는 단위 테스트만을 의미하지 않는다.
 | 9a-3 | **TEST**: sandbox-generator placeholder URL 감지 | **DONE** | YAML 파싱 + placeholder 감지 테스트 추가 |
 | 9a-4 | **TEST**: CF Tunnel ingress 완성도 | **DONE** | 3개 hostname + catch-all 404 + noTLSVerify 검증 |
 | 9a-5 | **TEST**: cross-config 정합성 | **DONE** | 이미 5+개 테스트 존재 확인 (pool ref, CIDR overlap, DNS unique, cilium ID unique) |
-| 9a-6 | Commit + Push | **DONE** | 294 tests, 0 clippy warnings |
+| 9a-6 | **TEST**: 단일 노드 SDI + 베어메탈 파이프라인 + GitOps generator 확장성 | **DONE** | single-node, baremetal pipeline, generator YAML 생성 테스트 추가 -> 300 pass |
+| 9a-7 | Commit + Push | **DONE** | 300 tests, 0 clippy warnings |
 
 ### Sprint 9b: 실환경 E2E 검증 (물리 인프라 필요)
 
@@ -285,7 +286,7 @@ _generated/
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | core/validation | 57 | pool mapping, cluster IDs, CIDR overlap, DNS uniqueness, legacy detection, single-node, baremetal, idempotency, E2E pipeline, clean->rebuild, cross-config, sync, 2-layer consistency, README verification |
-| core/gitops | 36 | ApplicationSet, kustomization, sync waves, Cilium, ClusterMesh, generator consistency |
+| core/gitops | 39 | ApplicationSet, kustomization, sync waves, Cilium, ClusterMesh, generator consistency, cluster/common generator YAML 생성 |
 | core/kubespray | 32 | inventory (SDI + baremetal), cluster vars, OIDC, Cilium, extra vars, single-node dual-role, no-CP rejection |
 | commands/status | 21 | platform status reporting |
 | commands/sdi | 19 | network resolve, host infra, pool state, clean arg validation, plan_clean_operations |
@@ -296,7 +297,7 @@ _generated/
 | core/secrets | 12 | K8s secret generation |
 | core/host_prepare | 12 | KVM install, bridge setup, VFIO config, cleanup script validation |
 | commands/cluster | 11 | cluster init, SDI/baremetal modes, gitops, ssh_user |
-| core/tofu | 8 | HCL gen, IP-based SSH URI, VFIO, idempotency |
+| core/tofu | 12 | HCL gen, IP-based SSH URI, VFIO, idempotency, adminUser SSH URI, single-node SDI |
 | models/* | 8 | parse/serialize sdi, cluster, baremetal |
 | core/resource_pool | 5 | aggregation, table format |
 | commands/facts | 4 | facts gathering, script building |
