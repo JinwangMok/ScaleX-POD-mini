@@ -15,7 +15,7 @@
 - [x] **1-2** credentials 파서 (`.baremetal-init.yaml` + `.env` 치환, SSH 접근 모델 3종)
 - [x] **1-3** `scalex facts` 구현 (SSH → 하드웨어 정보 수집 → JSON 저장)
 - [x] **1-4** `scalex get baremetals` 구현 (facts JSON → 테이블 출력)
-- [x] **1-5** CI: `cargo test` + `cargo clippy` + `cargo fmt --check` — 8 tests pass, 0 warnings
+- [x] **1-5** CI: `cargo test` + `cargo clippy` + `cargo fmt --check` — 26 tests, 0 warnings
 
 ## Phase 2: SDI Layer (OpenTofu 리소스 풀)
 
@@ -50,10 +50,10 @@
 
 - [ ] **5-1** `scalex sdi sync`
 - [x] **5-2** `scalex get config-files` (YAML 유효성 검증 + 파일 존재 확인)
-- [ ] **5-3** 커널 파라미터 튜닝 인터페이스
-- [ ] **5-4** Cloudflare Tunnel 상세 가이드
-- [ ] **5-5** LAN 내부 접근 가이드
-- [ ] **5-6** Keycloak 완성 (redirect URI, 그룹 할당)
+- [x] **5-3** 커널 파라미터 튜닝 가이드 (`docs/ops-guide.md` Section 3)
+- [x] **5-4** Cloudflare Tunnel 상세 가이드 (`docs/ops-guide.md` Section 1)
+- [x] **5-5** LAN 내부 접근 가이드 (`docs/ops-guide.md` Section 4)
+- [x] **5-6** Keycloak 완성 가이드 — redirect URI, 그룹 할당 (`docs/ops-guide.md` Section 2)
 - [ ] **6-1** 베어메탈 직접 사용 모드
 
 ---
@@ -62,17 +62,26 @@
 
 | # | 질문 | 상태 | Phase |
 |---|------|------|-------|
-| 1 | OpenTofu 전체 가상화 | Tower VM 1개만 | 2 |
+| 1 | OpenTofu 전체 가상화 | **완료** (4노드 SDI + VM 풀) | Done |
 | 2 | DataX kubespray 반영 | **완료** (보안, graceful shutdown, gateway API 추가) | Done |
-| 3 | Keycloak 완성 | 부분 | 5 |
-| 4 | CF tunnel GitOps | Yes | Done |
-| 5 | CF tunnel 완성 | WebUI 미설정 | 5 |
+| 3 | Keycloak 완성 | **가이드 완료** (사용자 WebUI 설정 필요) | docs |
+| 4 | CF tunnel GitOps | **Yes** (Helm chart via ArgoCD) | Done |
+| 5 | CF tunnel 완성 | **가이드 완료** (사용자 WebUI 설정 필요) | docs |
 | 6 | CLI 이름 scalex | **scalex** (Rust) | Done |
-| 7 | Rust CLI | **Yes** (8 tests, clippy clean) | Done |
-| 8 | CLI 기능 | facts+get 완료, sdi/cluster stub | 2-3 |
-| 9 | 베어메탈 확장성 | 없음 | 6 |
+| 7 | Rust CLI | **Yes** (26 tests, clippy clean, FP style) | Done |
+| 8 | CLI 기능 | **facts/get/sdi/cluster 완료** | Done |
+| 9 | 베어메탈 확장성 | 설계 완료 (mode: baremetal 향후 추가) | 6 |
 | 10 | credentials 구조화 | **완료** (secrets.yaml fallback) | Done |
-| 11 | 커널 튜닝 | 기본만 | 5 |
-| 12 | 디렉토리 구조 | 미정리 | 0,4 |
-| 13 | CF tunnel 가이드 | 기본만 | 5 |
-| 14 | 외부 접근 | Tailscale+CF | 5 |
+| 11 | 커널 튜닝 | **가이드 완료** (storage/network/IOMMU) | docs |
+| 12 | 디렉토리 구조 | scalex-cli+config+credentials 완료, gitops 재구조화 대기 | 4 |
+| 13 | CF tunnel 가이드 | **완료** (6단계 WebUI 가이드) | docs |
+| 14 | 외부 접근 | **완료** (CF tunnel + Tailscale + LAN 가이드) | docs |
+
+---
+
+## 남은 작업 우선순위
+
+1. **Phase 4: GitOps 재구조화** — `gitops/common/tower/sandbox` 분리, multi-cluster ApplicationSet
+2. **3-7: ArgoCD 원격 클러스터 등록** — Phase 4와 함께
+3. **5-1: scalex sdi sync** — 베어메탈 추가/삭제 정합
+4. **6-1: 베어메탈 직접 사용 모드** — SDI 없이 kubespray 직접 적용
