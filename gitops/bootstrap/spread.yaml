@@ -67,6 +67,28 @@ spec:
       prune: true
       selfHeal: true
 ---
+# Deploy per-cluster AppProjects (required by all ApplicationSet-generated Applications)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-projects
+  namespace: argocd
+spec:
+  project: playbox-root
+  source:
+    repoURL: https://github.com/JinwangMok/ScaleX-POD-mini.git
+    targetRevision: main
+    path: gitops/projects
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
 # Lock down default project
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject

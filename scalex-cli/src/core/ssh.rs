@@ -34,9 +34,18 @@ pub fn build_ssh_command(
         if let Some(ref proxy_ip) = node.reachable_node_ip {
             // Via external IP (e.g., Tailscale) — connect directly to that IP
             args.push(format!("{}@{}", node.admin_user, proxy_ip));
-            // Then SSH from there to the actual node
+            // Then SSH from there to the actual node, including key if available
+            let key_flag = match node.ssh_auth_mode {
+                SshAuthMode::Key => node
+                    .ssh_key_path
+                    .as_deref()
+                    .map(|k| format!("-i {} ", k))
+                    .unwrap_or_default(),
+                SshAuthMode::Password => String::new(),
+            };
             let inner_cmd = format!(
-                "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 {}@{} '{}'",
+                "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 {}{}@{} '{}'",
+                key_flag,
                 node.admin_user,
                 node.node_ip,
                 remote_command.replace('\'', "'\\''")
@@ -55,8 +64,22 @@ pub fn build_ssh_command(
                         ))
                     })?;
                 let proxy_ip = resolve_target_ip(proxy_node, all_nodes)?;
-                args.push("-o".to_string());
-                args.push(format!("ProxyJump={}@{}", proxy_node.admin_user, proxy_ip));
+                // Include key for proxy hop if sshKeyPathOfReachableNode is set
+                let proxy_key = node
+                    .ssh_key_path_of_reachable_node
+                    .as_deref()
+                    .or(proxy_node.ssh_key_path.as_deref());
+                if let Some(key) = proxy_key {
+                    // ProxyJump doesn't support -i; use ProxyCommand for key-based hops
+                    args.push("-o".to_string());
+                    args.push(format!(
+                        "ProxyCommand=ssh -i {} -o StrictHostKeyChecking=no -W %h:%p {}@{}",
+                        key, proxy_node.admin_user, proxy_ip
+                    ));
+                } else {
+                    args.push("-o".to_string());
+                    args.push(format!("ProxyJump={}@{}", proxy_node.admin_user, proxy_ip));
+                }
                 args.push(format!("{}@{}", node.admin_user, node.node_ip));
                 args.push(remote_command.to_string());
             }
@@ -167,6 +190,98 @@ mod tests {
 
         let nodes = vec![bastion, worker.clone()];
         let cmd = build_ssh_command(&worker, "uname -r", &nodes).unwrap();
-        assert!(cmd.args.iter().any(|a| a.contains("ProxyJump")));
+        // When bastion has a key, ProxyCommand is used; otherwise ProxyJump
+        let has_proxy = cmd
+            .args
+            .iter()
+            .any(|a| a.contains("ProxyJump") || a.contains("ProxyCommand"));
+        assert!(
+            has_proxy,
+            "Expected ProxyJump or ProxyCommand in args: {:?}",
+            cmd.args
+        );
+    }
+
+    #[test]
+    fn test_build_ssh_proxy_jump_password_uses_proxyjump() {
+        // When bastion uses password auth (no key), plain ProxyJump is used
+        let mut bastion = make_node("bastion", true, "10.0.0.1");
+        bastion.ssh_auth_mode = SshAuthMode::Password;
+        bastion.ssh_password = Some("pass".to_string());
+        bastion.ssh_key_path = None;
+
+        let mut worker = make_node("worker", false, "10.0.0.2");
+        worker.reachable_via = Some(vec!["bastion".to_string()]);
+        worker.ssh_key_path_of_reachable_node = None;
+
+        let nodes = vec![bastion, worker.clone()];
+        let cmd = build_ssh_command(&worker, "uname -r", &nodes).unwrap();
+        assert!(
+            cmd.args.iter().any(|a| a.contains("ProxyJump")),
+            "Password-based proxy should use ProxyJump: {:?}",
+            cmd.args
+        );
+    }
+
+    /// B-3: When a node uses ProxyJump with key auth, and ssh_key_path_of_reachable_node
+    /// is set, the ProxyJump SSH hop must include `-i <key_path>` for the proxy node.
+    #[test]
+    fn test_proxy_jump_uses_reachable_node_key() {
+        let mut bastion = make_node("bastion", true, "10.0.0.1");
+        bastion.ssh_key_path = Some("/keys/bastion_key".to_string());
+
+        let worker = NodeConnectionConfig {
+            name: "worker".to_string(),
+            direct_reachable: false,
+            node_ip: "10.0.0.2".to_string(),
+            reachable_node_ip: None,
+            reachable_via: Some(vec!["bastion".to_string()]),
+            admin_user: "admin".to_string(),
+            ssh_auth_mode: SshAuthMode::Key,
+            ssh_password: None,
+            ssh_key_path: Some("/keys/worker_key".to_string()),
+            ssh_key_path_of_reachable_node: Some("/keys/bastion_key".to_string()),
+        };
+
+        let nodes = vec![bastion, worker.clone()];
+        let cmd = build_ssh_command(&worker, "hostname", &nodes).unwrap();
+        // When a key is set, ProxyCommand is used instead of ProxyJump
+        let proxy_arg = cmd
+            .args
+            .iter()
+            .find(|a| a.contains("ProxyCommand"))
+            .expect("Expected ProxyCommand for key-based proxy hop");
+        assert!(
+            proxy_arg.contains("/keys/bastion_key"),
+            "ProxyCommand must include -i for reachable node key, got: {}",
+            proxy_arg
+        );
+    }
+
+    /// B-3b: When reachable_node_ip is used (e.g. Tailscale), and key auth is active,
+    /// the inner SSH command must include `-i <key_path>`.
+    #[test]
+    fn test_reachable_node_ip_with_key_auth_includes_key() {
+        let node = NodeConnectionConfig {
+            name: "node0".to_string(),
+            direct_reachable: false,
+            node_ip: "192.168.88.8".to_string(),
+            reachable_node_ip: Some("100.64.0.1".to_string()),
+            reachable_via: None,
+            admin_user: "jinwang".to_string(),
+            ssh_auth_mode: SshAuthMode::Key,
+            ssh_password: None,
+            ssh_key_path: Some("/keys/node_key".to_string()),
+            ssh_key_path_of_reachable_node: None,
+        };
+
+        let cmd = build_ssh_command(&node, "hostname", &[node.clone()]).unwrap();
+        // The inner SSH command (connecting from Tailscale IP to LAN IP) must include -i
+        let inner_cmd = cmd.args.last().unwrap();
+        assert!(
+            inner_cmd.contains("-i") && inner_cmd.contains("/keys/node_key"),
+            "Inner SSH via reachable_node_ip must include -i key, got: {}",
+            inner_cmd
+        );
     }
 }

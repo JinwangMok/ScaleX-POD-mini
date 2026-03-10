@@ -2436,6 +2436,51 @@ spec:
         }
     }
 
+    /// B-1: Bootstrap spread.yaml must deploy AppProjects (tower-project, sandbox-project).
+    /// Without these, all ApplicationSet-generated Applications fail with "project not found".
+    #[test]
+    fn test_bootstrap_deploys_appprojects() {
+        let spread_content = include_str!("../../../gitops/bootstrap/spread.yaml");
+        // spread.yaml must contain tower-project and sandbox-project AppProject resources
+        // OR must contain an Application that points to gitops/projects/ directory
+        let has_tower_project = spread_content.contains("name: tower-project")
+            || spread_content.contains("path: gitops/projects");
+        let has_sandbox_project = spread_content.contains("name: sandbox-project")
+            || spread_content.contains("path: gitops/projects");
+        assert!(
+            has_tower_project,
+            "spread.yaml must deploy tower-project AppProject (inline or via gitops/projects/)"
+        );
+        assert!(
+            has_sandbox_project,
+            "spread.yaml must deploy sandbox-project AppProject (inline or via gitops/projects/)"
+        );
+    }
+
+    /// B-2: All helm repos used in common/tower/sandbox must be listed in the
+    /// corresponding AppProject's sourceRepos. Otherwise ArgoCD rejects the sync.
+    #[test]
+    fn test_appproject_sourcerepos_include_all_helm_repos() {
+        let tower_project = include_str!("../../../gitops/projects/tower-project.yaml");
+        let sandbox_project = include_str!("../../../gitops/projects/sandbox-project.yaml");
+
+        // Kyverno helm repo is used in gitops/common/kyverno/kustomization.yaml
+        let kyverno_repo = "https://kyverno.github.io/kyverno/";
+
+        // Tower deploys common apps (including Kyverno)
+        assert!(
+            tower_project.contains(kyverno_repo),
+            "tower-project.yaml sourceRepos must include Kyverno helm repo: {}",
+            kyverno_repo
+        );
+        // Sandbox also deploys common apps (including Kyverno)
+        assert!(
+            sandbox_project.contains(kyverno_repo),
+            "sandbox-project.yaml sourceRepos must include Kyverno helm repo: {}",
+            kyverno_repo
+        );
+    }
+
     /// Each SDI-mode cluster must have at least one control-plane node in its pool.
     #[test]
     fn test_two_layer_sdi_pools_have_control_plane_nodes() {
@@ -2485,8 +2530,8 @@ spec:
         );
 
         // Verify the YAML structure is valid
-        let parsed: serde_yaml::Value = serde_yaml::from_str(content)
-            .expect("sandbox-generator.yaml must be valid YAML");
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(content).expect("sandbox-generator.yaml must be valid YAML");
         assert!(
             parsed.get("spec").is_some(),
             "sandbox-generator.yaml must have a 'spec' field"
@@ -2496,8 +2541,7 @@ spec:
     /// Cloudflare tunnel values.yaml must expose all required services.
     #[test]
     fn test_cloudflare_tunnel_ingress_completeness() {
-        let content =
-            include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
+        let content = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
 
         // Must have tunnel name
         assert!(
@@ -2598,19 +2642,40 @@ spec:
 
         // Pipeline step 1: Generate inventory
         let ini = crate::core::kubespray::generate_inventory_baremetal(&bm_cluster).unwrap();
-        assert!(ini.contains("bm-cp-0"), "inventory missing control-plane node");
+        assert!(
+            ini.contains("bm-cp-0"),
+            "inventory missing control-plane node"
+        );
         assert!(ini.contains("bm-w-0"), "inventory missing worker-0");
         assert!(ini.contains("bm-w-1"), "inventory missing worker-1");
         assert!(ini.contains("ansible_host=10.0.0.1"), "wrong CP IP");
 
         // Pipeline step 2: Generate kubespray vars (uses same common config as SDI clusters)
         let vars = crate::core::kubespray::generate_cluster_vars(&bm_cluster, common);
-        assert!(vars.contains(&common.kubernetes_version), "vars missing k8s version");
-        assert!(vars.contains("kube_network_plugin: cni"), "vars missing CNI config (cilium)");
-        assert!(vars.contains("kube_proxy_remove: true"), "vars missing kube-proxy removal");
-        assert!(vars.contains("dns_domain: \"prod.local\""), "vars missing DNS domain");
-        assert!(vars.contains("kube_pods_subnet: \"10.234.0.0/17\""), "vars missing pod CIDR");
-        assert!(vars.contains("kube_service_addresses: \"10.234.128.0/18\""), "vars missing service CIDR");
+        assert!(
+            vars.contains(&common.kubernetes_version),
+            "vars missing k8s version"
+        );
+        assert!(
+            vars.contains("kube_network_plugin: cni"),
+            "vars missing CNI config (cilium)"
+        );
+        assert!(
+            vars.contains("kube_proxy_remove: true"),
+            "vars missing kube-proxy removal"
+        );
+        assert!(
+            vars.contains("dns_domain: \"prod.local\""),
+            "vars missing DNS domain"
+        );
+        assert!(
+            vars.contains("kube_pods_subnet: \"10.234.0.0/17\""),
+            "vars missing pod CIDR"
+        );
+        assert!(
+            vars.contains("kube_service_addresses: \"10.234.128.0/18\""),
+            "vars missing service CIDR"
+        );
 
         // Pipeline step 3: Verify baremetal cluster does NOT need SDI pool mapping
         let mapping_errors = validate_cluster_sdi_pool_mapping(
@@ -2622,7 +2687,10 @@ spec:
                     domains: k8s.config.domains.clone(),
                 },
             },
-            &serde_yaml::from_str::<SdiSpec>(include_str!("../../../config/sdi-specs.yaml.example")).unwrap(),
+            &serde_yaml::from_str::<SdiSpec>(include_str!(
+                "../../../config/sdi-specs.yaml.example"
+            ))
+            .unwrap(),
         );
         assert!(
             mapping_errors.is_empty(),
@@ -2658,12 +2726,14 @@ spec:
         assert!(
             cilium_wave > cluster_config_wave,
             "cilium (wave {}) must deploy after cluster-config (wave {})",
-            cilium_wave, cluster_config_wave
+            cilium_wave,
+            cluster_config_wave
         );
         assert!(
             test_wave > cilium_wave,
             "test-resources (wave {}) must deploy AFTER cilium (wave {}) — pods need CNI",
-            test_wave, cilium_wave
+            test_wave,
+            cilium_wave
         );
     }
 }

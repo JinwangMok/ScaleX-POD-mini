@@ -1050,16 +1050,16 @@ spec:
         assert!(parsed.is_mapping());
 
         // Must have correct structure
-        assert!(yaml.contains("name: datax-apps"), "wrong ApplicationSet name");
+        assert!(
+            yaml.contains("name: datax-apps"),
+            "wrong ApplicationSet name"
+        );
         assert!(yaml.contains("project: datax-project"), "wrong project");
         assert!(
             yaml.contains("server: \"https://datax-api:6443\""),
             "wrong server URL"
         );
-        assert!(
-            yaml.contains("path: \"gitops/datax/"),
-            "wrong gitops path"
-        );
+        assert!(yaml.contains("path: \"gitops/datax/"), "wrong gitops path");
         assert!(yaml.contains("appName: cluster-config"), "missing app");
         assert!(yaml.contains("appName: cilium"), "missing app");
     }
@@ -1124,7 +1124,13 @@ spec:
         // Both must have syncPolicy.automated
         let sandbox_sync = &sandbox_parsed["spec"]["template"]["spec"]["syncPolicy"]["automated"];
         let gen_sync = &gen_parsed["spec"]["template"]["spec"]["syncPolicy"]["automated"];
-        assert!(sandbox_sync.is_mapping(), "sandbox missing syncPolicy.automated");
-        assert!(gen_sync.is_mapping(), "generated missing syncPolicy.automated");
+        assert!(
+            sandbox_sync.is_mapping(),
+            "sandbox missing syncPolicy.automated"
+        );
+        assert!(
+            gen_sync.is_mapping(),
+            "generated missing syncPolicy.automated"
+        );
     }
 }

@@ -9,6 +9,7 @@ spec:
     - "https://github.com/JinwangMok/ScaleX-POD-mini.git"
     - "https://helm.cilium.io/"
     - "https://charts.jetstack.io"
+    - "https://kyverno.github.io/kyverno/"
   destinations:
     # Update with actual Sandbox cluster server after registration
     - server: "https://sandbox-api:6443"

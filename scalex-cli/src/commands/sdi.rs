@@ -17,9 +17,9 @@ pub struct SdiArgs {
 
 #[derive(Subcommand)]
 enum SdiCommand {
-    /// Initialize SDI: virtualize bare-metal into resource pool
+    /// Initialize SDI: prepare hosts (no spec) or virtualize bare-metal into VM pools (with spec)
     Init {
-        /// SDI specs file (optional — without it, prepares hosts only)
+        /// SDI specs file (optional — without it, prepares hosts only: KVM, bridge, VFIO)
         spec_file: Option<String>,
 
         /// Path to baremetal-init.yaml
@@ -191,11 +191,12 @@ fn run_init(
                                 cidr: "192.168.88.0/24".to_string(),
                                 gateway: "192.168.88.1".to_string(),
                             });
+                            let cidr_prefix = extract_cidr_prefix(&net.cidr);
                             let script = host_prepare::generate_bridge_setup_script(
                                 primary_nic,
                                 &node.node_ip,
                                 &net.gateway,
-                                24,
+                                cidr_prefix,
                             );
                             let ssh_cmd =
                                 build_ssh_command(node, &script, &bm_config.target_nodes)?;
@@ -590,17 +591,28 @@ fn run_sync(
                                 .first()
                                 .map(|n| n.name.as_str())
                                 .unwrap_or("eno1");
-                            let sync_net =
-                                resolve_network_config(None, None).unwrap_or(NetworkDefaults {
+                            let bm_net =
+                                bm_config
+                                    .network_defaults
+                                    .as_ref()
+                                    .map(|nd| NetworkDefaults {
+                                        bridge: nd.management_bridge.clone(),
+                                        cidr: nd.management_cidr.clone(),
+                                        gateway: nd.gateway.clone(),
+                                    });
+                            let sync_net = resolve_network_config(None, bm_net.as_ref()).unwrap_or(
+                                NetworkDefaults {
                                     bridge: "br0".to_string(),
                                     cidr: "192.168.88.0/24".to_string(),
                                     gateway: "192.168.88.1".to_string(),
-                                });
+                                },
+                            );
+                            let cidr_prefix = extract_cidr_prefix(&sync_net.cidr);
                             let script = host_prepare::generate_bridge_setup_script(
                                 primary_nic,
                                 &node.node_ip,
                                 &sync_net.gateway,
-                                24,
+                                cidr_prefix,
                             );
                             let ssh_cmd =
                                 build_ssh_command(node, &script, &bm_config.target_nodes)?;
@@ -843,6 +855,15 @@ pub fn resolve_network_config(
         return Ok(defaults.clone());
     }
     Err("No network configuration available. Provide sdi-specs.yaml or add network_defaults to baremetal-init.yaml".to_string())
+}
+
+/// Extract CIDR prefix length from a CIDR string (e.g., "192.168.88.0/24" → 24).
+/// Returns 24 as default for malformed input.
+/// Pure function: no IO, no side effects.
+pub fn extract_cidr_prefix(cidr: &str) -> u8 {
+    cidr.rsplit_once('/')
+        .and_then(|(_, prefix)| prefix.parse::<u8>().ok())
+        .unwrap_or(24)
 }
 
 /// Build HostInfraInput list from BaremetalInitConfig.
@@ -1238,7 +1259,9 @@ mod tests {
     #[test]
     fn test_dir_is_empty_nonexistent_returns_true() {
         // Non-existent directory should be treated as empty
-        assert!(dir_is_empty(std::path::Path::new("/tmp/scalex_test_nonexistent_dir_xyz")));
+        assert!(dir_is_empty(std::path::Path::new(
+            "/tmp/scalex_test_nonexistent_dir_xyz"
+        )));
     }
 
     #[test]
@@ -1258,5 +1281,33 @@ mod tests {
         std::fs::write(tmp.join("facts.json"), "{}").unwrap();
         assert!(!dir_is_empty(&tmp));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// B-5: CIDR prefix must be extracted from managementCidr string, not hardcoded to 24.
+    #[test]
+    fn test_extract_cidr_prefix() {
+        assert_eq!(extract_cidr_prefix("192.168.88.0/24"), 24);
+        assert_eq!(extract_cidr_prefix("10.0.0.0/16"), 16);
+        assert_eq!(extract_cidr_prefix("172.16.0.0/20"), 20);
+        // Fallback for malformed input
+        assert_eq!(extract_cidr_prefix("192.168.88.0"), 24);
+        assert_eq!(extract_cidr_prefix(""), 24);
+    }
+
+    /// B-4: resolve_network_config must accept baremetal_network when sdi_spec is None.
+    /// This tests the sync path scenario where only baremetal config is available.
+    #[test]
+    fn test_resolve_network_config_baremetal_defaults_used_in_sync_path() {
+        let defaults = NetworkDefaults {
+            bridge: "br-custom".to_string(),
+            cidr: "10.0.0.0/16".to_string(),
+            gateway: "10.0.0.1".to_string(),
+        };
+        let result = resolve_network_config(None, Some(&defaults)).unwrap();
+        assert_eq!(result.bridge, "br-custom");
+        assert_eq!(result.cidr, "10.0.0.0/16");
+        assert_eq!(result.gateway, "10.0.0.1");
+        // CIDR prefix should be extractable from the result
+        assert_eq!(extract_cidr_prefix(&result.cidr), 16);
     }
 }

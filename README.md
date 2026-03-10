@@ -106,6 +106,14 @@ tofu --version           # OpenTofu (Terraform 호환)
 kubectl version --client # Kubernetes CLI
 ```
 
+### Step 0.5: 레포지토리 클론 및 서브모듈 초기화
+
+```bash
+git clone https://github.com/JinwangMok/ScaleX-POD-mini.git
+cd ScaleX-POD-mini
+git submodule update --init --recursive  # Kubespray v2.30.0 서브모듈 필수
+```
+
 ### Step 1: CLI 빌드
 
 ```bash
@@ -414,7 +422,7 @@ kubectl apply -f gitops/bootstrap/spread.yaml
 ## Project Structure
 
 ```
-scalex-cli/                # Rust CLI — 300 tests, 0 clippy warnings
+scalex-cli/                # Rust CLI — 308 tests, 0 clippy warnings
   src/commands/            #   facts, sdi, cluster, get, status, kernel-tune, secrets
   src/core/                #   config, kubespray, tofu, gitops, kernel, validation, ...
   src/models/              #   baremetal, cluster, sdi data models
