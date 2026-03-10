@@ -14,17 +14,18 @@ config:
     kube_apiserver_admission_plugins:
       - NodeRestriction
       - PodTolerationRestriction
-    # Kubelet security (from DataX best practices)
-    kubelet_authentication_token_webhook: true
-    kubelet_authorization_mode_webhook: true
-    kubelet_rotate_certificates: true
-    kubelet_protect_kernel_defaults: true
-    kubelet_event_record_qps: 50
+    # Firewall / kube-vip (disabled for bare-metal + Cilium)
+    firewalld_enabled: false
+    kube_vip_enabled: false
     # Graceful node shutdown
-    kubelet_shutdown_grace_period: "60s"
-    kubelet_shutdown_grace_period_critical_pods: "20s"
+    graceful_node_shutdown: true
+    graceful_node_shutdown_sec: 120
+    # Custom kubelet flags
+    kubelet_custom_flags:
+      - "--node-ip={{ ip }}"
     # Gateway API (for future Cilium Gateway)
     gateway_api_enabled: true
+    gateway_api_version: "1.3.0"
 
   clusters:
     # Mode: "sdi" (default) uses SDI VM pools, "baremetal" uses physical nodes directly

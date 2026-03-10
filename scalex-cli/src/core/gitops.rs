@@ -37,6 +37,30 @@ pub fn replace_all_sandbox_urls(
         .collect()
 }
 
+/// Extract the server URL from a kubeconfig YAML string.
+/// Pure function: parses the first cluster's server field.
+pub fn extract_server_from_kubeconfig(kubeconfig_content: &str) -> Option<String> {
+    let value: serde_yaml::Value = serde_yaml::from_str(kubeconfig_content).ok()?;
+    value
+        .get("clusters")?
+        .as_sequence()?
+        .first()?
+        .get("cluster")?
+        .get("server")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Collect gitops YAML file paths that need sandbox URL replacement.
+/// Returns paths relative to the gitops directory.
+pub fn gitops_files_needing_replacement() -> Vec<&'static str> {
+    vec![
+        "generators/sandbox/common-generator.yaml",
+        "generators/sandbox/sandbox-generator.yaml",
+        "projects/sandbox-project.yaml",
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +110,32 @@ mod tests {
         assert!(result[1].1.contains("https://10.0.0.5:6443"));
         // Tower generator should NOT be in result
         assert!(result.iter().all(|(p, _)| !p.contains("tower-generator")));
+    }
+
+    #[test]
+    fn test_extract_server_from_kubeconfig() {
+        let kubeconfig = r#"
+apiVersion: v1
+kind: Config
+clusters:
+  - cluster:
+      certificate-authority-data: LS0t...
+      server: https://192.168.88.110:6443
+    name: sandbox
+contexts:
+  - context:
+      cluster: sandbox
+      user: admin
+    name: admin@sandbox
+"#;
+        let server = extract_server_from_kubeconfig(kubeconfig);
+        assert_eq!(server, Some("https://192.168.88.110:6443".to_string()));
+    }
+
+    #[test]
+    fn test_extract_server_from_empty_kubeconfig() {
+        assert_eq!(extract_server_from_kubeconfig("{}"), None);
+        assert_eq!(extract_server_from_kubeconfig("invalid"), None);
     }
 
     #[test]

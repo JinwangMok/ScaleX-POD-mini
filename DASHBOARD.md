@@ -92,7 +92,7 @@
 - [x] **4-2** `CommonConfig` 모델에 7개 필드 추가: `firewalld_enabled`, `kube_vip_enabled`, `kubelet_custom_flags`, `gateway_api_enabled`, `gateway_api_version`, `graceful_node_shutdown`, `graceful_node_shutdown_sec`
 - [x] **4-3** `generate_cluster_vars()` 함수에 새 필드 출력 추가
 - [x] **4-4** TDD: `test_generate_cluster_vars_datax_settings` 테스트 작성 → RED → GREEN → 통과
-- [ ] **4-5** `k8s-clusters.yaml.example` 업데이트 (다음 단계)
+- [x] **4-5** `k8s-clusters.yaml.example` 업데이트 (새 필드 반영)
 
 ### WS-5: Sandbox server URL 자동화 (Major M1)
 
@@ -101,7 +101,7 @@
 - [x] **5-1** `core/gitops.rs` 모듈 설계 (순수 함수)
 - [x] **5-2** `replace_sandbox_server_url()`, `has_sandbox_placeholder()`, `replace_all_sandbox_urls()` 구현
 - [x] **5-3** TDD: 4개 테스트 작성 → GREEN (치환, 감지, 일괄 치환, 내용 보존)
-- [ ] **5-4** `scalex cluster init` 파이프라인에 통합 (다음 단계)
+- [x] **5-4** `scalex cluster init` 파이프라인에 통합 (kubeconfig → server URL 추출 → gitops 치환)
 
 ### WS-6: tofu.rs gateway 하드코딩 수정 (Minor m1)
 
@@ -121,7 +121,7 @@
 - [x] **8-2** `cargo clippy` clean, `cargo fmt --check` clean
 - [x] **8-3** gitops YAML 유효성 검증 통과 (python3 yaml.safe_load_all)
 - [x] **8-4** gitops 구조 일관성 검증 (spread → generators → common/tower/sandbox, OLD 경로 참조 0건)
-- [ ] **8-5** 커밋 및 푸쉬
+- [x] **8-5** 커밋 및 푸쉬 (b56a034)
 
 ---
 
@@ -136,7 +136,7 @@
 | WS-5 | Sandbox URL 자동화 | **완료** | TDD: `core/gitops.rs` 4개 순수 함수 + 4 tests |
 | WS-6 | tofu.rs gateway 수정 | **완료** | TDD: spec에서 gateway 전달, 하드코딩 제거 |
 | WS-7 | playbox deprecation | **완료** | deprecation notice + CLAUDE.md 업데이트 |
-| WS-8 | 최종 검증 | **진행중** | 35 tests, clippy clean, fmt clean |
+| WS-8 | 최종 검증 | **완료** | 37 tests, clippy clean, fmt clean |
 
 ---
 
