@@ -2352,6 +2352,7 @@ spec:
             "credentials/.baremetal-init.yaml.example",
             "credentials/.env.example",
             "credentials/secrets.yaml.example",
+            "credentials/cloudflare-tunnel.json.example",
             "config/sdi-specs.yaml.example",
             "config/k8s-clusters.yaml.example",
         ];
