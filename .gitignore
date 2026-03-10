@@ -1,3 +1,9 @@
 .DS_Store
 /tmp
 /gitops-manual/k8s-secrets.sh
+_generated/
+__pycache__/
+.terraform/
+.terraform.lock.hcl
+kubespray/kubespray/
+.omc/

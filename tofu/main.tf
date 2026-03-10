@@ -8,7 +8,7 @@ terraform {
 }
 
 provider "libvirt" {
-  uri = "qemu+ssh://jinwang@playbox-0/system"
+  uri = "qemu+ssh://jinwang@100.64.0.1/system"
 }
 
 resource "libvirt_volume" "tower_base" {
