@@ -46,6 +46,7 @@ config:
       # cluster_mode: "sdi"  # default — omit for SDI mode
       cluster_sdi_resource_pool: "tower"  # Maps to sdi-specs.yaml spec.sdi_pools[].pool_name
       cluster_role: "management"  # Runs ArgoCD, manages other clusters
+      ssh_user: "jinwang"  # SSH user for kubeconfig collection (default: "root")
       network:
         pod_cidr: "10.244.0.0/20"
         service_cidr: "10.96.0.0/20"

@@ -221,6 +221,7 @@ mod tests {
             },
             oidc: None,
             kubespray_extra_vars: None,
+            ssh_user: None,
         }
     }
 
@@ -988,6 +989,7 @@ spec:
             }),
             oidc: None,
             kubespray_extra_vars: None,
+            ssh_user: None,
         };
 
         let ini = crate::core::kubespray::generate_inventory_baremetal(&cluster).unwrap();
@@ -1053,6 +1055,7 @@ spec:
             cilium: None,
             oidc: None,
             kubespray_extra_vars: None,
+            ssh_user: None,
         };
 
         let result = crate::core::kubespray::generate_inventory_baremetal(&cluster);

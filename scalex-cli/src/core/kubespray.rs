@@ -463,6 +463,7 @@ mod tests {
             }),
             oidc: None,
             kubespray_extra_vars: None,
+            ssh_user: None,
         }
     }
 
@@ -527,6 +528,7 @@ mod tests {
             cilium: None,
             oidc: None,
             kubespray_extra_vars: None,
+            ssh_user: None,
         };
         let ini = generate_inventory_baremetal(&cluster).unwrap();
         assert!(ini.contains("bm-cp-0 ansible_host=10.0.0.1"));
@@ -552,6 +554,7 @@ mod tests {
             cilium: None,
             oidc: None,
             kubespray_extra_vars: None,
+            ssh_user: None,
         };
         let result = generate_inventory_baremetal(&cluster);
         assert!(result.is_err());
@@ -879,6 +882,7 @@ mod tests {
             cilium: None,
             oidc: None,
             kubespray_extra_vars: None,
+            ssh_user: None,
         };
         let ini = generate_inventory_baremetal(&cluster).unwrap();
 

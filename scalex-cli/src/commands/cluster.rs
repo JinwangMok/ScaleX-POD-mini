@@ -441,13 +441,10 @@ fn collect_kubeconfig(
         return Ok(());
     };
 
-    // SCP kubeconfig from control plane using admin_user (not root)
+    // SCP kubeconfig from control plane using ssh_user from cluster config
+    let ssh_user = cluster.ssh_user.as_deref().unwrap_or("root");
     let local_path = cluster_dir.join("kubeconfig.yaml");
-    let scp_args = build_kubeconfig_scp_args(
-        "root", // TODO: pass admin_user from baremetal config when available
-        &ip,
-        &local_path.display().to_string(),
-    );
+    let scp_args = build_kubeconfig_scp_args(ssh_user, &ip, &local_path.display().to_string());
 
     let output = std::process::Command::new("scp").args(&scp_args).output();
 
@@ -502,6 +499,7 @@ kubespray_version: "v2.30.0"
             cilium: None,
             oidc: None,
             kubespray_extra_vars: None,
+            ssh_user: None,
         }
     }
 
@@ -525,6 +523,7 @@ kubespray_version: "v2.30.0"
             cilium: None,
             oidc: None,
             kubespray_extra_vars: None,
+            ssh_user: None,
         }
     }
 

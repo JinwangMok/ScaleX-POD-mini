@@ -145,6 +145,9 @@ pub struct ClusterDef {
     pub oidc: Option<OidcConfig>,
     #[serde(default)]
     pub kubespray_extra_vars: Option<serde_yaml::Value>,
+    /// SSH user for kubeconfig collection (defaults to cloud-init user or "root")
+    #[serde(default)]
+    pub ssh_user: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -351,6 +354,39 @@ config:
         assert_eq!(oidc.groups_claim, "groups");
         assert_eq!(oidc.username_prefix, "oidc:");
         assert_eq!(oidc.groups_prefix, "oidc:");
+    }
+
+    /// CL-4: ssh_user field allows collect_kubeconfig to use admin_user instead of root.
+    #[test]
+    fn test_parse_cluster_with_ssh_user() {
+        let yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+  clusters:
+    - cluster_name: "tower"
+      cluster_sdi_resource_pool: "tower"
+      cluster_role: "management"
+      ssh_user: "jinwang"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+    - cluster_name: "sandbox"
+      cluster_sdi_resource_pool: "sandbox"
+      cluster_role: "workload"
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+"#;
+        let config: K8sClustersConfig = serde_yaml::from_str(yaml).unwrap();
+        // Explicit ssh_user
+        assert_eq!(
+            config.config.clusters[0].ssh_user,
+            Some("jinwang".to_string())
+        );
+        // Default (omitted) → None
+        assert_eq!(config.config.clusters[1].ssh_user, None);
     }
 
     #[test]
