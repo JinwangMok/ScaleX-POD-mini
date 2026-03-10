@@ -6,8 +6,8 @@
 
 ## Current Status (Sprint 9a complete)
 
-- **Tests**: 294 pass / clippy 0 warnings / fmt clean
-- **Code**: ~12,500 lines Rust, 27 source files
+- **Tests**: 296 pass / clippy 0 warnings / fmt clean
+- **Code**: ~12,600 lines Rust, 27 source files
 - **GitOps**: 41 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
 
@@ -27,7 +27,7 @@
 | 4개 호스트 provider | OK | `generate_provider_block()` per unique host |
 | VM 리소스 생성 | OK | `generate_vm_resource()` -- disk, cloudinit, domain |
 | SSH URI에 adminUser 사용 | **FIXED (9a)** | `tofu.rs` -- `ssh_user` 파라미터로 변경. 2개 테스트 추가 |
-| 단일 노드 환경 | UNTESTED | 코드는 지원하지만 테스트 없음 |
+| 단일 노드 환경 | **TESTED (9a)** | `test_single_node_sdi_all_pools_on_one_host` + `test_single_node_host_infra` 추가 |
 | 실제 `tofu apply` 실행 | NEVER | 물리 인프라에서 한 번도 실행된 적 없음 |
 
 ### CL-2: Cloudflare tunnel -- ArgoCD GitOps 방식
