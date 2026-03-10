@@ -126,8 +126,20 @@ fn run_init(
         }
     }
 
-    // Step 2: Load baremetal config and facts
+    // Step 2: Load baremetal config and validate
     let bm_config = load_baremetal_config(&config_path, &env_path)?;
+    let config_errors = crate::core::config::validate_baremetal_config(&bm_config);
+    if !config_errors.is_empty() {
+        eprintln!("[sdi] Configuration errors in {}:", config_path.display());
+        for err in &config_errors {
+            eprintln!("  - {}", err);
+        }
+        anyhow::bail!(
+            "Fix {} error(s) in {} before proceeding",
+            config_errors.len(),
+            config_path.display()
+        );
+    }
     let all_facts = load_all_facts(&facts_dir)?;
 
     // Step 3: Prepare hosts (KVM, bridge, VFIO)
@@ -435,6 +447,18 @@ fn run_sync(
 
     // Step 1: Load desired state from baremetal-init.yaml
     let bm_config = load_baremetal_config(&config_path, &env_path)?;
+    let config_errors = crate::core::config::validate_baremetal_config(&bm_config);
+    if !config_errors.is_empty() {
+        eprintln!("[sdi] Configuration errors in {}:", config_path.display());
+        for err in &config_errors {
+            eprintln!("  - {}", err);
+        }
+        anyhow::bail!(
+            "Fix {} error(s) in {} before proceeding",
+            config_errors.len(),
+            config_path.display()
+        );
+    }
     let desired_nodes: std::collections::HashSet<String> = bm_config
         .target_nodes
         .iter()

@@ -62,6 +62,88 @@ pub fn validate_unique_cluster_ids(k8s_config: &K8sClustersConfig) -> Vec<String
     errors
 }
 
+/// Validate SDI spec semantically. Pure function: no I/O.
+/// Checks: unique pool names, unique VM IPs, unique VM names, non-empty pools.
+#[allow(dead_code)]
+pub fn validate_sdi_spec(spec: &SdiSpec) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    if spec.spec.sdi_pools.is_empty() {
+        errors.push("spec.sdi_pools is empty. At least 1 pool is required.".to_string());
+        return errors;
+    }
+
+    let mut seen_pool_names = std::collections::HashSet::new();
+    let mut seen_vm_names = std::collections::HashSet::new();
+    let mut seen_vm_ips = std::collections::HashSet::new();
+
+    for pool in &spec.spec.sdi_pools {
+        let pool_ctx = format!("pool '{}'", pool.pool_name);
+
+        // Unique pool name
+        if !seen_pool_names.insert(&pool.pool_name) {
+            errors.push(format!("{}: duplicate pool_name", pool_ctx));
+        }
+
+        // Non-empty pool name
+        if pool.pool_name.trim().is_empty() {
+            errors.push("pool_name must not be empty".to_string());
+        }
+
+        // Must have at least one host in placement (unless spread mode with per-node hosts)
+        if pool.placement.hosts.is_empty() && !pool.placement.spread {
+            errors.push(format!(
+                "{}: placement.hosts is empty and spread is false. \
+                 Either list hosts or set spread: true with per-node host fields.",
+                pool_ctx
+            ));
+        }
+
+        // Must have at least one node spec
+        if pool.node_specs.is_empty() {
+            errors.push(format!(
+                "{}: node_specs is empty. At least 1 VM is required.",
+                pool_ctx
+            ));
+        }
+
+        for node in &pool.node_specs {
+            let vm_ctx = format!("{} / VM '{}'", pool_ctx, node.node_name);
+
+            // Unique VM name across all pools
+            if !seen_vm_names.insert(&node.node_name) {
+                errors.push(format!("{}: duplicate node_name across pools", vm_ctx));
+            }
+
+            // Unique VM IP across all pools
+            if !seen_vm_ips.insert(&node.ip) {
+                errors.push(format!(
+                    "{}: duplicate IP '{}' across pools",
+                    vm_ctx, node.ip
+                ));
+            }
+
+            // CPU/mem/disk must be > 0
+            if node.cpu == 0 {
+                errors.push(format!("{}: cpu must be > 0", vm_ctx));
+            }
+            if node.mem_gb == 0 {
+                errors.push(format!("{}: mem_gb must be > 0", vm_ctx));
+            }
+            if node.disk_gb == 0 {
+                errors.push(format!("{}: disk_gb must be > 0", vm_ctx));
+            }
+
+            // Must have at least one role
+            if node.roles.is_empty() {
+                errors.push(format!("{}: roles must not be empty", vm_ctx));
+            }
+        }
+    }
+
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1566,5 +1648,162 @@ spec:
             "Legacy top-level artifacts still present (move dirs to .legacy- prefix, delete values.yaml): {:?}",
             found
         );
+    }
+
+    // ========================================================================
+    // CL-8: SDI spec semantic validation
+    // ========================================================================
+
+    /// Valid SDI spec must pass validation.
+    #[test]
+    fn test_validate_sdi_spec_valid() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let spec: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+        let errors = validate_sdi_spec(&spec);
+        assert!(
+            errors.is_empty(),
+            "example sdi-specs.yaml must pass validation: {:?}",
+            errors
+        );
+    }
+
+    /// Empty pools must fail.
+    #[test]
+    fn test_validate_sdi_spec_empty_pools() {
+        let spec = make_sdi_spec_with_pools(&[]);
+        // Override to have truly empty pools
+        let mut spec = spec;
+        spec.spec.sdi_pools.clear();
+        let errors = validate_sdi_spec(&spec);
+        assert!(errors.iter().any(|e| e.contains("empty")));
+    }
+
+    /// Duplicate pool names must fail.
+    #[test]
+    fn test_validate_sdi_spec_duplicate_pool_names() {
+        let yaml = r#"
+resource_pool:
+  name: "pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "10.0.0.0/24"
+    gateway: "10.0.0.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "keys"
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      placement:
+        hosts: [h0]
+      node_specs:
+        - node_name: "vm-0"
+          ip: "10.0.0.10"
+          cpu: 2
+          mem_gb: 4
+          disk_gb: 30
+          roles: [control-plane]
+    - pool_name: "tower"
+      placement:
+        hosts: [h1]
+      node_specs:
+        - node_name: "vm-1"
+          ip: "10.0.0.11"
+          cpu: 2
+          mem_gb: 4
+          disk_gb: 30
+          roles: [worker]
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_sdi_spec(&spec);
+        assert!(errors.iter().any(|e| e.contains("duplicate pool_name")));
+    }
+
+    /// Duplicate VM IPs across pools must fail.
+    #[test]
+    fn test_validate_sdi_spec_duplicate_vm_ips() {
+        let yaml = r#"
+resource_pool:
+  name: "pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "10.0.0.0/24"
+    gateway: "10.0.0.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "keys"
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      placement:
+        hosts: [h0]
+      node_specs:
+        - node_name: "tower-0"
+          ip: "10.0.0.10"
+          cpu: 2
+          mem_gb: 4
+          disk_gb: 30
+          roles: [control-plane]
+    - pool_name: "sandbox"
+      placement:
+        hosts: [h1]
+      node_specs:
+        - node_name: "sandbox-0"
+          ip: "10.0.0.10"
+          cpu: 2
+          mem_gb: 4
+          disk_gb: 30
+          roles: [worker]
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_sdi_spec(&spec);
+        assert!(
+            errors.iter().any(|e| e.contains("duplicate IP")),
+            "must detect duplicate IP: {:?}",
+            errors
+        );
+    }
+
+    /// Zero CPU/mem must fail.
+    #[test]
+    fn test_validate_sdi_spec_zero_resources() {
+        let yaml = r#"
+resource_pool:
+  name: "pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "10.0.0.0/24"
+    gateway: "10.0.0.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "keys"
+spec:
+  sdi_pools:
+    - pool_name: "bad"
+      placement:
+        hosts: [h0]
+      node_specs:
+        - node_name: "vm-bad"
+          ip: "10.0.0.10"
+          cpu: 0
+          mem_gb: 0
+          disk_gb: 0
+          roles: []
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_sdi_spec(&spec);
+        assert!(errors.iter().any(|e| e.contains("cpu must be > 0")));
+        assert!(errors.iter().any(|e| e.contains("mem_gb must be > 0")));
+        assert!(errors.iter().any(|e| e.contains("disk_gb must be > 0")));
+        assert!(errors.iter().any(|e| e.contains("roles must not be empty")));
     }
 }

@@ -127,7 +127,6 @@ fn resolve_env_var(
 /// Validate baremetal config semantically. Pure function: no I/O.
 /// Returns list of human-readable error messages (empty = valid).
 /// Designed for newbie-friendly diagnostics (CL-5).
-#[allow(dead_code)]
 pub fn validate_baremetal_config(config: &BaremetalInitConfig) -> Vec<String> {
     let mut errors = Vec::new();
 

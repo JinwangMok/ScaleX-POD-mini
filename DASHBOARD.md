@@ -6,7 +6,7 @@
 
 ## Current Status
 
-- **Tests**: 239 pass / clippy 0 warnings / fmt clean
+- **Tests**: 244 pass / clippy 0 warnings / fmt clean
 - **Code**: ~11,000 lines Rust, 27 source files, ~200 pure functions
 - **GitOps**: 33 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
