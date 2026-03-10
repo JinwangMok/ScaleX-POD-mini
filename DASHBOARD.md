@@ -4,7 +4,7 @@
 
 ---
 
-## 현재 상태: 191 tests pass / clippy 0 warnings / fmt clean
+## 현재 상태: 192 tests pass / clippy 0 warnings / fmt clean
 
 **코드 규모**: ~9,000 lines Rust, 23 source files, ~185 pure functions
 **GitOps**: 33 YAML files (bootstrap + generators + common/tower/sandbox apps)
@@ -116,11 +116,12 @@
 | S5-4 | CLI 서브커맨드 등록 (main.rs + mod.rs) | **완료** |
 | S5-5 | 21개 TDD 테스트 | **완료** |
 
-### Sprint 6: 향후 개선
+### Sprint 6: ArgoCD persistence — **완료** (TDD, 191→192 tests)
 
-| ID | 작업 | 설명 | 우선순위 |
-|----|------|------|----------|
-| S6-1 | ArgoCD persistence 활성화 | `persistence.enabled: true` + PVC 설정 | LOW |
+| ID | 작업 | 상태 |
+|----|------|------|
+| S6-1 | ArgoCD `persistence.enabled: true` 설정 | **완료** |
+| S6-2 | TDD 검증 테스트 (`test_argocd_persistence_enabled`) | **완료** |
 
 ### 카테고리 B: 사용자 수동 작업 (코드로 해결 불가)
 
