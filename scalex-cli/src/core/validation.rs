@@ -334,6 +334,7 @@ mod tests {
 
     /// Verify no k3s references in non-legacy project files.
     /// Checklist #9: k3s must be fully excluded from the project.
+    /// Expanded scope: includes docs, drawio, ops-guide (not just values.yaml).
     #[test]
     fn test_no_k3s_references_in_project_files() {
         let files_to_check: Vec<(&str, &str)> = vec![
@@ -345,6 +346,18 @@ mod tests {
             (
                 "tests/fixtures/values-minimal.yaml",
                 include_str!("../../../tests/fixtures/values-minimal.yaml"),
+            ),
+            (
+                "docs/ops-guide.md",
+                include_str!("../../../docs/ops-guide.md"),
+            ),
+            (
+                "docs/SETUP-GUIDE.md",
+                include_str!("../../../docs/SETUP-GUIDE.md"),
+            ),
+            (
+                "docs/TROUBLESHOOTING.md",
+                include_str!("../../../docs/TROUBLESHOOTING.md"),
             ),
         ];
 
@@ -362,6 +375,156 @@ mod tests {
             violations.is_empty(),
             "k3s references found in non-legacy files (Checklist #9 violation):\n{}",
             violations.join("\n")
+        );
+    }
+
+    /// Verify no ./playbox references in docs (should use scalex).
+    /// Checklist #9, DEFECT-3.
+    #[test]
+    fn test_no_legacy_playbox_references_in_docs() {
+        let files_to_check: Vec<(&str, &str)> = vec![
+            (
+                "docs/ops-guide.md",
+                include_str!("../../../docs/ops-guide.md"),
+            ),
+            (
+                "docs/SETUP-GUIDE.md",
+                include_str!("../../../docs/SETUP-GUIDE.md"),
+            ),
+            (
+                "docs/TROUBLESHOOTING.md",
+                include_str!("../../../docs/TROUBLESHOOTING.md"),
+            ),
+            (
+                "docs/CONTRIBUTING.md",
+                include_str!("../../../docs/CONTRIBUTING.md"),
+            ),
+            (
+                "docs/NETWORK-DISCOVERY.md",
+                include_str!("../../../docs/NETWORK-DISCOVERY.md"),
+            ),
+        ];
+
+        let mut violations = Vec::new();
+        for (name, content) in &files_to_check {
+            for (line_num, line) in content.lines().enumerate() {
+                if line.contains("./playbox") || line.contains("values.yaml") {
+                    violations.push(format!("{}:{}: {}", name, line_num + 1, line.trim()));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Legacy ./playbox or values.yaml references found in docs:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// Verify no dead code in gitops: every directory under common/tower/sandbox
+    /// must be referenced by at least one generator.
+    /// DEFECT-2: common/cilium/ is dead code.
+    #[test]
+    fn test_no_gitops_dead_code_directories() {
+        let gitops_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../gitops");
+
+        // Collect all generator content
+        let generator_files = [
+            "generators/tower/common-generator.yaml",
+            "generators/tower/tower-generator.yaml",
+            "generators/sandbox/common-generator.yaml",
+            "generators/sandbox/sandbox-generator.yaml",
+        ];
+        let mut all_generator_content = String::new();
+        for gf in &generator_files {
+            let path = gitops_root.join(gf);
+            if path.exists() {
+                all_generator_content.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            }
+        }
+
+        // Also include bootstrap/spread.yaml which references generators
+        let spread = gitops_root.join("bootstrap/spread.yaml");
+        if spread.exists() {
+            all_generator_content.push_str(&std::fs::read_to_string(&spread).unwrap_or_default());
+        }
+
+        // Check each app directory under common/, tower/, sandbox/
+        let mut dead_dirs = Vec::new();
+        for category in &["common", "tower", "sandbox"] {
+            let cat_dir = gitops_root.join(category);
+            if !cat_dir.exists() {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(&cat_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        let dir_name = entry.file_name().to_string_lossy().to_string();
+                        // Check if this directory name appears in any generator
+                        if !all_generator_content.contains(&dir_name) {
+                            dead_dirs.push(format!("gitops/{}/{}", category, dir_name));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            dead_dirs.is_empty(),
+            "GitOps dead code directories (not referenced by any generator):\n{}",
+            dead_dirs.join("\n")
+        );
+    }
+
+    /// Verify all GitOps repoURLs are consistent across generators and bootstrap.
+    /// DEFECT-4: All must reference the same repository.
+    #[test]
+    fn test_gitops_repo_url_consistency() {
+        let files: Vec<(&str, &str)> = vec![
+            (
+                "bootstrap/spread.yaml",
+                include_str!("../../../gitops/bootstrap/spread.yaml"),
+            ),
+            (
+                "generators/tower/common-generator.yaml",
+                include_str!("../../../gitops/generators/tower/common-generator.yaml"),
+            ),
+            (
+                "generators/tower/tower-generator.yaml",
+                include_str!("../../../gitops/generators/tower/tower-generator.yaml"),
+            ),
+            (
+                "generators/sandbox/common-generator.yaml",
+                include_str!("../../../gitops/generators/sandbox/common-generator.yaml"),
+            ),
+            (
+                "generators/sandbox/sandbox-generator.yaml",
+                include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml"),
+            ),
+        ];
+
+        let mut urls: Vec<(String, String)> = Vec::new();
+        for (name, content) in &files {
+            for line in content.lines() {
+                if let Some(url) = line.trim().strip_prefix("repoURL:") {
+                    urls.push((name.to_string(), url.trim().to_string()));
+                }
+            }
+        }
+
+        assert!(!urls.is_empty(), "No repoURL found in any GitOps file");
+
+        let first_url = &urls[0].1;
+        let inconsistent: Vec<String> = urls
+            .iter()
+            .filter(|(_, url)| url != first_url)
+            .map(|(name, url)| format!("{}: {} (expected {})", name, url, first_url))
+            .collect();
+
+        assert!(
+            inconsistent.is_empty(),
+            "Inconsistent repoURLs in GitOps files:\n{}",
+            inconsistent.join("\n")
         );
     }
 

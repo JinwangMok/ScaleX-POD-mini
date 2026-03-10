@@ -4,7 +4,7 @@
 
 ### Automated
 ```bash
-./playbox discover-nics
+scalex facts --all
 ```
 
 ### Manual (per node)
@@ -28,7 +28,7 @@ for iface in $(ls /sys/class/net/ | grep -v lo); do
 done
 ```
 
-## What to Put in values.yaml
+## What to Put in baremetal-init.yaml
 
 For each interface, record:
 - `name`: Interface name (e.g., eno1, ens2f0np0)

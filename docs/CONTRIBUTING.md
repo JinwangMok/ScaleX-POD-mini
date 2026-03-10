@@ -6,7 +6,7 @@
 - Indent: 2 spaces
 - Quotes: Double quotes for strings with variables, domains, IPs
 - Comments: Above the line, not inline
-- Naming: kebab-case for K8s resource names, snake_case for values.yaml keys
+- Naming: kebab-case for K8s resource names, snake_case for config YAML keys
 - Lint: `yamllint -c .yamllint.yml` must pass
 
 ### Shell Scripts
@@ -19,7 +19,7 @@
 - kubectl: Always `kubectl apply` (never `create` in scripts)
 
 ### Templates
-- All templates read from `values.yaml` only
+- All config reads from `credentials/` and `config/` files only
 - Jinja2 templates end with `.j2`, Go templates with `.tpl`
 - Generated output goes to `_generated/` (gitignored)
 - Every template has a corresponding test
