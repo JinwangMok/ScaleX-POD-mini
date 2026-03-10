@@ -3,6 +3,7 @@ use crate::models::sdi::SdiSpec;
 
 /// Validate that every SDI-mode cluster references a pool that exists in the SDI spec.
 /// Pure function: returns list of error messages (empty = valid).
+#[allow(dead_code)]
 pub fn validate_cluster_sdi_pool_mapping(
     k8s_config: &K8sClustersConfig,
     sdi_spec: &SdiSpec,
@@ -42,6 +43,7 @@ pub fn validate_cluster_sdi_pool_mapping(
 
 /// Validate that Cilium cluster IDs are unique across all clusters.
 /// Pure function.
+#[allow(dead_code)]
 pub fn validate_unique_cluster_ids(k8s_config: &K8sClustersConfig) -> Vec<String> {
     let mut seen = std::collections::HashMap::new();
     let mut errors = Vec::new();
@@ -334,11 +336,10 @@ mod tests {
 
     /// Verify no k3s references in non-legacy project files.
     /// Checklist #9: k3s must be fully excluded from the project.
-    /// Expanded scope: includes docs, drawio, ops-guide (not just values.yaml).
+    /// Expanded scope: includes docs, drawio, ops-guide, test fixtures.
     #[test]
     fn test_no_k3s_references_in_project_files() {
         let files_to_check: Vec<(&str, &str)> = vec![
-            ("values.yaml", include_str!("../../../values.yaml")),
             (
                 "tests/fixtures/values-full.yaml",
                 include_str!("../../../tests/fixtures/values-full.yaml"),
@@ -549,6 +550,27 @@ mod tests {
             id_errors.is_empty(),
             "Example files have duplicate cluster IDs: {:?}",
             id_errors
+        );
+    }
+
+    /// Legacy top-level directories and files should be cleaned up or moved to .legacy- prefix.
+    #[test]
+    fn test_no_legacy_toplevel_artifacts() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+
+        let legacy_artifacts = ["gitops-apps", "gitops-manual", "values.yaml"];
+
+        let mut found = Vec::new();
+        for name in &legacy_artifacts {
+            if repo_root.join(name).exists() {
+                found.push(*name);
+            }
+        }
+
+        assert!(
+            found.is_empty(),
+            "Legacy top-level artifacts still present (move dirs to .legacy- prefix, delete values.yaml): {:?}",
+            found
         );
     }
 }

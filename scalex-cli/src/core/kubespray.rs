@@ -152,6 +152,8 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
     vars.push_str("ingress_nginx_enabled: false\n");
     vars.push_str("local_path_provisioner_enabled: false\n");
     vars.push_str("node_feature_discovery_enabled: false\n");
+    vars.push_str("metrics_server_enabled: false\n");
+    vars.push_str("registry_enabled: false\n");
 
     // Cluster network
     vars.push_str(&format!(
@@ -753,6 +755,8 @@ mod tests {
             "ingress_nginx_enabled",
             "local_path_provisioner_enabled",
             "node_feature_discovery_enabled",
+            "metrics_server_enabled",
+            "registry_enabled",
         ];
 
         for key in &required_keys {
@@ -779,12 +783,34 @@ mod tests {
             ("ingress_nginx_enabled", "false"),
             ("local_path_provisioner_enabled", "false"),
             ("node_feature_discovery_enabled", "false"),
+            ("metrics_server_enabled", "false"),
+            ("registry_enabled", "false"),
         ];
 
         for (key, expected) in &disabled_addons {
             assert!(
                 vars.contains(&format!("{key}: {expected}")),
                 "missing addon disablement: {key}: {expected}\n--- generated vars ---\n{vars}"
+            );
+        }
+    }
+
+    /// DataX legacy addons.yml disables metrics_server and registry — Kubespray must match.
+    #[test]
+    fn test_cluster_vars_datax_addon_disablement_metrics_and_registry() {
+        let common = make_common();
+        let cluster = make_cluster_def("tower", "tower");
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        let datax_disabled = [
+            ("metrics_server_enabled", "false"),
+            ("registry_enabled", "false"),
+        ];
+
+        for (key, expected) in &datax_disabled {
+            assert!(
+                vars.contains(&format!("{key}: {expected}")),
+                "missing DataX addon disablement: {key}: {expected}\n--- generated vars ---\n{vars}"
             );
         }
     }

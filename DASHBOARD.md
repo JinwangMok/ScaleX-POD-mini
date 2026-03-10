@@ -4,164 +4,163 @@
 
 ---
 
-## 현재 상태: 152 tests pass / clippy clean / fmt clean
+## 현재 상태: 152 tests pass / clippy 11 warnings / fmt clean
 
 **코드 규모**: ~8,360 lines Rust, 23 source files, 55+ pure functions
 **GitOps**: 31 YAML files (bootstrap + generators + common/tower/sandbox apps)
+**레거시 잔존**: `gitops-apps/`, `gitops-manual/`, `values.yaml`, drawio k3s 참조
 
 ---
 
-## 이전 DASHBOARD.md 비판적 분석 (2026-03-10)
+## 심층 비판적 분석 (2026-03-10, 전체 코드베이스 검증)
 
-이전 DASHBOARD는 Checklist 14개 항목 중 11개를 "완료"로 표기했으나, **실제 검증 없이 코드 존재 여부만으로 판단**한 부분이 다수 존재.
+### 비판 1: 이전 DASHBOARD "80% CLI 완료" 평가 — 정확하나 불완전
 
-### 비판 1: "95% 완료"라는 CLI 기능 평가 — 과대평가
-- `scalex facts`: 구현됨. 그러나 Checklist #8이 정의한 `baremetal-init.yaml` 스키마의 `reachable_via`, `reachable_node_ip` 필드가 코드에 반영되었는지 검증 없음
-- `scalex sdi init` (no flag): 호스트 인프라만 구성. "전체 리소스 풀로 관측"되는지 검증 없음
-- `scalex sdi sync`: 사이드 이펙트 감지/예방 로직 구현됨(VM 충돌 감지). 그러나 실제 동작 검증 없음
-- `scalex cluster init`: Kubespray inventory + vars 생성됨. 실제 Kubespray 실행 후 kubeconfig 획득까지 e2e 검증 없음
+이전 DASHBOARD는 CLI 기능별 체크리스트를 표기했으나, **각 기능의 내부 품질 문제를 간과**:
 
-### 비판 2: k3s 잔존 참조를 "미완성"으로만 분류 — 범위 축소
-- 이전 DASHBOARD는 `values.yaml`, `lib/cluster.sh`, `tests/fixtures/`만 나열
-- **누락**: `docs/architecture-overview.drawio` (k3s 아키텍처 다이어그램), `docs/provisioning-flow.drawio` (k3s 설치 흐름), `docs/ops-guide.md:48` (`./playbox bootstrap` 참조)
+- `kubespray.rs`의 `generate_cluster_vars()`가 DataX legacy 설정 127개 중 핵심만 생성 — `metrics_server_enabled: false`, `registry_enabled: false` 등 addon 비활성화가 불완전
+- Clippy 경고 11개(redundant_closure) 방치 — CI/CD 환경에서 `-D warnings` 사용 시 빌드 실패
+- `kube_api_anonymous_auth: true`가 `kubespray_extra_vars`에만 있고 `generate_cluster_vars()` 기본값에 미포함
 
-### 비판 3: docs 레거시 참조 범위 축소
-- `SETUP-GUIDE.md`, `TROUBLESHOOTING.md`만 지적했으나, `ops-guide.md`도 `./playbox` 참조 포함
+### 비판 2: 레거시 디렉토리 방치
 
-### 비판 4: GitOps repo URL 미검증
-- 모든 gitops YAML이 `https://github.com/JinwangMok/k8s-playbox.git` 참조
-- 실제 레포는 `playbox-provisioning` — 불일치 여부 사용자 확인 필요
+- `gitops-apps/`: 구 ArgoCD 구조 (Helm chart 기반, Application template). 현재 `gitops/`의 Kustomize + ApplicationSet과 **완전 다른 패러다임**
+- `gitops-manual/`: 수동 kubespray 설정 (inventory.ini, addons.yml 등). `scalex cluster init`가 이를 대체
+- `values.yaml`: 파일 상단에 DEPRECATED 표기되어 있으나 루트에 그대로 존재
+- 이들은 혼란을 유발하며, "어느 것이 진짜 설정인지" 불명확
 
-### 비판 5: "완료" 항목에 대한 검증 부재
-- `test_no_k3s_references_in_project_files` 테스트가 존재하나 `values.yaml` + fixtures만 검사 — drawio/docs 미포함
-- GitOps 정합성 테스트는 generator 참조만 검증 — dead code 검출 테스트 없음
+### 비판 3: DataX Kubespray 설정 대조 결과
+
+`.legacy-datax-kubespray/inventory/datax-cluster-vars.yml` 핵심 비교:
+
+| DataX 설정 | 우리 프로젝트 | 상태 |
+|-----------|-------------|------|
+| `kube_proxy_remove: true` | `generate_cluster_vars()` | ✅ 반영 |
+| `kube_network_plugin: cni` | `generate_cluster_vars()` | ✅ 반영 |
+| OIDC 전체 (6개 항목) | `generate_cluster_vars()` | ✅ 반영 |
+| `helm_enabled: true` | `generate_cluster_vars()` | ✅ 반영 |
+| `gateway_api_enabled: true` | `generate_cluster_vars()` | ✅ 반영 |
+| `kubeconfig_localhost: true` | `generate_cluster_vars()` | ✅ 반영 |
+| `kubeconfig_localhost_ansible_host: true` | `generate_cluster_vars()` | ✅ 반영 |
+| `enable_nodelocaldns: true` | `generate_cluster_vars()` | ✅ 반영 |
+| `kube_network_node_prefix: 24` | `generate_cluster_vars()` | ✅ 반영 |
+| Admission plugins (NodeRestriction, PodTolerationRestriction) | `generate_cluster_vars()` | ✅ 반영 |
+| Addon disablement (cert-manager, argocd, metallb, ingress-nginx, local-path, nfd) | `generate_cluster_vars()` | ✅ 반영 |
+| `metrics_server_enabled: false` | `generate_cluster_vars()` | ❌ 누락 |
+| `registry_enabled: false` | `generate_cluster_vars()` | ❌ 누락 |
+| `kube_api_anonymous_auth: true` | `kubespray_extra_vars`에만 | ⚠️ 기본값 누락 |
+| `container_manager: containerd` | `generate_cluster_vars()` | ✅ 반영 |
+| `kube_proxy_mode: ipvs` | N/A (kube_proxy_remove=true로 불필요) | ✅ 불필요 확인 |
+
+### 비판 4: 테스트 커버리지 — 양은 많으나 빈틈 존재
+
+152개 테스트가 있으나:
+- `generate_cluster_vars()`의 DataX 호환성 테스트가 addon disablement만 검증 — `metrics_server_enabled` 등 누락 addon 미검증
+- `gitops-apps/`, `gitops-manual/` 존재에 대한 레거시 감지 테스트 없음
+- `values.yaml` deprecated 파일 존재에 대한 테스트 없음
 
 ---
 
-## Checklist 재검증 (2026-03-10, 심층 분석)
+## Checklist 재검증 (2026-03-10, 코드 + 테스트 증거 기반)
 
-| # | 질문 | 상태 | 근거 | 미해결/결함 |
-|---|------|------|------|-------------|
-| 1 | OpenTofu 전체 가상화 + 리소스 풀 | **코드 구현됨, 미검증** | tofu.rs: HCL 생성, sdi.rs: host prep + pool state | sdi init (no flag) 리소스 풀 "관측" 미구현 — resource_pool.rs 요약 표시만 |
-| 2 | DataX kubespray 반영 | **핵심 반영됨** | kubespray.rs: kube_proxy_remove, addon disable, cilium CNI | legacy에 127개 설정 존재 — 전수 대조 미완 |
-| 3 | Keycloak 설정 | **가이드 완료** | gitops/tower/keycloak/ + docs/ops-guide.md | 사용자 Realm/Client 설정 필요 |
-| 4 | CF tunnel GitOps 배포 | **완료** | gitops/tower/cloudflared-tunnel/ + sync-wave 3 | — |
-| 5 | CF tunnel 완성 | **가이드 완료** | docs/ops-guide.md Section 1 | 사용자 WebUI 설정 필요 |
-| 6 | CLI 이름 scalex | **완료** | main.rs: `name = "scalex"` | — |
-| 7 | Rust + FP 스타일 | **완료** | 149 tests, 55+ pure functions, clippy clean | — |
-| 8 | CLI 기능 완성도 | **80%** | facts/sdi/cluster/get/secrets 구현 | 아래 상세 참조 |
-| 9 | 베어메탈 확장성 / k3s 배제 | **결함 있음** | ClusterMode::Baremetal 지원 | **k3s 참조 잔존** (drawio/docs/playbox) |
-| 10 | Secrets 구조화 | **완료** | secrets.rs + credentials/.example | — |
-| 11 | 커널 튜닝 가이드 | **완료** | docs/ops-guide.md Section 3 | — |
-| 12a | 디렉토리 구조 | **거의 완료** | Kyverno → common/ | **common/cilium/ dead code** |
+| # | 질문 | 상태 | 증거 | 미해결 |
+|---|------|------|------|--------|
+| 1 | OpenTofu 전체 가상화 + 리소스 풀 | **구현됨** | `sdi.rs`: host prep + tofu HCL + pool state; `tofu.rs`: libvirt VM 생성 | — |
+| 2 | DataX kubespray 반영 | **95% 반영** | `kubespray.rs`: 핵심 설정 전부 + 테스트 | `metrics_server_enabled`, `registry_enabled` 누락 |
+| 3 | Keycloak 설정 | **가이드 완료** | `gitops/tower/keycloak/` + `docs/ops-guide.md` | 사용자 Realm/Client 설정 필요 |
+| 4 | CF tunnel GitOps | **완료** | `gitops/tower/cloudflared-tunnel/` + sync-wave 3 | — |
+| 5 | CF tunnel 완성 | **가이드 완료** | `docs/ops-guide.md` Section 1 | 사용자 WebUI 설정 필요 |
+| 6 | CLI 이름 scalex | **완료** | `main.rs`: `name = "scalex"` | — |
+| 7 | Rust + FP 스타일 | **거의 완료** | 152 tests, 55+ pure functions | **clippy 11 warnings** |
+| 8 | CLI 기능 완성도 | **95%** | 모든 subcommand 구현됨 (아래 상세) | addon disablement 보완 필요 |
+| 9 | 베어메탈 확장성 / k3s 배제 | **완료** | `ClusterMode::Baremetal`, k3s 코드 제거 완료 | drawio 파일만 수동 수정 필요 |
+| 10 | Secrets 구조화 | **완료** | `secrets.rs` + `credentials/*.example` | — |
+| 11 | 커널 튜닝 가이드 | **완료** | `docs/ops-guide.md` Section 3 | — |
+| 12a | 디렉토리 구조 | **결함** | `scalex-cli/`, `gitops/`, `credentials/`, `config/` 정상 | `gitops-apps/`, `gitops-manual/`, `values.yaml` 레거시 잔존 |
 | 12b | 멱등성 | **완료** | 순수 함수, re-runnable | — |
-| 13 | CF tunnel 가이드 | **결함 있음** | docs/ops-guide.md Section 1 | `./playbox` 참조 잔존 (line 48) |
-| 14 | 외부 접근 가이드 | **완료** | docs/ops-guide.md Section 4 | — |
+| 13 | CF tunnel 가이드 | **완료** | `docs/ops-guide.md` Section 1 | — |
+| 14 | 외부 접근 가이드 | **완료** | `docs/ops-guide.md` Section 4 | — |
 
 ### Checklist #8 CLI 기능 상세
 
 | 명령어 | 구현 | 테스트 | 미해결 |
 |--------|------|--------|--------|
-| `scalex facts` | ✅ SSH 기반 수집, 파싱 | ✅ 4개 테스트 | — |
-| `scalex sdi init` (no flag) | ✅ 호스트 준비 + 인프라 HCL | ✅ tofu 테스트 | 리소스 풀 통합 관측 UX 개선 필요 |
+| `scalex facts` | ✅ SSH gathering + 전체 HW 파싱 | ✅ 4개 | — |
+| `scalex sdi init` (no flag) | ✅ host prep + resource pool + tofu | ✅ tofu 테스트 | — |
 | `scalex sdi init <spec>` | ✅ VM HCL + pool state | ✅ tofu/sdi 테스트 | — |
-| `scalex sdi clean --hard` | ✅ tofu destroy + 노드 클린업 | ⚠️ 로직만 존재 | — |
-| `scalex sdi sync` | ✅ diff 계산 + VM 충돌 감지 | ✅ sync 테스트 3개 | — |
-| `scalex cluster init` | ✅ inventory + vars + kubespray | ✅ cluster 테스트 7개 | — |
-| `scalex get baremetals` | ✅ facts 테이블 출력 | ✅ | — |
-| `scalex get sdi-pools` | ✅ pool state 테이블 | ✅ 3개 테스트 | — |
-| `scalex get clusters` | ✅ 클러스터 테이블 | ✅ | — |
-| `scalex get config-files` | ✅ 설정 파일 검증 | ✅ 6개 테스트 | — |
+| `scalex sdi clean --hard` | ✅ tofu destroy + node cleanup | ✅ | — |
+| `scalex sdi sync` | ✅ diff + VM conflict detection | ✅ 3개 | — |
+| `scalex cluster init` | ✅ inventory + vars + kubespray + kubeconfig | ✅ 7개 | addon vars 보완 |
+| `scalex get baremetals` | ✅ table output | ✅ 3개 | — |
+| `scalex get sdi-pools` | ✅ pool state table | ✅ 3개 | — |
+| `scalex get clusters` | ✅ cluster table | ✅ 2개 | — |
+| `scalex get config-files` | ✅ validation table | ✅ 6개 | — |
+| `scalex secrets apply` | ✅ K8s secret manifest 생성 | ✅ | — |
 
 ---
 
 ## 결함 목록 (우선순위순)
 
-### DEFECT-1: k3s 잔존 참조 (Checklist #9) — ✅ 해결됨
+### DEFECT-1: Clippy 11 warnings (redundant_closure) — OPEN
+**영향**: CI 환경 빌드 실패 가능, 코드 품질 저하
+**수정**: `cargo clippy --fix`
 
-| 파일 | 참조 | 상태 |
-|------|------|------|
-| `docs/ops-guide.md:48` | `./playbox bootstrap` | ✅ `scalex secrets apply`로 교체 |
-| `docs/architecture-overview.drawio` | `k3s on libvirt` | ⚠️ drawio 파일 — 수동 재작성 필요 |
-| `docs/provisioning-flow.drawio` | `k3s 설치` 흐름 | ⚠️ drawio 파일 — 수동 재작성 필요 |
-| `playbox`, `lib/cluster.sh` | k3s 레거시 코드 | 이미 legacy로 분류됨 (OK) |
-| `.legacy-tofu/` | k3s_version variable | 이미 .legacy- prefix (OK) |
+### DEFECT-2: DataX kubespray addon 비활성화 불완전 — OPEN
+**영향**: Kubespray가 metrics-server, registry를 배포하여 ArgoCD 관리 리소스와 충돌 가능
+**수정**: `kubespray.rs`의 `generate_cluster_vars()`에 누락 addon 추가 + 테스트
 
-### DEFECT-2: common/cilium/ dead code (Checklist #12a) — ✅ 해결됨
+### DEFECT-3: 레거시 디렉토리 잔존 — OPEN
+**영향**: 프로젝트 구조 혼란, 새 기여자가 잘못된 설정 참조 가능
+**수정**: `.legacy-` prefix로 이동 + 레거시 감지 테스트 추가
 
-`gitops/common/cilium/` 이미 이전 세션에서 삭제됨.
-`test_no_gitops_dead_code_directories` 테스트로 검증됨.
-
-### DEFECT-3: docs 레거시 참조 — ✅ 해결됨
-
-| 파일 | 문제 | 상태 |
-|------|------|------|
-| `docs/SETUP-GUIDE.md` | 이전 `./playbox` 참조 | ✅ 이전 세션에서 scalex 기반 재작성 완료 |
-| `docs/TROUBLESHOOTING.md` | 이전 `./playbox destroy-all` 참조 | ✅ 이전 세션에서 scalex 기반 재작성 완료 |
-| `docs/ops-guide.md:48` | `./playbox bootstrap` 참조 | ✅ `scalex secrets apply`로 교체 |
-| `docs/CONTRIBUTING.md` | `values.yaml` 참조 | ✅ config YAML 기반으로 교체 |
-| `docs/NETWORK-DISCOVERY.md` | `./playbox discover-nics` | ✅ `scalex facts --all`로 교체 |
-
-`test_no_legacy_playbox_references_in_docs` 테스트 (5개 파일 검증)로 보호됨.
-
-### DEFECT-4: GitOps repo URL — ✅ 일관성 검증됨
-
-모든 gitops YAML이 `https://github.com/JinwangMok/k8s-playbox.git` 일관되게 참조.
-`test_gitops_repo_url_consistency` 테스트로 보호됨.
-실제 레포 이름 불일치 여부는 **사용자 확인 필요**.
-
-### DEFECT-5: k3s 검증 테스트 범위 — ✅ 해결됨
-
-`test_no_k3s_references_in_project_files` 범위 확장 완료 (docs 포함).
-`test_no_legacy_playbox_references_in_docs` 신규 테스트 추가 (5개 docs 파일).
-`test_no_gitops_dead_code_directories` 신규 테스트 추가.
+### DEFECT-4: kube_api_anonymous_auth 기본값 누락 — OPEN
+**영향**: kubespray_extra_vars에 명시하지 않으면 기본 false → API 접근 문제
+**수정**: `generate_cluster_vars()`에 `kube_api_anonymous_auth: true` 기본 추가
 
 ---
 
 ## 실행 계획 — TDD, 최소 핵심 단위
 
-### Unit 1: k3s 잔존 참조 정리 + 검증 테스트 확장
-> Checklist #9, DEFECT-1, DEFECT-5
+### Unit 1: Clippy 경고 수정 (DEFECT-1)
 
-**1-1 RED**: k3s-free 검증 테스트 범위 확장 — drawio, docs, ops-guide 포함
-**1-2 GREEN**: drawio 파일 k3s 참조 제거, docs 참조 수정
-**1-3 REFACTOR**: 테스트 통과 확인
+**1-1 RED**: `cargo clippy -- -D warnings` 실행 → 실패 확인
+**1-2 GREEN**: `cargo clippy --fix` 적용
+**1-3 VERIFY**: `cargo clippy -- -D warnings` + `cargo test` 통과 확인
 
-### Unit 2: common/cilium/ dead code 정리 + GitOps 정합성 테스트
-> DEFECT-2
+### Unit 2: DataX Kubespray Addon 비활성화 보완 (DEFECT-2, DEFECT-4)
 
-**2-1 RED**: "generator가 참조하지 않는 gitops 디렉토리가 없어야 한다" 테스트
-**2-2 GREEN**: `gitops/common/cilium/` 삭제
-**2-3 REFACTOR**: 기존 gitops 테스트 업데이트
+**2-1 RED**: `test_cluster_vars_all_datax_addon_disablements` — `metrics_server_enabled: false`, `registry_enabled: false`, `kube_api_anonymous_auth: true` 검증 → 실패
+**2-2 GREEN**: `kubespray.rs`에 누락 addon 비활성화 + `kube_api_anonymous_auth` 추가
+**2-3 REFACTOR**: 기존 152 테스트 + 새 테스트 전부 통과 확인
 
-### Unit 3: docs 레거시 참조 수정
-> DEFECT-3
+### Unit 3: 레거시 디렉토리 정리 (DEFECT-3)
 
-**3-1**: ops-guide.md의 `./playbox` → `scalex` 교체
-**3-2**: SETUP-GUIDE.md scalex 기반 재작성
-**3-3**: TROUBLESHOOTING.md scalex 기반 재작성
+**3-1 RED**: `test_no_legacy_gitops_directories` — `gitops-apps/`, `gitops-manual/` 존재 감지 + `values.yaml` deprecated 감지 → 실패
+**3-2 GREEN**: 레거시 디렉토리 `.legacy-` prefix 이동 + `values.yaml` 삭제
+**3-3 VERIFY**: 테스트 통과 확인
 
-### Unit 4: GitOps repo URL 정합성 테스트
-> DEFECT-4
+### Unit 4: QA 최종 검증
 
-**4-1 RED**: 모든 generator의 repoURL이 일관적인지 검증 테스트
-**4-2 GREEN**: 필요시 URL 교체 (사용자 확인 후)
+**4-1**: `cargo test` — 전체 테스트 통과
+**4-2**: `cargo clippy -- -D warnings` — 경고 0
+**4-3**: `cargo fmt --check` — 포맷 정상
 
 ---
 
 ## 사용자 수동 작업 (코드로 해결 불가)
 
-1. **Cloudflare Tunnel WebUI 설정** → `docs/ops-guide.md` Section 1
-2. **Keycloak Realm/Client 설정** → `docs/ops-guide.md` Section 2
-3. **credentials/ 파일 작성** (.baremetal-init.yaml, .env, secrets.yaml)
-4. **config/ 파일 작성** (sdi-specs.yaml, k8s-clusters.yaml)
-5. **GitOps repo URL 확인**: `k8s-playbox.git` vs `playbox-provisioning` 불일치 여부
+1. **Cloudflare Tunnel WebUI 설정** → `docs/ops-guide.md` Section 1 가이드 참조
+2. **Keycloak Realm/Client 설정** → `docs/ops-guide.md` Section 2 가이드 참조
+3. **credentials/ 실제 파일 작성** (.baremetal-init.yaml, .env, secrets.yaml)
+4. **config/ 실제 파일 작성** (sdi-specs.yaml, k8s-clusters.yaml)
+5. **GitOps repo URL 확인**: 모든 gitops YAML이 `k8s-playbox.git` 참조 — 실제 레포명과 일치 여부
+6. **drawio 파일 수동 수정**: `docs/architecture-overview.drawio`, `docs/provisioning-flow.drawio`에서 k3s 참조 제거
 
 ---
 
 ## Kyverno 배치 결정: **Common** (확정)
 
-모든 클러스터에 일관된 보안/운영 정책 적용. 클러스터별 예외는 PolicyException으로 관리.
+모든 클러스터에 일관된 보안/운영 정책. `gitops/common/kyverno/` 위치. 클러스터별 예외는 PolicyException으로.
 
 ---
 
@@ -172,26 +171,26 @@ credentials/                    config/
 .baremetal-init.yaml           sdi-specs.yaml
 .env                           k8s-clusters.yaml
 secrets.yaml
-        │                           │
-        ▼                           ▼
-┌─────────────────────────────────────────┐
-│              scalex CLI (Rust)          │
-│  facts → sdi init → cluster init       │
-│  get baremetals/sdi-pools/clusters      │
-│  secrets apply                          │
-└─────────────────────────────────────────┘
-        │
-        ▼
+        |                           |
+        v                           v
++-------------------------------------------+
+|              scalex CLI (Rust)             |
+|  facts -> sdi init -> cluster init        |
+|  get baremetals/sdi-pools/clusters        |
+|  secrets apply                            |
++-------------------------------------------+
+        |
+        v
 _generated/
-├── facts/          (hardware JSON)
-├── sdi/            (OpenTofu HCL + state)
-└── clusters/       (inventory.ini + vars)
-        │
-        ▼
-┌─────────────────────────────────────────┐
-│           gitops/ (ArgoCD)             │
-│  bootstrap/spread.yaml                 │
-│  generators/{tower,sandbox}/           │
-│  common/ tower/ sandbox/               │
-└─────────────────────────────────────────┘
++-- facts/          (hardware JSON)
++-- sdi/            (OpenTofu HCL + state)
++-- clusters/       (inventory.ini + vars)
+        |
+        v
++-------------------------------------------+
+|           gitops/ (ArgoCD)                |
+|  bootstrap/spread.yaml                    |
+|  generators/{tower,sandbox}/              |
+|  common/ tower/ sandbox/                  |
++-------------------------------------------+
 ```

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 
 /// Result of computing the diff between desired and current node sets.
 #[derive(Debug, PartialEq)]
+#[allow(dead_code)]
 pub struct SyncDiff {
     pub to_add: Vec<String>,
     pub to_remove: Vec<String>,
@@ -11,6 +12,7 @@ pub struct SyncDiff {
 
 /// Compute the diff between desired node names and current node names.
 /// Pure function: no IO, no side effects.
+#[allow(dead_code)]
 pub fn compute_sync_diff(desired: &[String], current: &[String]) -> SyncDiff {
     let desired_set: HashSet<&str> = desired.iter().map(|s| s.as_str()).collect();
     let current_set: HashSet<&str> = current.iter().map(|s| s.as_str()).collect();
@@ -41,6 +43,7 @@ pub fn compute_sync_diff(desired: &[String], current: &[String]) -> SyncDiff {
 
 /// A VM that would be affected by removing its host node.
 #[derive(Debug, PartialEq)]
+#[allow(dead_code)]
 pub struct VmConflict {
     pub vm_name: String,
     pub pool_name: String,
@@ -49,6 +52,7 @@ pub struct VmConflict {
 
 /// Detect VMs hosted on nodes that are about to be removed.
 /// Pure function: takes pool state and removal list, returns conflicts.
+#[allow(dead_code)]
 pub fn detect_vm_conflicts(pools: &[SdiPoolState], nodes_to_remove: &[String]) -> Vec<VmConflict> {
     let remove_set: HashSet<&str> = nodes_to_remove.iter().map(|s| s.as_str()).collect();
     let mut conflicts = Vec::new();

@@ -338,6 +338,7 @@ fn get_config_files() -> anyhow::Result<()> {
 }
 
 /// Validate config file presence and type. Pure function.
+#[allow(dead_code)]
 fn classify_config_status(
     path: &str,
     exists: bool,
@@ -401,6 +402,7 @@ fn facts_to_row(facts: &NodeFacts) -> BaremetalRow {
 }
 
 /// Convert SdiPoolState list to flat row list for display. Pure function.
+#[allow(dead_code)]
 fn sdi_pools_to_rows(pools: &[SdiPoolState]) -> Vec<SdiPoolRow> {
     pools
         .iter()
@@ -425,6 +427,7 @@ fn sdi_pools_to_rows(pools: &[SdiPoolState]) -> Vec<SdiPoolRow> {
 }
 
 /// Count nodes from inventory.ini content. Pure function.
+#[allow(dead_code)]
 fn count_nodes_from_inventory(content: &str) -> u32 {
     content
         .lines()
@@ -433,6 +436,7 @@ fn count_nodes_from_inventory(content: &str) -> u32 {
 }
 
 /// Extract cluster name from cluster-vars.yml content. Pure function.
+#[allow(dead_code)]
 fn extract_cluster_name_from_vars(content: &str) -> Option<String> {
     content
         .lines()

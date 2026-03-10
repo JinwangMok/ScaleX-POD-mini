@@ -103,7 +103,7 @@ pub fn generate_all_secrets_manifests(
     if specs.is_empty() {
         return Ok(String::new());
     }
-    let manifests: Vec<String> = specs.iter().map(|s| generate_k8s_secret_yaml(s)).collect();
+    let manifests: Vec<String> = specs.iter().map(generate_k8s_secret_yaml).collect();
     Ok(manifests.join("---\n"))
 }
 
