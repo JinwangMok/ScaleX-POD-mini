@@ -2548,4 +2548,85 @@ spec:
             "CF tunnel must have noTLSVerify for K8s API endpoint"
         );
     }
+
+    /// CL-9: Baremetal mode full pipeline — inventory + vars generation together.
+    /// Ensures no SDI layer is needed and vars contain all production settings.
+    #[test]
+    fn test_baremetal_mode_full_pipeline_inventory_and_vars() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+        let common = &k8s.config.common;
+
+        // Create a baremetal cluster (not in example, but structure must work)
+        let bm_cluster = ClusterDef {
+            cluster_name: "prod-bm".to_string(),
+            cluster_mode: ClusterMode::Baremetal,
+            cluster_sdi_resource_pool: String::new(),
+            baremetal_nodes: vec![
+                BaremetalNode {
+                    node_name: "bm-cp-0".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                },
+                BaremetalNode {
+                    node_name: "bm-w-0".to_string(),
+                    ip: "10.0.0.2".to_string(),
+                    roles: vec!["worker".to_string()],
+                },
+                BaremetalNode {
+                    node_name: "bm-w-1".to_string(),
+                    ip: "10.0.0.3".to_string(),
+                    roles: vec!["worker".to_string()],
+                },
+            ],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.234.0.0/17".to_string(),
+                service_cidr: "10.234.128.0/18".to_string(),
+                dns_domain: "prod.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: Some(CiliumConfig {
+                cluster_id: 10,
+                cluster_name: "prod-bm".to_string(),
+            }),
+            oidc: None,
+            kubespray_extra_vars: None,
+            ssh_user: Some("ops".to_string()),
+        };
+
+        // Pipeline step 1: Generate inventory
+        let ini = crate::core::kubespray::generate_inventory_baremetal(&bm_cluster).unwrap();
+        assert!(ini.contains("bm-cp-0"), "inventory missing control-plane node");
+        assert!(ini.contains("bm-w-0"), "inventory missing worker-0");
+        assert!(ini.contains("bm-w-1"), "inventory missing worker-1");
+        assert!(ini.contains("ansible_host=10.0.0.1"), "wrong CP IP");
+
+        // Pipeline step 2: Generate kubespray vars (uses same common config as SDI clusters)
+        let vars = crate::core::kubespray::generate_cluster_vars(&bm_cluster, common);
+        assert!(vars.contains(&common.kubernetes_version), "vars missing k8s version");
+        assert!(vars.contains("kube_network_plugin: cni"), "vars missing CNI config (cilium)");
+        assert!(vars.contains("kube_proxy_remove: true"), "vars missing kube-proxy removal");
+        assert!(vars.contains("dns_domain: \"prod.local\""), "vars missing DNS domain");
+        assert!(vars.contains("kube_pods_subnet: \"10.234.0.0/17\""), "vars missing pod CIDR");
+        assert!(vars.contains("kube_service_addresses: \"10.234.128.0/18\""), "vars missing service CIDR");
+
+        // Pipeline step 3: Verify baremetal cluster does NOT need SDI pool mapping
+        let mapping_errors = validate_cluster_sdi_pool_mapping(
+            &K8sClustersConfig {
+                config: K8sConfig {
+                    common: common.clone(),
+                    clusters: vec![bm_cluster.clone()],
+                    argocd: k8s.config.argocd.clone(),
+                    domains: k8s.config.domains.clone(),
+                },
+            },
+            &serde_yaml::from_str::<SdiSpec>(include_str!("../../../config/sdi-specs.yaml.example")).unwrap(),
+        );
+        assert!(
+            mapping_errors.is_empty(),
+            "Baremetal cluster must NOT require SDI pool mapping, got: {:?}",
+            mapping_errors
+        );
+    }
 }

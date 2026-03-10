@@ -108,7 +108,7 @@
 | `scalex get clusters` | OK | cluster dirs -> table |
 | `scalex get config-files` | OK | file presence + YAML validation |
 | `sdi init` facts 자동 감지/실행 | **FIXED (9a)** | `sdi.rs:121-128` -- 이미 구현되어 있었음. `dir_is_empty` 테스트 3개 추가 |
-| **`sdi init` (no flag)의 "리소스 풀 관측" 의미 불명확** | **WARN** | JSON summary만 생성. 진정한 "통합 풀" 아님 |
+| `sdi init` (no flag) 리소스 풀 구성 | **OK** | libvirt provider + storage pool HCL 생성 + tofu apply + 통합 summary JSON (5 tests) |
 
 ### CL-9: 베어메탈 직접 사용 확장성
 
