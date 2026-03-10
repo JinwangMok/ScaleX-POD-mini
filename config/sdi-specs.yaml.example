@@ -1,0 +1,71 @@
+# config/sdi-specs.yaml — Software-Defined Infrastructure VM pool specifications
+# Defines how bare-metal resources are carved into VM pools via OpenTofu + libvirt.
+
+resource_pool:
+  name: "playbox-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8", "8.8.4.4"]
+
+os_image:
+  source: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+  format: "qcow2"
+
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id_ed25519.pub"
+  packages: [curl, apt-transport-https, nfs-common, open-iscsi]
+
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      purpose: "management"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 2
+          mem_gb: 3
+          disk_gb: 30
+          roles: [control-plane, worker]
+
+    - pool_name: "sandbox"
+      purpose: "workload"
+      placement:
+        spread: true  # Spread VMs across available hosts
+      node_specs:
+        - node_name: "sandbox-cp-0"
+          ip: "192.168.88.110"
+          cpu: 4
+          mem_gb: 8
+          disk_gb: 60
+          host: "playbox-0"  # Explicit placement
+          roles: [control-plane, etcd]
+
+        - node_name: "sandbox-w-0"
+          ip: "192.168.88.120"
+          cpu: 8
+          mem_gb: 16
+          disk_gb: 100
+          host: "playbox-1"
+          roles: [worker]
+
+        - node_name: "sandbox-w-1"
+          ip: "192.168.88.121"
+          cpu: 8
+          mem_gb: 16
+          disk_gb: 100
+          host: "playbox-2"
+          roles: [worker]
+
+        - node_name: "sandbox-w-2"
+          ip: "192.168.88.122"
+          cpu: 12
+          mem_gb: 32
+          disk_gb: 200
+          host: "playbox-3"
+          roles: [worker]
+          devices:
+            gpu_passthrough: true  # VFIO-PCI (requires IOMMU)

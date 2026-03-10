@@ -1,0 +1,354 @@
+use crate::models::sdi::{NodeSpec, SdiSpec};
+
+/// Generate OpenTofu HCL for a complete SDI spec.
+/// Pure function: returns HCL string without writing files.
+pub fn generate_tofu_main(spec: &SdiSpec) -> String {
+    let mut hcl = String::new();
+
+    // Terraform block
+    hcl.push_str(&generate_terraform_block());
+    hcl.push('\n');
+
+    // Provider blocks — one per unique host
+    let hosts = collect_unique_hosts(spec);
+    for host in &hosts {
+        hcl.push_str(&generate_provider_block(host));
+        hcl.push('\n');
+    }
+
+    // Base image volume per host
+    for host in &hosts {
+        hcl.push_str(&generate_base_volume(
+            host,
+            &spec.os_image.source,
+            &spec.os_image.format,
+        ));
+        hcl.push('\n');
+    }
+
+    // Cloud-init common data
+    hcl.push_str(&generate_cloudinit_data(spec));
+    hcl.push('\n');
+
+    // VM resources for each pool
+    for pool in &spec.spec.sdi_pools {
+        hcl.push_str(&format!(
+            "# --- Pool: {} ({}) ---\n",
+            pool.pool_name, pool.purpose
+        ));
+        for node in &pool.node_specs {
+            let host = resolve_node_host(node, &pool.placement.hosts);
+            hcl.push_str(&generate_vm_resource(
+                node,
+                &host,
+                &spec.resource_pool.network.management_bridge,
+            ));
+            hcl.push('\n');
+        }
+    }
+
+    // Outputs
+    hcl.push_str(&generate_outputs(spec));
+
+    hcl
+}
+
+/// Collect all unique host names from the spec
+fn collect_unique_hosts(spec: &SdiSpec) -> Vec<String> {
+    let mut hosts = Vec::new();
+    for pool in &spec.spec.sdi_pools {
+        for node in &pool.node_specs {
+            let host = resolve_node_host(node, &pool.placement.hosts);
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        }
+    }
+    hosts
+}
+
+/// Resolve which physical host a VM should run on
+fn resolve_node_host(node: &NodeSpec, pool_hosts: &[String]) -> String {
+    if let Some(ref host) = node.host {
+        host.clone()
+    } else if let Some(first) = pool_hosts.first() {
+        first.clone()
+    } else {
+        "localhost".to_string()
+    }
+}
+
+fn generate_terraform_block() -> String {
+    r#"terraform {
+  required_providers {
+    libvirt = {
+      source  = "dmacvicar/libvirt"
+      version = "~> 0.8"
+    }
+  }
+}
+"#
+    .to_string()
+}
+
+fn generate_provider_block(host: &str) -> String {
+    // For localhost, use local qemu connection; otherwise SSH
+    if host == "localhost" {
+        r#"provider "libvirt" {
+  uri = "qemu:///system"
+}
+"#
+        .to_string()
+    } else {
+        format!(
+            r#"provider "libvirt" {{
+  alias = "{host}"
+  uri   = "qemu+ssh://root@{host}/system"
+}}
+"#
+        )
+    }
+}
+
+fn generate_base_volume(host: &str, source: &str, format: &str) -> String {
+    let alias = if host == "localhost" {
+        String::new()
+    } else {
+        format!("\n  provider = libvirt.{host}")
+    };
+    format!(
+        r#"resource "libvirt_volume" "base_{host}" {{
+  name   = "base-ubuntu-{host}.{format}"
+  source = "{source}"
+  format = "{format}"{alias}
+}}
+"#
+    )
+}
+
+fn generate_cloudinit_data(spec: &SdiSpec) -> String {
+    let packages = spec
+        .cloud_init
+        .packages
+        .iter()
+        .map(|p| format!("    - {p}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r#"data "template_file" "cloud_init" {{
+  template = <<-EOF
+#cloud-config
+ssh_authorized_keys:
+  - ${{file("{ssh_key}")}}
+packages:
+{packages}
+package_update: true
+package_upgrade: true
+runcmd:
+  - systemctl enable --now iscsid
+  - modprobe br_netfilter
+  - sysctl -w net.ipv4.ip_forward=1
+  - sysctl -w net.bridge.bridge-nf-call-iptables=1
+EOF
+}}
+"#,
+        ssh_key = spec.cloud_init.ssh_authorized_keys_file,
+    )
+}
+
+fn generate_vm_resource(node: &NodeSpec, host: &str, bridge: &str) -> String {
+    let provider = if host == "localhost" {
+        String::new()
+    } else {
+        format!("\n  provider = libvirt.{host}")
+    };
+
+    let gpu_passthrough = node.devices.as_ref().is_some_and(|d| d.gpu_passthrough);
+
+    let xml_block = if gpu_passthrough {
+        r#"
+  xml {
+    xslt = file("${path.module}/vfio-passthrough.xslt")
+  }"#
+        .to_string()
+    } else {
+        String::new()
+    };
+
+    let name = &node.node_name;
+    let mem = node.mem_gb as u64 * 1024; // MiB
+    let vcpu = node.cpu;
+    let disk_gb = node.disk_gb as u64 * 1024 * 1024 * 1024; // bytes
+
+    format!(
+        r#"resource "libvirt_volume" "disk_{name}" {{
+  name           = "{name}.qcow2"
+  base_volume_id = libvirt_volume.base_{host}.id
+  size           = {disk_gb}{provider}
+}}
+
+resource "libvirt_cloudinit_disk" "init_{name}" {{
+  name      = "{name}-init.iso"
+  pool      = "default"
+  user_data = data.template_file.cloud_init.rendered
+
+  network_config = <<-EOF
+version: 2
+ethernets:
+  ens3:
+    addresses:
+      - {ip}/24
+    gateway4: {gateway}
+    nameservers:
+      addresses: [8.8.8.8, 8.8.4.4]
+EOF{provider}
+}}
+
+resource "libvirt_domain" "{name}" {{
+  name   = "{name}"
+  memory = {mem}
+  vcpu   = {vcpu}{provider}
+
+  cloudinit = libvirt_cloudinit_disk.init_{name}.id
+
+  disk {{
+    volume_id = libvirt_volume.disk_{name}.id
+  }}
+
+  network_interface {{
+    bridge         = "{bridge}"
+    wait_for_lease = false
+  }}{xml_block}
+
+  console {{
+    type        = "pty"
+    target_port = "0"
+    target_type = "serial"
+  }}
+}}
+"#,
+        ip = node.ip,
+        gateway = "192.168.88.1", // TODO: extract from spec
+    )
+}
+
+fn generate_outputs(spec: &SdiSpec) -> String {
+    let mut out = String::from("# --- Outputs ---\n");
+    for pool in &spec.spec.sdi_pools {
+        for node in &pool.node_specs {
+            out.push_str(&format!(
+                r#"output "{name}_ip" {{
+  value = "{ip}"
+}}
+"#,
+                name = node.node_name,
+                ip = node.ip,
+            ));
+        }
+    }
+    out
+}
+
+/// Generate VFIO passthrough XSLT file content.
+/// Pure function.
+pub fn generate_vfio_xslt() -> String {
+    r#"<?xml version="1.0"?>
+<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:output method="xml" indent="yes"/>
+  <xsl:template match="@*|node()">
+    <xsl:copy>
+      <xsl:apply-templates select="@*|node()"/>
+    </xsl:copy>
+  </xsl:template>
+  <!-- Add IOMMU driver for VFIO passthrough -->
+  <xsl:template match="/domain/features">
+    <xsl:copy>
+      <xsl:apply-templates select="@*|node()"/>
+      <ioapic driver='qemu'/>
+    </xsl:copy>
+  </xsl:template>
+</xsl:stylesheet>
+"#
+    .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::sdi::*;
+
+    fn make_test_spec() -> SdiSpec {
+        SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "test".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec!["8.8.8.8".to_string()],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "https://example.com/image.img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "~/.ssh/id.pub".to_string(),
+                packages: vec!["curl".to_string()],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![SdiPool {
+                    pool_name: "tower".to_string(),
+                    purpose: "management".to_string(),
+                    placement: PlacementConfig {
+                        hosts: vec!["playbox-0".to_string()],
+                        spread: false,
+                    },
+                    node_specs: vec![NodeSpec {
+                        node_name: "tower-cp-0".to_string(),
+                        ip: "192.168.88.100".to_string(),
+                        cpu: 2,
+                        mem_gb: 3,
+                        disk_gb: 30,
+                        host: None,
+                        roles: vec!["control-plane".to_string()],
+                        devices: None,
+                    }],
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn test_generate_tofu_contains_provider() {
+        let spec = make_test_spec();
+        let hcl = generate_tofu_main(&spec);
+        assert!(hcl.contains("provider \"libvirt\""));
+        assert!(hcl.contains("playbox-0"));
+    }
+
+    #[test]
+    fn test_generate_tofu_contains_vm() {
+        let spec = make_test_spec();
+        let hcl = generate_tofu_main(&spec);
+        assert!(hcl.contains("libvirt_domain"));
+        assert!(hcl.contains("tower-cp-0"));
+        assert!(hcl.contains("memory = 3072"));
+        assert!(hcl.contains("vcpu   = 2"));
+    }
+
+    #[test]
+    fn test_collect_unique_hosts() {
+        let spec = make_test_spec();
+        let hosts = collect_unique_hosts(&spec);
+        assert_eq!(hosts, vec!["playbox-0"]);
+    }
+
+    #[test]
+    fn test_generate_vfio_xslt() {
+        let xslt = generate_vfio_xslt();
+        assert!(xslt.contains("ioapic"));
+        assert!(xslt.contains("xsl:stylesheet"));
+    }
+}

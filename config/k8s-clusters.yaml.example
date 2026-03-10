@@ -1,0 +1,71 @@
+# config/k8s-clusters.yaml — Multi-cluster Kubernetes configuration
+# Defines how SDI pools are clustered via Kubespray and managed by ArgoCD.
+
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+    container_runtime: "containerd"
+    cni: "cilium"  # Managed by GitOps post-bootstrap; kubespray sets kube_network_plugin: cni
+    cilium_version: "1.17.5"
+    kube_proxy_remove: true
+    cgroup_driver: "systemd"
+    helm_enabled: true
+    kube_apiserver_admission_plugins:
+      - NodeRestriction
+      - PodTolerationRestriction
+
+  clusters:
+    - cluster_name: "tower"
+      cluster_sdi_resource_pool: "tower"  # Maps to sdi-specs.yaml spec.sdi_pools[].pool_name
+      cluster_role: "management"  # Runs ArgoCD, manages other clusters
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+        dns_domain: "tower.local"
+      cilium:
+        cluster_id: 1
+        cluster_name: "tower"
+      kubespray_extra_vars:
+        kube_api_anonymous_auth: true
+
+    - cluster_name: "sandbox"
+      cluster_sdi_resource_pool: "sandbox"
+      cluster_role: "workload"
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+        dns_domain: "sandbox.local"
+        native_routing_cidr: "10.233.0.0/16"
+      cilium:
+        cluster_id: 2
+        cluster_name: "sandbox"
+      kubespray_extra_vars:
+        kube_oidc_auth: true
+        kube_oidc_url: "https://auth.jinwang.dev/realms/kubernetes"
+        kube_oidc_client_id: "kubernetes"
+        kube_oidc_username_claim: "email"
+        kube_oidc_username_prefix: "oidc:"
+        kube_oidc_groups_claim: "groups"
+        kube_oidc_groups_prefix: "oidc:"
+        kube_api_anonymous_auth: true
+        kubelet_config_extra_args:
+          systemReserved:
+            cpu: "200m"
+            memory: "512Mi"
+          kubeReserved:
+            cpu: "200m"
+            memory: "512Mi"
+        supplementary_addresses_in_ssl_keys:
+          - "100.64.0.1"  # Tailscale bastion IP
+
+  argocd:
+    namespace: "argocd"
+    repo_url: "https://github.com/JinwangMok/k8s-playbox.git"
+    repo_branch: "main"
+    tower_manages: ["sandbox"]  # Tower ArgoCD manages these clusters
+
+  domains:
+    auth: "auth.jinwang.dev"
+    argocd: "cd.jinwang.dev"
+    k8s_api: "api.k8s.jinwang.dev"

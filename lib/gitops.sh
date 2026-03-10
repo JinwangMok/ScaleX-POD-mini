@@ -49,9 +49,25 @@ gitops_create_secrets() {
     local argocd_ns
     argocd_ns=$(yq_read '.argocd.namespace')
 
+    # --- Secret source: credentials/secrets.yaml (preferred) or values.yaml (fallback) ---
+    local secrets_file="${PLAYBOX_ROOT}/credentials/secrets.yaml"
+
+    _read_secret() {
+        local path="$1"
+        local fallback_path="$2"
+        local result=""
+        if [[ -f "${secrets_file}" ]]; then
+            result=$(${YQ} eval "${path}" "${secrets_file}" 2>/dev/null)
+        fi
+        if [[ -z "${result}" || "${result}" == "null" ]]; then
+            result=$(yq_read "${fallback_path}")
+        fi
+        echo "${result}"
+    }
+
     # ArgoCD repo credentials (if private)
     local repo_pat
-    repo_pat=$(yq_read '.argocd.repo_pat')
+    repo_pat=$(_read_secret '.argocd.repo_pat' '.argocd.repo_pat')
     if [[ -n "${repo_pat}" && "${repo_pat}" != "null" && "${repo_pat}" != "" ]]; then
         local repo_url
         repo_url=$(yq_read '.argocd.repo_url')
@@ -67,7 +83,7 @@ gitops_create_secrets() {
 
     # Cloudflare tunnel credentials
     local cf_creds
-    cf_creds=$(yq_read '.cloudflare.credentials_file')
+    cf_creds=$(_read_secret '.cloudflare.credentials_file' '.cloudflare.credentials_file')
     if [[ -n "${cf_creds}" && "${cf_creds}" != "null" && "${cf_creds}" != "" && -f "${cf_creds}" ]]; then
         ensure_namespace "kube-tunnel"
         ${KUBECTL} -n kube-tunnel create secret generic cloudflared-tunnel-credentials \
@@ -79,7 +95,7 @@ gitops_create_secrets() {
 
     # Keycloak DB password
     local kc_db_pass
-    kc_db_pass=$(yq_read '.keycloak.db_password')
+    kc_db_pass=$(_read_secret '.keycloak.db_password' '.keycloak.db_password')
     ensure_namespace "keycloak"
     ${KUBECTL} -n keycloak create secret generic keycloak-db \
         --from-literal=password="${kc_db_pass}" \
@@ -87,7 +103,7 @@ gitops_create_secrets() {
 
     # Keycloak admin password
     local kc_admin_pass
-    kc_admin_pass=$(yq_read '.keycloak.admin_password')
+    kc_admin_pass=$(_read_secret '.keycloak.admin_password' '.keycloak.admin_password')
     ${KUBECTL} -n keycloak create secret generic keycloak-admin \
         --from-literal=KEYCLOAK_ADMIN="$(yq_read '.keycloak.admin_user')" \
         --from-literal=KEYCLOAK_ADMIN_PASSWORD="${kc_admin_pass}" \

@@ -1,0 +1,23 @@
+[package]
+name = "scalex"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-cluster SDI platform CLI for bare-metal Kubernetes provisioning"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+anyhow = "1"
+tabled = "0.17"
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true

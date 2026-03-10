@@ -1,0 +1,52 @@
+# config/baremetal.yaml — Physical hardware inventory
+# Populated by `scalex facts` or manually.
+# This file describes the physical machines available for SDI provisioning.
+
+nodes:
+  - name: "playbox-0"
+    ip: "192.168.88.8"
+    roles: [sdi-host]
+    labels:
+      rack: "1"
+    hardware:
+      cpu:
+        model: ""  # Populated by `scalex facts`
+        cores: 0
+        threads: 0
+      memory_mb: 0
+      disks:
+        - name: "sda"
+          size_gb: 0
+          type: "ssd"
+      nics:
+        - name: "eno1"
+          mac: "64:00:6a:5c:ac:dd"
+          speed: "1G"
+      gpus: []
+      iommu_groups: []
+
+  - name: "playbox-1"
+    ip: "192.168.88.9"
+    roles: [sdi-host]
+    labels:
+      rack: "1"
+    hardware: {}  # Populated by `scalex facts`
+
+  - name: "playbox-2"
+    ip: "192.168.88.10"
+    roles: [sdi-host]
+    labels:
+      rack: "1"
+    hardware: {}
+
+  - name: "playbox-3"
+    ip: "192.168.88.11"
+    roles: [sdi-host, gpu-host]
+    labels:
+      rack: "1"
+      gpu: "true"
+    hardware: {}
+
+management:
+  bastion: "playbox-0"
+  bastion_ip: "100.64.0.1"  # Tailscale IP

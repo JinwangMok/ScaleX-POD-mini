@@ -144,10 +144,10 @@ domains:
 # --- Keycloak ---
 keycloak:
   admin_user: "admin"
-  admin_password: "jinwang@admin"
+  admin_password: ""  # Set in credentials/secrets.yaml
   realm: "kubernetes"
   client_id: "kubernetes"
-  db_password: "jinwang@admin"
+  db_password: ""  # Set in credentials/secrets.yaml
 
 # --- ArgoCD ---
 argocd:
