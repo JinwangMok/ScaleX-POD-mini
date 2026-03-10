@@ -9,42 +9,36 @@ ERRORS=0
 echo "=== YAML Lint ==="
 if command -v yamllint &>/dev/null; then
     yamllint -c "${PROJECT_ROOT}/.yamllint.yml" \
-        "${PROJECT_ROOT}/gitops/" \
-        "${PROJECT_ROOT}/values.yaml" || ERRORS=$((ERRORS + 1))
+        "${PROJECT_ROOT}/gitops/" || ERRORS=$((ERRORS + 1))
 else
     echo "SKIP: yamllint not installed"
 fi
 
 echo ""
-echo "=== Template & YAML Tests (pytest) ==="
-if command -v pytest &>/dev/null; then
-    pytest "${SCRIPT_DIR}/templates/" "${SCRIPT_DIR}/yaml/" -v || ERRORS=$((ERRORS + 1))
+echo "=== Rust CLI Tests (cargo test) ==="
+if command -v cargo &>/dev/null; then
+    cd "${PROJECT_ROOT}/scalex-cli" && cargo test || ERRORS=$((ERRORS + 1))
+    cd "${PROJECT_ROOT}"
 else
-    echo "SKIP: pytest not installed"
+    echo "SKIP: cargo not installed"
 fi
 
 echo ""
-echo "=== Shell Tests (BATS) ==="
-if command -v bats &>/dev/null; then
-    bats "${SCRIPT_DIR}/bats/"*.bats || ERRORS=$((ERRORS + 1))
+echo "=== Rust Lint (clippy) ==="
+if command -v cargo &>/dev/null; then
+    cd "${PROJECT_ROOT}/scalex-cli" && cargo clippy -- -D warnings || ERRORS=$((ERRORS + 1))
+    cd "${PROJECT_ROOT}"
 else
-    echo "SKIP: bats not installed"
+    echo "SKIP: cargo/clippy not installed"
 fi
 
 echo ""
-echo "=== ShellCheck ==="
-if command -v shellcheck &>/dev/null; then
-    shellcheck "${PROJECT_ROOT}/playbox" "${PROJECT_ROOT}"/lib/*.sh || ERRORS=$((ERRORS + 1))
+echo "=== Rust Format Check ==="
+if command -v cargo &>/dev/null; then
+    cd "${PROJECT_ROOT}/scalex-cli" && cargo fmt --check || ERRORS=$((ERRORS + 1))
+    cd "${PROJECT_ROOT}"
 else
-    echo "SKIP: shellcheck not installed"
-fi
-
-echo ""
-echo "=== OpenTofu Validate ==="
-if command -v tofu &>/dev/null; then
-    cd "${PROJECT_ROOT}/tofu" && tofu init -backend=false -input=false 2>/dev/null && tofu validate && cd "${PROJECT_ROOT}" || ERRORS=$((ERRORS + 1))
-else
-    echo "SKIP: tofu not installed"
+    echo "SKIP: cargo/rustfmt not installed"
 fi
 
 echo ""

@@ -9,10 +9,6 @@ Physical (4 bare-metal) → SDI (OpenTofu virtualization) → Node Pools → Clu
 
 **Primary CLI**: `scalex` (Rust, in `scalex-cli/`) — handles facts gathering, SDI provisioning, multi-cluster Kubespray, and resource queries.
 
-**Legacy CLI**: `./playbox` (bash) — fully deprecated. Retained in `lib/` for historical reference only. Do NOT use.
-
-**Legacy sub-projects**: `.legacy-datax-kubespray/`, `.legacy-tofu/` — archived reference implementations.
-
 ## Architecture
 
 - **Tower cluster**: Management cluster (ArgoCD, Keycloak, Cloudflare Tunnel). Provisioned via Kubespray on SDI VMs.
@@ -59,21 +55,14 @@ scalex get config-files                  # Config file validation
 ## Testing
 
 ```bash
-# Rust CLI tests
-cd scalex-cli && cargo test              # 213 tests
+# Rust CLI tests (213 tests)
+cd scalex-cli && cargo test
 cargo clippy                             # Lint
 cargo fmt --check                        # Format check
 
-# Shell/template tests (requires venv with pytest, jinja2, pyyaml)
+# All tests + YAML lint
 ./tests/run-tests.sh
-pytest tests/ -v                         # Template + YAML tests
-bats tests/bats/*.bats                   # Shell tests
-shellcheck playbox lib/*.sh              # Shell lint
 ```
-
-**Test fixtures**: `tests/fixtures/values-{full,minimal,invalid}.yaml`
-
-**BATS tests** mock external commands via `PLAYBOX_*` env vars in `lib/common.sh`.
 
 ## Key Patterns
 
@@ -99,7 +88,7 @@ shellcheck playbox lib/*.sh              # Shell lint
 | **Generators** | ApplicationSet | `gitops/generators/{tower,sandbox}/` |
 | **Common Apps** | Kustomization | `gitops/common/{cilium-resources,cert-manager,kyverno,kyverno-policies}/` |
 | **Tower Apps** | Kustomization | `gitops/tower/{argocd,cilium,cert-issuers,cloudflared-tunnel,cluster-config,keycloak,socks5-proxy}/` |
-| **Sandbox Apps** | Kustomization | `gitops/sandbox/{local-path-provisioner,rbac,...}/` |
+| **Sandbox Apps** | Kustomization | `gitops/sandbox/{cilium,cluster-config,local-path-provisioner,rbac,test-resources}/` |
 
 **Adding a new common app**: (1) Create `gitops/common/{app}/kustomization.yaml`, (2) Add element to both `gitops/generators/tower/common-generator.yaml` and `gitops/generators/sandbox/common-generator.yaml`.
 
@@ -109,12 +98,11 @@ shellcheck playbox lib/*.sh              # Shell lint
 
 - **Rust**: Pure functions, no side effects in generators. `thiserror` for errors, `clap` derive for CLI.
 - **YAML**: 2-space indent, double quotes for variables/IPs, kebab-case resource names.
-- **Shell**: `set -euo pipefail`, snake_case functions prefixed by module, logging via `log_info`/`log_warn`/`log_error`/`log_step`.
 
 ## Project Structure
 
 ```
-├── scalex-cli/                # Rust CLI (primary) — facts, SDI, cluster, get commands
+├── scalex-cli/                # Rust CLI (primary) — facts, SDI, cluster, get, status, kernel-tune, secrets
 ├── gitops/                    # ArgoCD-managed GitOps (multi-cluster)
 │   ├── bootstrap/spread.yaml  # Root bootstrap (tower-root + sandbox-root)
 │   ├── generators/            # ApplicationSets per cluster
@@ -126,13 +114,10 @@ shellcheck playbox lib/*.sh              # Shell lint
 │   └── sandbox/               # Sandbox-only apps (local-path-provisioner, rbac, ...)
 ├── credentials/               # Secrets + init config (gitignored, .example templates)
 ├── config/                    # User config templates (sdi-specs, k8s-clusters, baremetal)
-├── lib/                       # Shell library modules (legacy playbox CLI)
 ├── ansible/                   # Node preparation playbooks
 ├── kubespray/                 # Kubespray submodule (v2.30.0) + templates
 ├── client/                    # OIDC kubeconfig generation
-├── tests/                     # BATS + pytest + YAML validation
+├── tests/                     # Test runner + YAML lint
 ├── docs/                      # Operations guide (Cloudflare, Keycloak, kernel, access)
-├── _generated/                # Gitignored output (SDI HCL, inventories, kubeconfigs)
-├── .legacy-tofu/              # Archived: old tower VM config (OpenTofu, deprecated)
-└── .legacy-datax-kubespray/   # Archived: previous DataX kubespray reference
+└── _generated/                # Gitignored output (SDI HCL, inventories, kubeconfigs)
 ```

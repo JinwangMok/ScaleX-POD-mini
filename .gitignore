@@ -1,6 +1,5 @@
 .DS_Store
 /tmp
-/gitops-manual/k8s-secrets.sh
 _generated/
 __pycache__/
 .terraform/
@@ -10,4 +9,5 @@ kubespray/kubespray/
 credentials/*
 !credentials/.gitignore
 !credentials/README.md
-!credentials/*.examplescalex-cli/target/
+!credentials/*.example
+scalex-cli/target/

@@ -2,6 +2,12 @@
 
 ## Code Style
 
+### Rust (scalex CLI)
+- Pure functions for all generators — no side effects
+- `thiserror` for error types, `clap` derive for CLI
+- `cargo clippy -- -D warnings` must pass
+- `cargo fmt --check` must pass
+
 ### YAML
 - Indent: 2 spaces
 - Quotes: Double quotes for strings with variables, domains, IPs
@@ -9,20 +15,10 @@
 - Naming: kebab-case for K8s resource names, snake_case for config YAML keys
 - Lint: `yamllint -c .yamllint.yml` must pass
 
-### Shell Scripts
-- Shebang: `#!/usr/bin/env bash`
-- Set flags: `set -euo pipefail`
-- Functions: snake_case, prefixed with module name
-- Logging: Use `log_info`, `log_warn`, `log_error` from `lib/common.sh`
-- Idempotency: Check state before acting
-- Helm: Always `helm upgrade --install --atomic --wait --timeout 5m`
-- kubectl: Always `kubectl apply` (never `create` in scripts)
-
 ### Templates
 - All config reads from `credentials/` and `config/` files only
-- Jinja2 templates end with `.j2`, Go templates with `.tpl`
+- Jinja2 templates end with `.j2`
 - Generated output goes to `_generated/` (gitignored)
-- Every template has a corresponding test
 
 ## Testing
 
@@ -30,17 +26,15 @@
 # Run all tests
 ./tests/run-tests.sh
 
-# Individual suites
-bats tests/bats/*.bats
-pytest tests/ -v
-shellcheck playbox lib/*.sh
+# Rust tests only
+cd scalex-cli && cargo test
 ```
 
 ### TDD Workflow
 1. RED: Write failing test
 2. GREEN: Write minimal implementation
 3. REFACTOR: Clean up
-4. All tests must pass before merging
+4. All tests must pass before committing
 
 ## Git Conventions
 - Branch: `feat/`, `fix/`, `docs/` prefixes

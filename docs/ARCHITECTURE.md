@@ -55,17 +55,17 @@ kubectl + kubelogin 외에 클라이언트 측 소프트웨어 불필요.
 
 ```
 spread.yaml (루트 Application)
-  → generators/ (ApplicationSets)
-    → catalog.yaml 읽기
-      → apps/<generator>/<app>/에서 Application 생성
+  → tower-root / sandbox-root Applications
+    → generators/ (ApplicationSets per cluster)
+      → common/{app}/, tower/{app}/, sandbox/{app}/에서 Application 생성
 ```
 
 ## Sync Wave 순서
 | Wave | 컴포넌트 |
 |------|----------|
 | 0 | ArgoCD, cluster-config |
-| 1 | Cilium, cert-manager, local-path-provisioner |
-| 2 | cilium-resources |
+| 1 | Cilium, cert-manager, Kyverno, local-path-provisioner |
+| 2 | cilium-resources, cert-issuers, kyverno-policies |
 | 3 | cloudflared-tunnel, socks5-proxy, keycloak |
 | 4 | rbac |
 
@@ -124,16 +124,16 @@ No client-side software needed beyond kubectl + kubelogin.
 
 ```
 spread.yaml (root Application)
-  → generators/ (ApplicationSets)
-    → reads catalog.yaml
-      → creates Applications from apps/<generator>/<app>/
+  → tower-root / sandbox-root Applications
+    → generators/ (ApplicationSets per cluster)
+      → creates Applications from common/{app}/, tower/{app}/, sandbox/{app}/
 ```
 
 ## Sync Waves
 | Wave | Components |
 |------|-----------|
 | 0 | ArgoCD, cluster-config |
-| 1 | Cilium, cert-manager, local-path-provisioner |
-| 2 | cilium-resources |
+| 1 | Cilium, cert-manager, Kyverno, local-path-provisioner |
+| 2 | cilium-resources, cert-issuers, kyverno-policies |
 | 3 | cloudflared-tunnel, socks5-proxy, keycloak |
 | 4 | rbac |
