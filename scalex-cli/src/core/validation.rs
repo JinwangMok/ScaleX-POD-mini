@@ -2247,4 +2247,122 @@ spec:
             );
         }
     }
+
+    // === Two-Layer Config Consistency Tests ===
+    // Infrastructure Layer (sdi-specs + baremetal-init) ↔ GitOps Layer (k8s-clusters + gitops/)
+
+    /// SDI spec placement hosts must be a subset of baremetal-init target nodes.
+    /// If sdi-specs references a host not in baremetal-init, provisioning will fail.
+    #[test]
+    fn test_two_layer_sdi_hosts_subset_of_baremetal_nodes() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: crate::models::sdi::SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+        let bm_content = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let bm: crate::core::config::BaremetalInitConfig =
+            serde_yaml::from_str(bm_content).unwrap();
+
+        let bm_names: std::collections::HashSet<&str> =
+            bm.target_nodes.iter().map(|n| n.name.as_str()).collect();
+
+        // Collect all hosts referenced in SDI placement + node_specs
+        for pool in &sdi.spec.sdi_pools {
+            for host in &pool.placement.hosts {
+                assert!(
+                    bm_names.contains(host.as_str()),
+                    "SDI pool '{}' placement references host '{}' not found in baremetal-init. Available: {:?}",
+                    pool.pool_name,
+                    host,
+                    bm_names
+                );
+            }
+            for node in &pool.node_specs {
+                if let Some(ref host) = node.host {
+                    assert!(
+                        bm_names.contains(host.as_str()),
+                        "SDI node '{}' references host '{}' not found in baremetal-init. Available: {:?}",
+                        node.node_name,
+                        host,
+                        bm_names
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every cluster in k8s-clusters.yaml must have a matching gitops generator directory.
+    #[test]
+    fn test_two_layer_every_cluster_has_gitops_generator() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s.config.clusters {
+            let generator_dir = format!("gitops/generators/{}/", cluster.cluster_name);
+            let abs_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join(&generator_dir);
+            assert!(
+                abs_path.is_dir(),
+                "Cluster '{}' has no gitops generator directory at '{}'",
+                cluster.cluster_name,
+                generator_dir
+            );
+        }
+    }
+
+    /// ArgoCD tower_manages list must reference clusters that actually exist in config.
+    #[test]
+    fn test_two_layer_argocd_tower_manages_references_valid_clusters() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let cluster_names: std::collections::HashSet<String> = k8s
+            .config
+            .clusters
+            .iter()
+            .map(|c| c.cluster_name.clone())
+            .collect();
+
+        if let Some(ref argocd) = k8s.config.argocd {
+            for managed in &argocd.tower_manages {
+                assert!(
+                    cluster_names.contains(managed.as_str()),
+                    "ArgoCD tower_manages references '{}' which is not a defined cluster. Available: {:?}",
+                    managed,
+                    cluster_names
+                );
+            }
+        }
+    }
+
+    /// Each SDI-mode cluster must have at least one control-plane node in its pool.
+    #[test]
+    fn test_two_layer_sdi_pools_have_control_plane_nodes() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: crate::models::sdi::SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s.config.clusters {
+            if cluster.cluster_mode == ClusterMode::Baremetal {
+                continue;
+            }
+            let pool = sdi
+                .spec
+                .sdi_pools
+                .iter()
+                .find(|p| p.pool_name == cluster.cluster_sdi_resource_pool);
+            if let Some(pool) = pool {
+                let has_cp = pool
+                    .node_specs
+                    .iter()
+                    .any(|n| n.roles.iter().any(|r| r == "control-plane"));
+                assert!(
+                    has_cp,
+                    "SDI pool '{}' for cluster '{}' has no control-plane node",
+                    pool.pool_name, cluster.cluster_name
+                );
+            }
+        }
+    }
 }

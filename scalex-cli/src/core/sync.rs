@@ -228,4 +228,139 @@ mod tests {
         assert_eq!(conflicts[0].vm_name, "sandbox-w-0");
         assert_eq!(conflicts[1].vm_name, "tower-cp-0");
     }
+
+    #[test]
+    fn test_compute_sync_diff_simultaneous_add_and_remove() {
+        let desired = vec![
+            "playbox-0".to_string(),
+            "playbox-3".to_string(),
+            "playbox-4".to_string(),
+        ];
+        let current = vec![
+            "playbox-0".to_string(),
+            "playbox-1".to_string(),
+            "playbox-2".to_string(),
+        ];
+
+        let diff = compute_sync_diff(&desired, &current);
+        assert_eq!(diff.to_add, vec!["playbox-3", "playbox-4"]);
+        assert_eq!(diff.to_remove, vec!["playbox-1", "playbox-2"]);
+        assert_eq!(diff.unchanged, vec!["playbox-0"]);
+    }
+
+    #[test]
+    fn test_compute_sync_diff_empty_desired_removes_all() {
+        let desired: Vec<String> = vec![];
+        let current = vec![
+            "playbox-0".to_string(),
+            "playbox-1".to_string(),
+            "playbox-2".to_string(),
+        ];
+
+        let diff = compute_sync_diff(&desired, &current);
+        assert!(diff.to_add.is_empty());
+        assert_eq!(diff.to_remove, vec!["playbox-0", "playbox-1", "playbox-2"]);
+        assert!(diff.unchanged.is_empty());
+    }
+
+    #[test]
+    fn test_compute_sync_diff_both_empty() {
+        let desired: Vec<String> = vec![];
+        let current: Vec<String> = vec![];
+
+        let diff = compute_sync_diff(&desired, &current);
+        assert!(diff.to_add.is_empty());
+        assert!(diff.to_remove.is_empty());
+        assert!(diff.unchanged.is_empty());
+    }
+
+    #[test]
+    fn test_compute_sync_diff_complete_replacement() {
+        // All nodes replaced — no overlap
+        let desired = vec!["new-0".to_string(), "new-1".to_string()];
+        let current = vec!["old-0".to_string(), "old-1".to_string()];
+
+        let diff = compute_sync_diff(&desired, &current);
+        assert_eq!(diff.to_add, vec!["new-0", "new-1"]);
+        assert_eq!(diff.to_remove, vec!["old-0", "old-1"]);
+        assert!(diff.unchanged.is_empty());
+    }
+
+    #[test]
+    fn test_detect_vm_conflicts_removing_multiple_hosts() {
+        let pools = vec![
+            SdiPoolState {
+                pool_name: "tower".to_string(),
+                purpose: "management".to_string(),
+                nodes: vec![SdiNodeState {
+                    node_name: "tower-cp-0".to_string(),
+                    ip: "192.168.88.100".to_string(),
+                    host: "playbox-0".to_string(),
+                    cpu: 2,
+                    mem_gb: 3,
+                    disk_gb: 30,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                }],
+            },
+            SdiPoolState {
+                pool_name: "sandbox".to_string(),
+                purpose: "workload".to_string(),
+                nodes: vec![
+                    SdiNodeState {
+                        node_name: "sandbox-w-0".to_string(),
+                        ip: "192.168.88.120".to_string(),
+                        host: "playbox-1".to_string(),
+                        cpu: 8,
+                        mem_gb: 16,
+                        disk_gb: 100,
+                        status: "running".to_string(),
+                        gpu_passthrough: false,
+                    },
+                    SdiNodeState {
+                        node_name: "sandbox-w-1".to_string(),
+                        ip: "192.168.88.121".to_string(),
+                        host: "playbox-2".to_string(),
+                        cpu: 8,
+                        mem_gb: 16,
+                        disk_gb: 100,
+                        status: "running".to_string(),
+                        gpu_passthrough: false,
+                    },
+                ],
+            },
+        ];
+
+        // Removing playbox-0 AND playbox-2 should catch tower-cp-0 + sandbox-w-1
+        let to_remove = vec!["playbox-0".to_string(), "playbox-2".to_string()];
+        let conflicts = detect_vm_conflicts(&pools, &to_remove);
+
+        assert_eq!(conflicts.len(), 2);
+        assert_eq!(conflicts[0].vm_name, "sandbox-w-1");
+        assert_eq!(conflicts[0].pool_name, "sandbox");
+        assert_eq!(conflicts[1].vm_name, "tower-cp-0");
+        assert_eq!(conflicts[1].pool_name, "tower");
+    }
+
+    #[test]
+    fn test_detect_vm_conflicts_empty_removal_list() {
+        let pools = vec![SdiPoolState {
+            pool_name: "tower".to_string(),
+            purpose: "management".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "tower-cp-0".to_string(),
+                ip: "192.168.88.100".to_string(),
+                host: "playbox-0".to_string(),
+                cpu: 2,
+                mem_gb: 3,
+                disk_gb: 30,
+                status: "running".to_string(),
+                gpu_passthrough: false,
+            }],
+        }];
+
+        let to_remove: Vec<String> = vec![];
+        let conflicts = detect_vm_conflicts(&pools, &to_remove);
+        assert!(conflicts.is_empty());
+    }
 }

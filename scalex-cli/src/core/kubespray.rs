@@ -265,6 +265,17 @@ pub fn generate_inventory_baremetal(cluster: &ClusterDef) -> Result<String, Stri
         ));
     }
 
+    let has_control_plane = cluster
+        .baremetal_nodes
+        .iter()
+        .any(|n| n.roles.iter().any(|r| r == "control-plane"));
+    if !has_control_plane {
+        return Err(format!(
+            "Cluster '{}' has no node with control-plane role (Kubespray requires at least one)",
+            cluster.cluster_name
+        ));
+    }
+
     let mut ini = String::new();
 
     // [all] section
@@ -1488,5 +1499,79 @@ supplementary_addresses_in_ssl_keys:
                 "missing production-required kubespray key: {key}"
             );
         }
+    }
+
+    #[test]
+    fn test_generate_inventory_baremetal_single_node_dual_role() {
+        // Single bare-metal node acting as both control-plane and worker
+        let cluster = ClusterDef {
+            cluster_name: "mini".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Baremetal,
+            cluster_sdi_resource_pool: String::new(),
+            baremetal_nodes: vec![crate::models::cluster::BaremetalNode {
+                node_name: "node-0".to_string(),
+                ip: "10.0.0.1".to_string(),
+                roles: vec![
+                    "control-plane".to_string(),
+                    "etcd".to_string(),
+                    "worker".to_string(),
+                ],
+            }],
+            cluster_role: "management".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.244.0.0/20".to_string(),
+                service_cidr: "10.96.0.0/20".to_string(),
+                dns_domain: "mini.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+            ssh_user: None,
+        };
+        let ini = generate_inventory_baremetal(&cluster).unwrap();
+
+        // Node appears in all three role sections
+        assert!(ini.contains("[kube_control_plane]\nnode-0"));
+        assert!(ini.contains("[etcd]\nnode-0"));
+        assert!(ini.contains("[kube_node]\nnode-0"));
+        // Only one entry in [all]
+        assert_eq!(ini.matches("ansible_host=10.0.0.1").count(), 1);
+    }
+
+    #[test]
+    fn test_generate_inventory_baremetal_no_control_plane_rejected() {
+        // Workers-only cluster should be rejected (Kubespray requires control-plane)
+        let cluster = ClusterDef {
+            cluster_name: "workers-only".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Baremetal,
+            cluster_sdi_resource_pool: String::new(),
+            baremetal_nodes: vec![
+                crate::models::cluster::BaremetalNode {
+                    node_name: "w-0".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    roles: vec!["worker".to_string()],
+                },
+                crate::models::cluster::BaremetalNode {
+                    node_name: "w-1".to_string(),
+                    ip: "10.0.0.2".to_string(),
+                    roles: vec!["worker".to_string()],
+                },
+            ],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.233.0.0/17".to_string(),
+                service_cidr: "10.233.128.0/18".to_string(),
+                dns_domain: "workers.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+            ssh_user: None,
+        };
+        let result = generate_inventory_baremetal(&cluster);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("control-plane"));
     }
 }
