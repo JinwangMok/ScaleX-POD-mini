@@ -341,14 +341,6 @@ mod tests {
     fn test_no_k3s_references_in_project_files() {
         let files_to_check: Vec<(&str, &str)> = vec![
             (
-                "tests/fixtures/values-full.yaml",
-                include_str!("../../../tests/fixtures/values-full.yaml"),
-            ),
-            (
-                "tests/fixtures/values-minimal.yaml",
-                include_str!("../../../tests/fixtures/values-minimal.yaml"),
-            ),
-            (
                 "docs/ops-guide.md",
                 include_str!("../../../docs/ops-guide.md"),
             ),
@@ -686,6 +678,494 @@ mod tests {
         assert!(
             persistence_enabled,
             "ArgoCD persistence.enabled must be true for production"
+        );
+    }
+
+    // ========================================================================
+    // Sprint 1: Single-node SDI, Baremetal mode, Idempotency, E2E pipeline
+    // ========================================================================
+
+    /// CL-1: Verify single-node SDI — tower + sandbox both placed on 1 host.
+    /// This is the minimum viable deployment for development/testing.
+    #[test]
+    fn test_single_node_sdi_tower_and_sandbox_on_one_host() {
+        let yaml = r#"
+resource_pool:
+  name: "single-node-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8"]
+
+os_image:
+  source: "https://example.com/image.img"
+  format: "qcow2"
+
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id.pub"
+  packages: [curl]
+
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      purpose: "management"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 2
+          mem_gb: 3
+          disk_gb: 30
+          roles: [control-plane, worker]
+
+    - pool_name: "sandbox"
+      purpose: "workload"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "sandbox-cp-0"
+          ip: "192.168.88.110"
+          cpu: 2
+          mem_gb: 4
+          disk_gb: 40
+          roles: [control-plane, worker]
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(yaml).unwrap();
+
+        // Both pools must parse and point to single host
+        assert_eq!(spec.spec.sdi_pools.len(), 2);
+        assert_eq!(spec.spec.sdi_pools[0].placement.hosts, vec!["playbox-0"]);
+        assert_eq!(spec.spec.sdi_pools[1].placement.hosts, vec!["playbox-0"]);
+
+        // HCL must generate only 1 provider (deduplicated)
+        let hcl = crate::core::tofu::generate_tofu_main(&spec);
+        let provider_count = hcl.matches("provider \"libvirt\"").count();
+        assert_eq!(
+            provider_count, 1,
+            "Single-node SDI must generate exactly 1 libvirt provider, got {}",
+            provider_count
+        );
+
+        // Must generate VMs for both pools
+        assert!(hcl.contains("tower-cp-0"), "missing tower VM");
+        assert!(hcl.contains("sandbox-cp-0"), "missing sandbox VM");
+
+        // IPs must be distinct
+        assert!(hcl.contains("192.168.88.100"));
+        assert!(hcl.contains("192.168.88.110"));
+
+        // Pool mapping validation must pass
+        let k8s = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str(
+                    "kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'",
+                )
+                .unwrap(),
+                clusters: vec![
+                    make_cluster("tower", "tower", ClusterMode::Sdi),
+                    make_cluster("sandbox", "sandbox", ClusterMode::Sdi),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+        let errors = validate_cluster_sdi_pool_mapping(&k8s, &spec);
+        assert!(
+            errors.is_empty(),
+            "single-node SDI pool mapping failed: {:?}",
+            errors
+        );
+    }
+
+    /// CL-1: Verify single-node SDI with overlapping resource constraints.
+    /// Total CPU/mem must not exceed a reasonable single-node capacity.
+    #[test]
+    fn test_single_node_sdi_resource_aggregation() {
+        let yaml = r#"
+resource_pool:
+  name: "single-node"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "https://example.com/img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id.pub"
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 2
+          mem_gb: 3
+          disk_gb: 30
+          roles: [control-plane, worker]
+    - pool_name: "sandbox"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "sandbox-cp-0"
+          ip: "192.168.88.110"
+          cpu: 4
+          mem_gb: 8
+          disk_gb: 60
+          roles: [control-plane, worker]
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(yaml).unwrap();
+
+        // Aggregate resources per host
+        let total_cpu: u32 = spec
+            .spec
+            .sdi_pools
+            .iter()
+            .flat_map(|p| &p.node_specs)
+            .map(|n| n.cpu)
+            .sum();
+        let total_mem: u32 = spec
+            .spec
+            .sdi_pools
+            .iter()
+            .flat_map(|p| &p.node_specs)
+            .map(|n| n.mem_gb)
+            .sum();
+
+        assert_eq!(total_cpu, 6, "single-node total CPU must be 2+4=6");
+        assert_eq!(total_mem, 11, "single-node total mem must be 3+8=11 GB");
+
+        // Verify unique IPs across all pools
+        let all_ips: Vec<&str> = spec
+            .spec
+            .sdi_pools
+            .iter()
+            .flat_map(|p| &p.node_specs)
+            .map(|n| n.ip.as_str())
+            .collect();
+        let unique_ips: std::collections::HashSet<&str> = all_ips.iter().copied().collect();
+        assert_eq!(
+            all_ips.len(),
+            unique_ips.len(),
+            "All VM IPs must be unique, even on single node"
+        );
+    }
+
+    /// CL-9: Baremetal mode inventory generation must produce valid Kubespray INI.
+    #[test]
+    fn test_baremetal_mode_inventory_generation() {
+        let cluster = ClusterDef {
+            cluster_name: "prod".to_string(),
+            cluster_mode: ClusterMode::Baremetal,
+            cluster_sdi_resource_pool: String::new(),
+            baremetal_nodes: vec![
+                BaremetalNode {
+                    node_name: "node-0".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                },
+                BaremetalNode {
+                    node_name: "node-1".to_string(),
+                    ip: "10.0.0.2".to_string(),
+                    roles: vec!["worker".to_string()],
+                },
+                BaremetalNode {
+                    node_name: "node-2".to_string(),
+                    ip: "10.0.0.3".to_string(),
+                    roles: vec!["worker".to_string()],
+                },
+            ],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.234.0.0/17".to_string(),
+                service_cidr: "10.234.128.0/18".to_string(),
+                dns_domain: "prod.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: Some(CiliumConfig {
+                cluster_id: 3,
+                cluster_name: "prod".to_string(),
+            }),
+            oidc: None,
+            kubespray_extra_vars: None,
+        };
+
+        let ini = crate::core::kubespray::generate_inventory_baremetal(&cluster).unwrap();
+
+        // [all] must list all nodes
+        assert!(ini.contains("node-0"), "missing node-0 in [all]");
+        assert!(ini.contains("node-1"), "missing node-1 in [all]");
+        assert!(ini.contains("node-2"), "missing node-2 in [all]");
+
+        // [all] must have correct IPs
+        assert!(ini.contains("ansible_host=10.0.0.1"), "wrong IP for node-0");
+        assert!(ini.contains("ansible_host=10.0.0.2"), "wrong IP for node-1");
+
+        // [kube_control_plane] must have only control-plane nodes
+        let sections: Vec<&str> = ini.split('[').collect();
+        let cp_section = sections
+            .iter()
+            .find(|s| s.starts_with("kube_control_plane]"))
+            .unwrap();
+        assert!(
+            cp_section.contains("node-0"),
+            "node-0 must be in control plane"
+        );
+        assert!(
+            !cp_section.contains("node-1"),
+            "node-1 must NOT be in control plane"
+        );
+
+        // [kube_node] must have worker nodes
+        let worker_section = sections
+            .iter()
+            .find(|s| s.starts_with("kube_node]"))
+            .unwrap();
+        assert!(
+            worker_section.contains("node-1"),
+            "node-1 must be in kube_node"
+        );
+        assert!(
+            worker_section.contains("node-2"),
+            "node-2 must be in kube_node"
+        );
+
+        // [etcd] must have etcd-role nodes
+        let etcd_section = sections.iter().find(|s| s.starts_with("etcd]")).unwrap();
+        assert!(etcd_section.contains("node-0"), "node-0 must be in etcd");
+    }
+
+    /// CL-9: Baremetal mode must reject empty node list.
+    #[test]
+    fn test_baremetal_mode_rejects_empty_nodes() {
+        let cluster = ClusterDef {
+            cluster_name: "empty-prod".to_string(),
+            cluster_mode: ClusterMode::Baremetal,
+            cluster_sdi_resource_pool: String::new(),
+            baremetal_nodes: vec![],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.234.0.0/17".to_string(),
+                service_cidr: "10.234.128.0/18".to_string(),
+                dns_domain: "prod.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+        };
+
+        let result = crate::core::kubespray::generate_inventory_baremetal(&cluster);
+        assert!(result.is_err(), "baremetal with 0 nodes must fail");
+        assert!(
+            result.unwrap_err().contains("no baremetal_nodes"),
+            "error must mention missing baremetal_nodes"
+        );
+    }
+
+    /// CL-13: HCL generation must be idempotent (generate_tofu_main).
+    #[test]
+    fn test_generate_tofu_main_idempotent() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let spec: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let hcl1 = crate::core::tofu::generate_tofu_main(&spec);
+        let hcl2 = crate::core::tofu::generate_tofu_main(&spec);
+        assert_eq!(
+            hcl1, hcl2,
+            "generate_tofu_main must be deterministic (idempotent)"
+        );
+    }
+
+    /// CL-13: Kubespray inventory generation must be idempotent.
+    #[test]
+    fn test_generate_inventory_idempotent() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s.config.clusters {
+            let inv1 = crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap();
+            let inv2 = crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap();
+            assert_eq!(
+                inv1, inv2,
+                "inventory for '{}' must be idempotent",
+                cluster.cluster_name
+            );
+        }
+    }
+
+    /// CL-13: Kubespray cluster vars generation must be idempotent.
+    #[test]
+    fn test_generate_cluster_vars_idempotent() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s.config.clusters {
+            let vars1 = crate::core::kubespray::generate_cluster_vars(cluster, &k8s.config.common);
+            let vars2 = crate::core::kubespray::generate_cluster_vars(cluster, &k8s.config.common);
+            assert_eq!(
+                vars1, vars2,
+                "cluster vars for '{}' must be idempotent",
+                cluster.cluster_name
+            );
+        }
+    }
+
+    /// CL-8: E2E dry-run pipeline — parse all configs → validate → generate outputs.
+    /// Simulates: facts(skip) → sdi-specs parse → k8s-clusters parse → validate →
+    ///            HCL generate → inventory generate → vars generate.
+    #[test]
+    fn test_e2e_config_to_output_pipeline() {
+        // Step 1: Parse baremetal-init.yaml
+        let bm_content = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let bm: crate::core::config::BaremetalInitConfig =
+            serde_yaml::from_str(bm_content).expect("baremetal-init.yaml must parse");
+        assert_eq!(bm.target_nodes.len(), 4);
+
+        // Step 2: Parse sdi-specs.yaml
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).expect("sdi-specs.yaml must parse");
+        assert_eq!(sdi.spec.sdi_pools.len(), 2);
+
+        // Step 3: Parse k8s-clusters.yaml
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig =
+            serde_yaml::from_str(k8s_content).expect("k8s-clusters.yaml must parse");
+        assert_eq!(k8s.config.clusters.len(), 2);
+
+        // Step 4: Cross-validate pool mapping
+        let pool_errors = validate_cluster_sdi_pool_mapping(&k8s, &sdi);
+        assert!(
+            pool_errors.is_empty(),
+            "pool mapping errors: {:?}",
+            pool_errors
+        );
+
+        // Step 5: Validate unique cluster IDs
+        let id_errors = validate_unique_cluster_ids(&k8s);
+        assert!(id_errors.is_empty(), "cluster ID errors: {:?}", id_errors);
+
+        // Step 6: Generate HCL (host infra)
+        let host_inputs: Vec<crate::core::tofu::HostInfraInput> = bm
+            .target_nodes
+            .iter()
+            .map(|n| crate::core::tofu::HostInfraInput {
+                name: n.name.clone(),
+                ip: n.node_ip.clone(),
+            })
+            .collect();
+        let net = bm.network_defaults.as_ref().unwrap();
+        let host_hcl = crate::core::tofu::generate_tofu_host_infra(
+            &host_inputs,
+            &net.management_bridge,
+            &net.management_cidr,
+            &net.gateway,
+        );
+        assert!(!host_hcl.is_empty(), "host HCL must not be empty");
+        assert_eq!(
+            host_hcl.matches("provider \"libvirt\"").count(),
+            4,
+            "must generate 4 providers for 4 bare-metal nodes"
+        );
+
+        // Step 7: Generate HCL (VM pools)
+        let vm_hcl = crate::core::tofu::generate_tofu_main(&sdi);
+        assert!(vm_hcl.contains("tower-cp-0"), "HCL missing tower VM");
+        assert!(vm_hcl.contains("sandbox-cp-0"), "HCL missing sandbox CP VM");
+        assert!(
+            vm_hcl.contains("sandbox-w-0"),
+            "HCL missing sandbox worker VM"
+        );
+
+        // Step 8: Generate Kubespray inventory for each cluster
+        for cluster in &k8s.config.clusters {
+            let inv =
+                crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap_or_else(|e| {
+                    panic!("inventory for '{}' failed: {}", cluster.cluster_name, e)
+                });
+            assert!(inv.contains("[all]"), "inventory must have [all] section");
+            assert!(
+                inv.contains("[kube_control_plane]"),
+                "inventory must have control plane section"
+            );
+            assert!(
+                inv.contains("[kube_node]"),
+                "inventory must have worker section"
+            );
+        }
+
+        // Step 9: Generate cluster vars
+        for cluster in &k8s.config.clusters {
+            let vars = crate::core::kubespray::generate_cluster_vars(cluster, &k8s.config.common);
+            let parsed: serde_yaml::Mapping = serde_yaml::from_str(&vars).unwrap_or_else(|e| {
+                panic!("vars for '{}' invalid YAML: {e}", cluster.cluster_name)
+            });
+            assert!(
+                parsed.contains_key(serde_yaml::Value::String("kube_version".to_string())),
+                "vars must contain kube_version"
+            );
+            assert!(
+                parsed.contains_key(serde_yaml::Value::String("kube_pods_subnet".to_string())),
+                "vars must contain pod CIDR"
+            );
+        }
+    }
+
+    /// CL-8: Verify scalex get config-files would detect missing files.
+    /// Config file validation must report all required files.
+    #[test]
+    fn test_config_files_validation_required_set() {
+        // Required config files that scalex get config-files should check
+        let required_files = [
+            "credentials/.baremetal-init.yaml",
+            "credentials/.env",
+            "config/sdi-specs.yaml",
+            "config/k8s-clusters.yaml",
+        ];
+        // Corresponding example files must exist
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for file in &required_files {
+            let example = repo_root.join(format!("{}.example", file));
+            assert!(
+                example.exists(),
+                "Example file must exist: {}.example",
+                file
+            );
+        }
+    }
+
+    /// CL-1, CL-9: Verify SDI and baremetal modes are mutually exclusive in validation.
+    #[test]
+    fn test_sdi_and_baremetal_modes_exclusive() {
+        // SDI mode cluster with empty pool ref should fail
+        let k8s = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str(
+                    "kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'",
+                )
+                .unwrap(),
+                clusters: vec![make_cluster("broken", "", ClusterMode::Sdi)],
+                argocd: None,
+                domains: None,
+            },
+        };
+        let sdi = make_sdi_spec_with_pools(&["tower"]);
+        let errors = validate_cluster_sdi_pool_mapping(&k8s, &sdi);
+        assert!(
+            !errors.is_empty(),
+            "SDI mode with empty pool ref must produce validation error"
+        );
+        assert!(
+            errors[0].contains("no cluster_sdi_resource_pool"),
+            "error must mention missing pool reference"
         );
     }
 

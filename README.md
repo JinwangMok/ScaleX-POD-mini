@@ -1,49 +1,35 @@
-# k8s-playbox
+# ScaleX-POD-mini
 
-4대 베어메탈 노드에 2-클러스터 Kubernetes 아키텍처를 자동 프로비저닝하는 통합 CLI 도구입니다.
+**역할-기반 분리형 멀티-클러스터(Role-based Disaggregated Multi-cluster)** 아키텍처의 개발/검증 환경.
 
-Unified CLI tool for automated provisioning of a two-cluster Kubernetes architecture on 4 bare-metal nodes.
+베어메탈 노드를 가상화(SDI)하여 멀티-클러스터를 구축하고, GitOps로 관리하는 통합 플랫폼입니다.
+
+A unified platform that virtualizes bare-metal nodes via SDI (Software-Defined Infrastructure), provisions multi-cluster Kubernetes via Kubespray, and manages everything through ArgoCD GitOps.
 
 ---
 
-## 전체 구성도 / Architecture Overview
+## Architecture Overview
 
 ![Architecture Overview](docs/architecture-overview.png)
 
-> 4대 베어메탈 노드(playbox-0~3)에 Tower(관리) + Sandbox(워크로드) 2-클러스터를 배치합니다.
-> 외부 접근은 Cloudflare Tunnel을 경유하며, Keycloak OIDC로 인증합니다.
+### 5-Layer SDI Architecture
 
----
+```
+Physical (bare-metal nodes)
+  → SDI (OpenTofu virtualization → unified resource pool)
+    → Node Pools (purpose-specific VM groups)
+      → Clusters (Kubespray K8s provisioning)
+        → GitOps (ArgoCD ApplicationSets for multi-cluster)
+```
 
-## 프로비저닝 흐름도 / Provisioning Flow
+### Current Setup: 2-Cluster Design
 
-![Provisioning Flow](docs/provisioning-flow.png)
+| Cluster | Type | Location | Role |
+|---------|------|----------|------|
+| **Tower** | Kubespray K8s (SDI VM) | playbox-0 SDI VM | ArgoCD, Keycloak, cert-manager. Manages all clusters |
+| **Sandbox** | Kubespray K8s (SDI VMs) | playbox-0~3 | Workloads. Cilium CNI, OIDC auth, Cloudflare Tunnel |
 
-> `./playbox up` 명령 하나로 7단계 프로비저닝이 순차 실행됩니다.
-> 우측에는 GitOps 부트스트랩 체인과 Sync Wave 순서를 보여줍니다.
-
----
-
-## 아키텍처 / Architecture
-
-### 2-클러스터 설계
-
-| 클러스터 | 유형 | 위치 | 역할 |
-|---------|------|------|------|
-| **Tower** | Kubespray K8s (SDI VM) | playbox-0 위 SDI VM | ArgoCD 실행, 양쪽 클러스터 관리. Sandbox 리셋 시에도 유지 |
-| **Sandbox** | Kubespray K8s (SDI VMs) | playbox-0~3 전체 | 워크로드 실행. Cilium CNI, Keycloak OIDC, CF Tunnel |
-
-### 노드 구성
-
-| 노드 | IP | 역할 | 특이사항 |
-|------|-----|------|---------|
-| playbox-0 | 192.168.88.8 | Control Plane + Tower Host | bond0 + br0 (VM 브릿지), etcd |
-| playbox-1 | 192.168.88.9 | Worker | bond0 (eno1) |
-| playbox-2 | 192.168.88.10 | Worker | bond0 (eno1) |
-| playbox-3 | 192.168.88.11 | Worker + GPU | bond0 (eno1 1G + ens2f0np0 10G) |
-| tower-vm | 192.168.88.100 | Management | Kubespray K8s, ArgoCD |
-
-### 외부 접근 경로
+### External Access
 
 ```
 kubectl (OIDC) → Cloudflare Edge (TLS) → CF Tunnel → cloudflared Pod → kube-apiserver
@@ -51,311 +37,332 @@ kubectl (OIDC) → Cloudflare Edge (TLS) → CF Tunnel → cloudflared Pod → k
                                                     → ArgoCD (cd.jinwang.dev)
 ```
 
-kubectl + kubelogin 외에 클라이언트 측 별도 소프트웨어가 필요 없습니다.
-
-### 핵심 컴포넌트
-
-| 컴포넌트 | 네임스페이스 | Sync Wave | 역할 |
-|---------|------------|-----------|------|
-| ArgoCD | argocd | 0 | GitOps 컨트롤러 |
-| cluster-config | kube-system | 0 | 노드 레이블/테인트 |
-| Cilium | kube-system | 1 | CNI + kube-proxy 대체 |
-| cert-manager | cert-manager | 1 | TLS 인증서 관리 |
-| local-path-provisioner | local-path-storage | 1 | 로컬 스토리지 프로비저너 |
-| cilium-resources | kube-system | 2 | Gateway, L2 정책, CiliumNetworkPolicy |
-| cloudflared-tunnel | kube-tunnel | 3 | Cloudflare Tunnel 연결 |
-| socks5-proxy | kube-tunnel | 3 | SOCKS5 프록시 |
-| Keycloak | keycloak | 3 | OIDC Identity Provider |
-| RBAC | kube-system | 4 | ClusterRoleBindings |
+No client-side software needed beyond `kubectl` + `kubelogin`.
 
 ---
 
-## 프로젝트 구조 / Project Structure
+## Design Philosophy
 
-```
-├── playbox                    # CLI 진입점 (bash)
-├── values.yaml                # 단일 설정 소스 — 사용자는 이 파일만 편집
-├── lib/                       # CLI 라이브러리 모듈
-│   ├── common.sh              #   공통 유틸 (로깅, yq, helm, kubectl 래퍼)
-│   ├── preflight.sh           #   도구/값 검증, SSH 연결 테스트
-│   ├── network.sh             #   netplan 생성, Ansible 노드 준비
-│   ├── cluster.sh             #   Tower (OpenTofu) + Sandbox (kubespray) 생성/삭제
-│   ├── gitops.sh              #   ArgoCD 설치, 시크릿 생성, spread.yaml 적용
-│   ├── oidc.sh                #   Keycloak REST API로 realm/client/user 설정
-│   ├── tunnel.sh              #   Cloudflare Tunnel 시크릿 관리
-│   └── client.sh              #   OIDC kubeconfig 생성
-├── ansible/                   # 노드 준비 플레이북 (사용자 생성, netplan, 커널)
-├── tofu/                      # Tower VM용 OpenTofu (libvirt 프로바이더)
-├── kubespray/                 # Kubespray 설정 (자동 클론)
-├── gitops/                    # ArgoCD GitOps 리소스
-│   ├── bootstrap/spread.yaml  #   루트 Application + AppProjects
-│   └── clusters/playbox/      #   catalog.yaml, generators/, projects/, apps/
-├── gitops-apps/               # Helm chart 기반 GitOps (core/addon)
-├── client/                    # 클라이언트 kubeconfig 템플릿
-├── tests/                     # BATS + pytest 테스트
-├── docs/                      # 문서, 다이어그램
-└── _generated/                # 생성된 파일 (gitignored)
-```
+### 1. SDI — 하드웨어와 클러스터의 분리
+
+물리 하드웨어와 K8s 클러스터를 **OpenTofu 가상화 레이어**로 분리합니다. 단일 노드에서도, 수천 개 노드에서도 동일한 워크플로우(`scalex sdi init → cluster init`)로 프로비저닝할 수 있습니다.
+
+### 2. 무한 확장 멀티-클러스터
+
+**템플릿 기반 Kubespray** 프로비저닝 + **ArgoCD ApplicationSets**로 클러스터를 찍어내듯 생성합니다. 새 클러스터 추가: `sdi-specs.yaml` pool 추가 → `k8s-clusters.yaml` cluster 정의 → `gitops/generators/` generator 추가 → 완료.
+
+### 3. 역할-기반 분리형 아키텍처
+
+**Tower** 클러스터가 메타-관리 역할(ArgoCD, Keycloak, cert-manager)을 담당하고, 워크로드 클러스터(sandbox 등)는 역할별로 분리/확장 가능합니다.
+
+### 4. 이중 접근성과 보안
+
+공인 IP 유무에 관계없이 **Cloudflare Tunnel + Tailscale**로 외부 접근을 보장합니다. OIDC(Keycloak) 기반 인증으로 별도 VPN 없이 `kubectl` 접근이 가능합니다.
+
+### 5. 뉴비 친화적 + 맞춤형 최적화
+
+`scalex` CLI 하나만 이해하면 전체 인프라를 운용할 수 있습니다. 내부적으로 bare-metal 하드웨어 정보를 수집(`scalex facts`)하고 커널 파라미터 튜닝(`scalex kernel-tune`)을 지원합니다.
+
+### 6. 2-Layer 템플릿 관리
+
+| Layer | Value Files | Scope |
+|-------|-------------|-------|
+| **Infrastructure** | `config/sdi-specs.yaml` + `credentials/.baremetal-init.yaml` | 물리→가상화(SDI) + K8s 프로비저닝 |
+| **GitOps** | `config/k8s-clusters.yaml` + `gitops/` YAMLs | 멀티-클러스터 형상 관리 (ArgoCD) |
+
+### 7. Test-Driven Development
+
+모든 개발은 테스트 먼저 설계, 최소 기능 단위로 RED→GREEN→REFACTOR 사이클을 진행합니다.
 
 ---
 
-## 셋업 가이드 / Setup Guide
+## Installation Guide
 
-### 1. 사전 요구사항
+> 완전히 초기화된 베어메탈에서 `scalex get clusters`까지 — 단계별 가이드
 
-#### 워크스테이션 도구 설치
+### Step 0: 전제 조건 확인
 
 ```bash
-# 필수 도구
-sudo apt install -y ansible python3-pip
+# 필수 도구 설치
+# Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+
+# Ansible + Python
+sudo apt install -y ansible python3-pip sshpass
 pip install jinja2 pyyaml
-sudo snap install yq
-sudo snap install helm --classic
 
-# kubectl
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-sudo install kubectl /usr/local/bin/
-
-# OpenTofu (Tower 사용 시)
+# OpenTofu (libvirt 가상화 엔진)
 curl -fsSL https://get.opentofu.org/install-opentofu.sh | sudo bash -s -- --install-method standalone
+
+# 설치 확인
+cargo --version          # Rust 도구 체인
+ansible --version        # Ansible 자동화
+tofu --version           # OpenTofu (Terraform 호환)
+kubectl version --client # Kubernetes CLI
 ```
 
-#### SSH 설정
+### Step 1: CLI 빌드
 
 ```bash
-# 1. SSH 키 생성
-ssh-keygen -t ed25519
-
-# 2. bastion (playbox-0)에 키 복사
-ssh-copy-id jinwang@192.168.88.8
-
-# 3. playbox-0에서 나머지 노드로 키 복사
-ssh jinwang@192.168.88.8
-ssh-copy-id jinwang@192.168.88.9
-ssh-copy-id jinwang@192.168.88.10
-ssh-copy-id jinwang@192.168.88.11
+cd scalex-cli && cargo build --release
+# 바이너리 위치: target/release/scalex
+export PATH="$PWD/target/release:$PATH"
+scalex --help  # CLI 동작 확인
 ```
 
-### 2. Cloudflare Tunnel 설정
-
-1. [Cloudflare Zero Trust 대시보드](https://dash.cloudflare.com/) 접속
-2. Zero Trust > Networks > Tunnels > **Create a tunnel**
-3. "Cloudflared" 선택, 이름: `playbox-admin-static`
-4. credentials JSON 파일 다운로드
-5. cert.pem 다운로드
-6. `values.yaml`에 경로 설정:
-   ```yaml
-   cloudflare:
-     credentials_file: "/path/to/credentials.json"
-     cert_file: "/path/to/cert.pem"
-   ```
-
-### 3. NIC 정보 확인
+### Step 2: 사용자 설정 파일 준비
 
 ```bash
-./playbox discover-nics
+# 2-1. 베어메탈 노드 접근 정보
+cp credentials/.baremetal-init.yaml.example credentials/.baremetal-init.yaml
+# → 편집: 실제 노드 IP, SSH 접근 방식(password/key), 사용자명 입력
+
+# 2-2. SSH 비밀번호/키 경로
+cp credentials/.env.example credentials/.env
+# → 편집: PLAYBOX_0_PASSWORD 등 실제 비밀번호 설정
+
+# 2-3. SDI 가상화 스펙 (VM 풀 정의)
+cp config/sdi-specs.yaml.example config/sdi-specs.yaml
+# → 편집: 노드별 CPU/RAM/Disk 스펙, IP 주소 설정
+
+# 2-4. K8s 클러스터 설정
+cp config/k8s-clusters.yaml.example config/k8s-clusters.yaml
+# → 편집: 클러스터 이름, CIDR, OIDC, ArgoCD repo URL 설정
+
+# 설정 파일 유효성 검증
+scalex get config-files
 ```
 
-각 노드의 인터페이스 이름, MAC 주소, 상태가 출력됩니다. 이 정보를 `values.yaml`의 `interfaces` 섹션에 반영하세요.
-
-### 4. values.yaml 설정
-
-`values.yaml`은 **유일하게 편집이 필요한 파일**입니다:
+### Step 3: 하드웨어 정보 수집
 
 ```bash
-vi values.yaml
+scalex facts --all
+# 결과: _generated/facts/{node-name}.json (CPU, mem, GPU, disk, NIC, kernel)
+
+# 단일 노드만 수집
+scalex facts --host playbox-0
+
+# 수집 결과 확인
+scalex get baremetals
 ```
 
-확인 항목:
-- 노드 IP 및 MAC 주소가 실제 하드웨어와 일치하는지
-- Cloudflare 터널 자격증명 경로
-- Keycloak 비밀번호 (기본값 변경 권장!)
-- 컴포넌트 버전
-
-### 5. 프로비저닝 실행
+### Step 4: SDI 가상화 (OpenTofu)
 
 ```bash
-# 사전 검사 (도구, values.yaml, SSH 연결)
-./playbox preflight
+# 베어메탈 → VM 풀 생성 (tower + sandbox)
+scalex sdi init config/sdi-specs.yaml
+# 결과: _generated/sdi/ (HCL 파일 + tofu apply 실행)
 
-# 미리보기 (변경 없음)
-./playbox up --dry-run
-
-# 전체 프로비저닝 실행
-./playbox up
+# VM 풀 상태 확인
+scalex get sdi-pools
 ```
 
-### 6. 프로비저닝 완료 확인
+### Step 5: K8s 클러스터 프로비저닝 (Kubespray)
 
 ```bash
-# 클러스터 상태 확인
-./playbox status
+# SDI VM 풀 → K8s 클러스터 생성
+scalex cluster init config/k8s-clusters.yaml
+# 결과: _generated/clusters/{name}/ (inventory.ini + group_vars)
+# Kubespray 실행 → kubeconfig 생성
 
-# ArgoCD 관리자 비밀번호 확인
-kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath="{.data.password}" | base64 -d; echo
+# 클러스터 접근 확인
+export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
+kubectl get nodes
+
+export KUBECONFIG=_generated/clusters/sandbox/kubeconfig.yaml
+kubectl get nodes
+
+# 클러스터 목록 확인
+scalex get clusters
 ```
+
+### Step 6: 사전 시크릿 배포
+
+```bash
+# Cloudflare tunnel, Keycloak 등 사전 시크릿 생성
+scalex secrets apply
+```
+
+> **참고**: Cloudflare Tunnel은 사전에 [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/)에서 터널을 생성하고 credentials를 `credentials/cloudflare-tunnel.json`에 저장해야 합니다. 상세: [docs/ops-guide.md](docs/ops-guide.md)
+
+### Step 7: GitOps 부트스트랩 (ArgoCD)
+
+```bash
+export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
+kubectl apply -f gitops/bootstrap/spread.yaml
+
+# ArgoCD가 모든 앱을 자동 배포 (sync wave 순서)
+# Wave 0: ArgoCD, cluster-config
+# Wave 1: Cilium, cert-manager, Kyverno
+# Wave 2: cilium-resources, cert-issuers, kyverno-policies
+# Wave 3: cloudflared-tunnel, keycloak
+# Wave 4: RBAC
+```
+
+### Step 8: 최종 검증
+
+```bash
+# 전체 플랫폼 상태 확인
+scalex status
+
+# 클러스터 인벤토리
+scalex get clusters
+
+# ArgoCD 앱 상태 (tower 클러스터에서)
+export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
+kubectl -n argocd get applications
+
+# 외부 접근 테스트 (Cloudflare Tunnel 설정 완료 시)
+# ArgoCD: https://cd.jinwang.dev
+# Keycloak: https://auth.jinwang.dev
+```
+
+### 트러블슈팅
+
+문제 발생 시 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) 참조. 주요 확인 포인트:
+- `scalex get config-files` — 설정 파일 유효성
+- `scalex status` — 각 레이어별 상태
+- `kubectl -n argocd get applications` — ArgoCD sync 상태
 
 ---
 
-## CLI 레퍼런스 / CLI Reference
+## Quick Reference
 
 ```bash
-./playbox <command> [flags]
+scalex facts --all                          # HW 정보 수집
+scalex sdi init config/sdi-specs.yaml       # VM 풀 생성
+scalex cluster init config/k8s-clusters.yaml # K8s 클러스터 생성
+scalex secrets apply                         # 시크릿 배포
+scalex status                               # 전체 상태
+scalex get clusters                         # 클러스터 목록
+scalex sdi clean --hard --yes-i-really-want-to  # 전체 초기화
 ```
 
-### 프로비저닝 명령
-
-| 명령 | 설명 |
-|------|------|
-| `up` | 전체 프로비저닝 (7단계 순차 실행) |
-| `preflight` | 도구, values.yaml 검증, SSH 연결 테스트 |
-| `prepare-nodes` | Ansible로 노드 준비 (사용자 생성, netplan, 커널) |
-| `create-tower` | OpenTofu로 Tower VM 생성 (deprecated — use `scalex` CLI instead) |
-| `create-sandbox` | Kubespray로 Sandbox K8s 클러스터 생성 |
-| `bootstrap` | ArgoCD 설치, 시크릿 생성, spread.yaml 적용 |
-| `configure-oidc` | Keycloak OIDC realm/client/user 설정 |
-| `generate-kubeconfig` | 클라이언트 OIDC kubeconfig 생성 |
-
-### 유틸리티 명령
-
-| 명령 | 설명 |
-|------|------|
-| `status` | 양쪽 클러스터 상태 확인 |
-| `discover-nics` | 전체 노드의 NIC 정보 조회 |
-| `destroy-sandbox` | Sandbox 클러스터 리셋 (kubespray reset) |
-| `destroy-tower` | Tower VM 삭제 (tofu destroy) |
-| `destroy-all` | 전체 클러스터 삭제 |
-| `archive-repos` | 레거시 GitHub 저장소 아카이브 |
-
-### 플래그
-
-| 플래그 | 설명 |
-|-------|------|
-| `--dry-run` | 변경 없이 미리보기 |
-| `--from <step>` | 특정 단계부터 재개 (`up`과 함께 사용) |
-| `--skip <step>` | 특정 단계 건너뛰기 (`up`과 함께 사용) |
-| `--check` | Ansible check 모드 (`prepare-nodes`와 함께 사용) |
-
-### 사용 예시
-
-```bash
-./playbox up                          # 전체 프로비저닝
-./playbox up --dry-run                # 미리보기
-./playbox up --from create-sandbox    # Sandbox 단계부터 재개
-./playbox up --skip create-tower      # Tower 건너뛰기 (단일 클러스터)
-
-# Sandbox 초기화 및 재구축
-./playbox destroy-sandbox && ./playbox create-sandbox && ./playbox bootstrap
-```
+See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for detailed instructions.
 
 ---
 
-## GitOps 패턴
+## CLI Reference (`scalex`)
 
-### 부트스트랩 체인
+### Core Commands
+
+| Command | Description |
+|---------|-------------|
+| `scalex facts --all` | Gather hardware info from all bare-metal nodes |
+| `scalex facts --host <name>` | Gather from a single node |
+| `scalex sdi init <sdi-specs.yaml>` | Virtualize bare-metal → resource pool → VM pools |
+| `scalex sdi clean --hard --yes-i-really-want-to` | Full infrastructure reset |
+| `scalex sdi sync` | Reconcile bare-metal changes (add/remove nodes) |
+| `scalex cluster init <k8s-clusters.yaml>` | Kubespray → multi-cluster provisioning |
+| `scalex secrets apply` | Generate and apply pre-bootstrap K8s secrets |
+
+### Query Commands
+
+| Command | Description |
+|---------|-------------|
+| `scalex get baremetals` | Hardware facts table |
+| `scalex get sdi-pools` | VM pool status |
+| `scalex get clusters` | Cluster inventory |
+| `scalex get config-files` | Config file validation |
+| `scalex status` | 5-layer platform status report |
+| `scalex kernel-tune` | Kernel parameter recommendations and diff |
+
+---
+
+## GitOps Pattern
+
+### Bootstrap Chain
 
 ```
 kubectl apply -f gitops/bootstrap/spread.yaml
   → tower-root Application → gitops/generators/tower/
-    → tower-common (ApplicationSet) → gitops/common/{app}/
-    → tower-apps (ApplicationSet) → gitops/tower/{app}/
+    → common-generator (ApplicationSet) → gitops/common/{app}/
+    → tower-generator (ApplicationSet)  → gitops/tower/{app}/
   → sandbox-root Application → gitops/generators/sandbox/
-    → sandbox-common (ApplicationSet) → gitops/common/{app}/
-    → sandbox-apps (ApplicationSet) → gitops/sandbox/{app}/
+    → common-generator (ApplicationSet) → gitops/common/{app}/
+    → sandbox-generator (ApplicationSet) → gitops/sandbox/{app}/
 ```
 
-### 새 앱 추가 방법
+### Sync Waves
 
-**공통 앱 (모든 클러스터):**
-1. `gitops/common/{app}/kustomization.yaml` 생성
-2. `gitops/generators/tower/common-generator.yaml`과 `gitops/generators/sandbox/common-generator.yaml`에 element 추가
+| Wave | Components |
+|------|-----------|
+| 0 | ArgoCD, cluster-config |
+| 1 | Cilium, cert-manager, Kyverno, local-path-provisioner |
+| 2 | cilium-resources, cert-issuers, kyverno-policies |
+| 3 | cloudflared-tunnel, socks5-proxy, keycloak |
+| 4 | RBAC |
 
-**클러스터 전용 앱:**
-1. `gitops/{tower|sandbox}/{app}/kustomization.yaml` 생성
-2. `gitops/generators/{tower|sandbox}/{tower|sandbox}-generator.yaml`에 element 추가
+### Adding Apps
+
+**Common app (all clusters):**
+1. Create `gitops/common/{app}/kustomization.yaml`
+2. Add element to both `gitops/generators/tower/common-generator.yaml` and `gitops/generators/sandbox/common-generator.yaml`
+
+**Cluster-specific app:**
+1. Create `gitops/{tower|sandbox}/{app}/kustomization.yaml`
+2. Add element to `gitops/generators/{tower|sandbox}/{tower|sandbox}-generator.yaml`
 
 ---
 
-## 테스트 / Testing
+## Project Structure
+
+```
+scalex-cli/                # Rust CLI — 223 tests, 0 clippy warnings
+  src/commands/            #   facts, sdi, cluster, get, status, kernel-tune, secrets
+  src/core/                #   config, kubespray, tofu, gitops, kernel, validation, ...
+  src/models/              #   baremetal, cluster, sdi data models
+gitops/                    # ArgoCD-managed multi-cluster GitOps
+  bootstrap/spread.yaml    #   Root bootstrap (tower-root + sandbox-root)
+  generators/              #   ApplicationSets per cluster
+  projects/                #   AppProjects (tower, sandbox)
+  common/                  #   All clusters: cert-manager, cilium-resources, kyverno, kyverno-policies
+  tower/                   #   Tower-only: argocd, cert-issuers, cilium, cloudflared-tunnel, cluster-config, keycloak, socks5-proxy
+  sandbox/                 #   Sandbox-only: cilium, cluster-config, local-path-provisioner, rbac, test-resources
+credentials/               # Secrets + init config (gitignored, .example templates)
+config/                    # User config: sdi-specs.yaml, k8s-clusters.yaml
+docs/                      # Architecture, setup guide, ops guide, troubleshooting
+ansible/                   # Node preparation playbooks
+kubespray/                 # Kubespray submodule (v2.30.0) + templates
+client/                    # OIDC kubeconfig generation
+tests/                     # Test runner + YAML lint
+_generated/                # Gitignored output (facts, SDI HCL, cluster configs)
+```
+
+---
+
+## Testing
 
 ```bash
-# 전체 테스트 (venv에 pytest, jinja2, pyyaml, yamllint 필요)
+# All tests (Rust + YAML lint + clippy + fmt)
 ./tests/run-tests.sh
 
-# 개별 실행
-pytest tests/ -v                     # 31개 템플릿 + YAML 테스트
-bats tests/bats/*.bats               # 셸 스크립트 테스트
-yamllint -c .yamllint.yml gitops/ values.yaml
-shellcheck playbox lib/*.sh
+# Rust CLI tests only
+cd scalex-cli && cargo test
 ```
 
 ---
 
-## 트러블슈팅 / Troubleshooting
+## Documentation
 
-<details>
-<summary>SSH 연결 실패</summary>
-
-```bash
-ssh -v jinwang@192.168.88.8                                    # bastion 직접 연결
-ssh jinwang@192.168.88.8 "ssh jinwang@192.168.88.9 hostname"   # bastion 경유
-```
-첫 실행 시 `ansible_user`는 아직 없으므로 `jinwang`(superuser)으로 연결합니다.
-</details>
-
-<details>
-<summary>netplan 적용 후 연결 끊김</summary>
-
-`netplan try --timeout 120`을 사용하므로, 120초 후 자동 복구됩니다.
-</details>
-
-<details>
-<summary>노드가 NotReady 상태</summary>
-
-```bash
-kubectl get nodes -o wide
-kubectl describe node <node-name>
-kubectl -n kube-system get pods -l app.kubernetes.io/name=cilium
-```
-</details>
-
-<details>
-<summary>ArgoCD 앱 동기화 안 됨</summary>
-
-```bash
-kubectl -n argocd get applications
-kubectl -n argocd get applicationsets
-kubectl -n argocd logs deployment/argocd-server
-```
-</details>
-
-<details>
-<summary>Cloudflare Tunnel 연결 안 됨</summary>
-
-```bash
-kubectl -n kube-tunnel get pods
-kubectl -n kube-tunnel logs -l app=cloudflared
-kubectl -n kube-tunnel get secret cloudflared-tunnel-credentials
-```
-</details>
-
-<details>
-<summary>전체 초기화 및 재구축</summary>
-
-```bash
-./playbox destroy-all    # 전체 삭제
-./playbox up             # 처음부터 재구축
-```
-</details>
+| Document | Description |
+|----------|-------------|
+| [SETUP-GUIDE](docs/SETUP-GUIDE.md) | Full provisioning walkthrough |
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | Two-cluster design, network, access paths |
+| [ops-guide](docs/ops-guide.md) | Cloudflare Tunnel, Keycloak, kernel tuning, external access |
+| [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Common issues and fixes |
+| [CONTRIBUTING](docs/CONTRIBUTING.md) | Code style, testing, git conventions |
+| [CLOUDFLARE-ACCESS](docs/CLOUDFLARE-ACCESS.md) | Cloudflare Tunnel setup details |
+| [NETWORK-DISCOVERY](docs/NETWORK-DISCOVERY.md) | NIC discovery and bond configuration |
 
 ---
 
-## 다이어그램 원본 / Diagram Sources
+## Diagram Sources
 
-| 다이어그램 | draw.io 원본 |
-|-----------|-------------|
-| 전체 구성도 | [architecture-overview.drawio](docs/architecture-overview.drawio) |
-| 프로비저닝 흐름도 | [provisioning-flow.drawio](docs/provisioning-flow.drawio) |
+| Diagram | Source |
+|---------|--------|
+| Architecture Overview | [architecture-overview.drawio](docs/architecture-overview.drawio) |
+| Provisioning Flow | [provisioning-flow.drawio](docs/provisioning-flow.drawio) |
 
-> draw.io 원본은 [app.diagrams.net](https://app.diagrams.net/) 또는 VS Code draw.io 확장에서 편집할 수 있습니다.
+> Edit with [app.diagrams.net](https://app.diagrams.net/) or VS Code draw.io extension.

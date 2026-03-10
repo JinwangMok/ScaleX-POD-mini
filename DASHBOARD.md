@@ -1,167 +1,269 @@
-# ScaleX Development Dashboard
+# ScaleX-POD-mini Development Dashboard
 
-> 5-Layer SDI Platform: Physical (4 bare-metal) → SDI (OpenTofu) → Node Pools → Cluster (Kubespray) → GitOps (ArgoCD)
-
----
-
-## 현재 상태: 213 tests pass / clippy 0 warnings / fmt clean
-
-**코드 규모**: ~9,500 lines Rust, 27 source files, ~200 pure functions
-**GitOps**: 33 YAML files (bootstrap + generators + common/tower/sandbox apps)
-**레거시**: `.legacy-` prefix로 이동 완료
+> 5-Layer SDI Platform: Physical → SDI (OpenTofu) → Node Pools → Cluster (Kubespray) → GitOps (ArgoCD)
 
 ---
 
-## 이전 DASHBOARD 비판적 분석
+## Current Status
 
-### 왜 이전 DASHBOARD가 Checklist 달성을 입증하지 못하는가
-
-**핵심 문제: "코드 존재 = 기능 완료"라는 잘못된 등식**
-
-이전 DASHBOARD는 모든 항목을 **완료**로 표시했으나, 그 근거는:
-1. **순수 함수 단위 테스트만 존재**: 160개 테스트 모두 `generate_*()` 함수의 문자열 출력 검증. 실제 오케스트레이션(SSH → tofu apply → kubespray → kubeconfig) 흐름은 테스트 없음.
-2. **레거시 DataX 대비 누락 설정 미검출**: `etcd_deployment_type`, `dns_mode` 등 프로덕션 필수 설정이 CommonConfig에 없음.
-3. **GitOps 하드코딩 방치**: Cilium `k8sServiceHost: "192.168.88.100"`, cluster-config `cluster.type: "sandbox"` 등 config에서 동적으로 생성되어야 할 값들이 YAML에 고정.
-4. **"가이드 완료" ≠ "기능 완료"**: Keycloak, Cloudflare tunnel은 "가이드 문서 존재"를 "완료"로 분류. 실제 배포 가능 상태가 아님.
-5. **통합 파이프라인 검증 부재**: `scalex sdi init → cluster init → gitops bootstrap` 전체 흐름의 dry-run 검증이 없음.
-
-### 구체적 누락 항목
-
-| 영역 | 이전 DASHBOARD 주장 | 실제 상태 | 갭 |
-|------|---------------------|-----------|-----|
-| OpenTofu (CL#1) | "완료" | HCL 생성 순수함수 OK, 실제 4노드 가상화 검증 없음 | `etcd_deployment_type` 미생성 |
-| DataX 반영 (CL#2) | "100% 반영" | addon disable OK, BUT `etcd_deployment_type: host`, `dns_mode: coredns` 미생성 | 2개 설정 누락 |
-| Keycloak (CL#3) | "가이드 완료" | Helm chart 배포 OK, Secret 생성 CLI OK | Realm/Client 자동화 없음 (수동 OK) |
-| CF tunnel (CL#4,5) | "완료" | GitOps 배포 매니페스트 OK | 사용자 WebUI 설정 가이드 검증 필요 |
-| CLI 기능 (CL#8) | "100%" | 순수함수 100%, I/O 함수 테스트 0% | `scalex sdi init` 실제 실행 미검증 |
-| 확장성 (CL#9) | "완료" | `ClusterMode::Baremetal` 존재 | inventory 생성 외 실행 경로 미검증 |
-| 멱등성 (CL#12b) | "완료" | 순수함수는 멱등, I/O 함수 미검증 | tofu apply, kubespray 재실행 안전성 미확인 |
-| Cilium GitOps | 미언급 | `k8sServiceHost` 하드코딩 | config → GitOps 연동 필요 |
-| cluster-config | 미언급 | `cluster.type: "sandbox"` 하드코딩 | 클러스터별 동적 생성 필요 |
-| ArgoCD | 미언급 | `persistence.enabled: false` | 프로덕션 부적합 |
+- **Tests**: 223 pass / clippy 0 warnings / fmt clean
+- **Code**: ~10,500 lines Rust, 27 source files, ~200 pure functions
+- **GitOps**: 33 YAML files (bootstrap + generators + common/tower/sandbox apps)
+- **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
 
 ---
 
-## Checklist 재검증 결과 (심층 코드 분석 기반)
+## Checklist Gap Analysis
 
-| # | 질문 | 실제 상태 | 상세 |
+> 아래는 사용자 Checklist 15개 항목 각각에 대한 현재 상태와 갭 분석이다.
+> 상태: PASS = 완료 및 검증됨, PARTIAL = 부분 구현, FAIL = 미구현 또는 미검증
+
+### CL-1: 4개 노드 OpenTofu 가상화 + 2-클러스터 구조
+
+**상태: PARTIAL**
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| SDI 모델 (SdiSpec, NodeSpec) | PASS | `models/sdi.rs` — 파싱/직렬화 테스트 통과 |
+| OpenTofu HCL 생성 | PASS | `core/tofu.rs` — 호스트 인프라 + VM 생성 HCL 순수 함수 |
+| sdi-specs.yaml 예제 (4노드, 2풀) | PASS | `config/sdi-specs.yaml.example` — tower + sandbox 풀 정의 |
+| baremetal-init.yaml 스키마 (3가지 접근 방식) | PASS | direct / external IP / ProxyJump 모두 지원 |
+| 단일 노드 SDI 검증 | **FAIL** | tower + sandbox 모두 1개 노드에 배치하는 설정 테스트 없음 |
+| `scalex sdi init` (no flag) 동작 | PARTIAL | 호스트 준비만 수행, "통합 리소스 풀 관측" 기능 미구현 |
+| 실제 HW 테스트 | **FAIL** | 물리 인프라 접근 필요 — 오프라인 테스트 불가 |
+
+**근본 원인**: HCL 생성 로직은 완성되었으나, (1) 단일 노드 시나리오를 위한 테스트가 없고, (2) `sdi init` (no flag)의 "전체 리소스 풀 관측" 의미가 코드에서 불명확함.
+
+### CL-2: Cloudflare Tunnel ArgoCD/GitOps 방식
+
+**상태: PASS**
+
+- `gitops/tower/cloudflared-tunnel/` 존재 (kustomization.yaml + values.yaml)
+- tower-generator.yaml ApplicationSet에서 참조됨
+- Sync wave 3에서 배포
+
+### CL-3: Cloudflare Tunnel 설정 완료 여부
+
+**상태: PARTIAL**
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| GitOps 배포 자동화 | PASS | cloudflared-tunnel kustomization 존재 |
+| 사용자 매뉴얼 가이드 | PASS | `docs/ops-guide.md` Step 1-6 상세 기술 |
+| 사용자 실제 설정 완료 | PARTIAL | 사용자가 `playbox-admin-static` 이름으로 설정 — ops-guide는 `playbox-tunnel` 사용 |
+| 외부 kubectl 접근 검증 | **FAIL** | Keycloak 미설정 시 Cloudflare Tunnel만으로 kubectl 접근 가능 여부 미검증 |
+
+**근본 원인**: (1) ops-guide의 터널 이름이 사용자 실제 설정과 불일치, (2) Keycloak 없이 Cloudflare Tunnel + kubectl 조합의 동작 여부 미검증.
+
+### CL-4: Rust CLI + FP 스타일
+
+**상태: PASS**
+
+- Rust (clap 4 derive + serde + thiserror + anyhow)
+- 순수 함수: HCL 생성, inventory 생성, validation 모두 side-effect 없음
+- 213 tests, 0 clippy warnings, fmt clean
+- `#[allow(dead_code)]` 최소화, release profile LTO+strip
+
+### CL-5: 사용자 친절 가이드
+
+**상태: PARTIAL**
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| 운영 가이드 (ops-guide.md) | PASS | Cloudflare, Keycloak, Kernel, 접근 방법 상세 |
+| 설치 가이드 (SETUP-GUIDE.md) | PASS | 단계별 설명 존재 |
+| 아키텍처 문서 (ARCHITECTURE.md) | PASS | 한/영 병기, 다이어그램 존재 |
+| 트러블슈팅 (TROUBLESHOOTING.md) | PASS | 일반적 문제 해결 가이드 |
+| CLI 도움말 (--help) | PASS | clap derive로 자동 생성 |
+| "초보자도 따라할 수 있는" 수준 | **FAIL** | 전제 조건 확인, 에러 복구 가이드 부족 |
+
+### CL-6: README.md 디테일
+
+**상태: PARTIAL**
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| Architecture Overview | PASS | 5-Layer 구조, 2-Cluster 설계 |
+| CLI Reference | PASS | 모든 명령어 테이블 |
+| GitOps Pattern | PASS | Bootstrap chain, sync waves |
+| Project Structure | PASS | 디렉토리 트리 |
+| Testing | PASS | 테스트 명령어 |
+| 설계 철학 섹션 | **FAIL** | 7가지 원칙이 README에 없음 |
+| 상세 Installation Guide | **FAIL** | "Quick Start"만 존재, 보장된 단계별 가이드 없음 |
+
+### CL-7: README Installation Guide (end-to-end 보장)
+
+**상태: FAIL**
+
+현재 README에는 "Quick Start" 섹션만 있으며:
+- 전제 조건 검증 단계 없음
+- 에러 발생 시 복구 방법 없음
+- `scalex get clusters` 동작 확인까지의 end-to-end 검증 절차 없음
+- "완전히 초기화된 베어메탈"부터 시작하는 시나리오 미기술
+
+**근본 원인**: Quick Start는 "이미 환경이 준비된" 사용자를 위한 것. 초보자용 step-by-step Installation Guide가 별도로 필요.
+
+### CL-8: CLI 기능 완전성
+
+**상태: PARTIAL**
+
+| 명령어 | 상태 | 비고 |
+|--------|------|------|
+| `scalex facts` | PASS | SSH로 HW 정보 수집, NodeFacts 모델 완전 (CPU/mem/GPU/disk/NIC/PCIe/kernel) |
+| `scalex sdi init` (no flag) | PARTIAL | 호스트 준비만 수행. "전체 리소스 풀 관측" 미구현 |
+| `scalex sdi init <spec>` | PASS | SDI 풀 생성 HCL + host prepare + VM 프로비저닝 |
+| `scalex sdi clean --hard --yes-i-really-want-to` | PASS | 전체 초기화 로직 구현 |
+| `scalex sdi sync` | PASS | 노드 추가/제거 diff 계산 + 동기화 |
+| `scalex cluster init <config>` | PASS | Kubespray inventory/vars 생성, OIDC 지원 |
+| `scalex get baremetals` | PASS | facts JSON → 테이블 포맷 |
+| `scalex get sdi-pools` | PASS | SDI 풀 상태 테이블 |
+| `scalex get clusters` | PASS | 클러스터 인벤토리 테이블 |
+| `scalex get config-files` | PASS | 설정 파일 검증 테이블 |
+| `scalex secrets apply` | PASS | K8s secret 생성 |
+| `scalex status` | PASS | 5-layer 플랫폼 상태 |
+| `scalex kernel-tune` | PASS | 커널 파라미터 권장 |
+
+**근본 원인**: `sdi init` (no flag)의 "통합 리소스 풀" 의미가 설계에서 명확히 정의되지 않음.
+
+### CL-9: 베어메탈 모드 확장성
+
+**상태: PARTIAL**
+
+- `ClusterMode::Baremetal` enum 존재
+- k8s-clusters.yaml.example에 baremetal 예제 (주석)
+- `validate_cluster_sdi_pool_mapping`에서 baremetal skip 로직
+- **BUT**: baremetal 모드 cluster init 시 inventory 생성 테스트 부족
+- k3s 완전 제거 확인 (test_no_k3s_references_in_project_files)
+
+### CL-10: 보안 정보 템플릿화
+
+**상태: PASS**
+
+- `credentials/` 디렉토리: `.baremetal-init.yaml.example`, `.env.example`, `secrets.yaml.example`
+- `.gitignore`에 실제 credentials 파일 제외
+- `scalex secrets apply`로 K8s secret 자동 생성
+- 민감 정보는 `.env` 변수 참조 방식 (코드에 하드코딩 없음)
+
+### CL-11: 커널 파라미터 튜닝
+
+**상태: PASS**
+
+- `scalex kernel-tune` 명령어 구현 (14 tests)
+- `docs/ops-guide.md`에 스토리지/네트워크/IOMMU 튜닝 가이드
+- `scalex facts`로 현재 커널 파라미터 수집
+- cloud-init에서 기본 K8s 네트워크 파라미터 자동 적용
+
+### CL-12: 디렉토리 구조
+
+**상태: PARTIAL**
+
+| 필수 디렉토리 | 상태 | 비고 |
+|--------------|------|------|
+| `scalex-cli/` | PASS | Rust CLI |
+| `gitops/common/` | PASS | cert-manager, cilium-resources, kyverno, kyverno-policies |
+| `gitops/tower/` | PASS | argocd, cilium, cert-issuers, keycloak, cloudflared-tunnel, cluster-config, socks5-proxy |
+| `gitops/sandbox/` | PASS | cilium, cluster-config, local-path-provisioner, rbac, test-resources |
+
+| 추가 디렉토리 | 필요성 | 비고 |
+|--------------|--------|------|
+| `ansible/` | 필요 | 노드 준비 playbook |
+| `kubespray/` | 필요 | submodule + Jinja2 템플릿 |
+| `credentials/` | 필요 | 사용자 비밀 정보 (.gitignored) |
+| `config/` | 필요 | 사용자 설정 예제 |
+| `client/` | 필요 | OIDC kubeconfig 생성 |
+| `docs/` | 필요 | 운영 가이드 |
+| `tests/` | 필요 | 테스트 러너 |
+| `.legacy-*` | **삭제 대기** | git status에서 'D' 마킹 — 커밋 필요 |
+
+**근본 원인**: 레거시 파일 삭제가 git에 커밋되지 않음.
+
+### CL-13: 멱등성
+
+**상태: PARTIAL**
+
+- HCL 생성 멱등성 테스트 존재 (`test_generate_tofu_host_infra_idempotent`)
+- 코드 설계상 순수 함수이므로 동일 입력 → 동일 출력 보장
+- **BUT**: I/O 오케스트레이션 (tofu apply, kubespray) 멱등성 미검증
+- `sdi clean` → `sdi init` 사이클 테스트 없음
+
+### CL-14: Cloudflare Tunnel 사용자 가이드 + 외부 kubectl
+
+**상태: PARTIAL**
+
+- ops-guide.md에 상세 가이드 존재
+- 사용자가 `playbox-admin-static`으로 설정 완료
+- **BUT**: ops-guide에서 터널 이름이 `playbox-tunnel`로 되어 있어 불일치
+- Keycloak 없이 Cloudflare Tunnel만으로 kubectl 접근: API 프록시 설정 시 가능하나 미검증
+- `api.k8s.jinwang.dev` → `https://kubernetes.default:443` 라우팅 필요
+
+### CL-15: NAT 접근 방법
+
+**상태: PASS**
+
+- ops-guide.md 섹션 4에 상세 기술:
+  - 외부: Cloudflare Tunnel (웹), Tailscale VPN (SSH/kubectl)
+  - LAN: 직접 SSH, 스위치 경유
+- ProxyJump 패턴 문서화
+- kubeconfig 경로별 클러스터 접근 방법 기술
+
+---
+
+## Sprint Plan
+
+> 최소 핵심 기능 단위로 분할. 각 Sprint는 TDD 방식으로 진행.
+> RED (테스트 작성) → GREEN (구현) → REFACTOR → COMMIT
+
+### Sprint 1: 테스트 강화 + 레거시 정리 (코드 품질)
+
+> 물리 인프라 접근 없이 수행 가능한 작업
+
+| # | Task | Checklist | 상태 |
 |---|------|-----------|------|
-| 1 | OpenTofu 전체 가상화 | **완료** | HCL 생성 OK, `etcd_deployment_type: host` 추가 완료, 실제 4노드 실행은 사용자 환경에서 검증 필요 |
-| 2 | DataX kubespray 반영 | **100% 반영** | addon disable, OIDC, admission plugins, network, `etcd_deployment_type`, `dns_mode` 모두 반영. 통합 테스트로 검증 완료 |
-| 3 | Keycloak 설정 | **템플릿 완료** | Helm chart + Secret 생성 OK. Realm/Client는 수동 설정 (ops-guide.md 가이드 존재) |
-| 4 | CF tunnel GitOps | **완료** | `gitops/tower/cloudflared-tunnel/` sync-wave 3, 3개 ingress route 정의 |
-| 5 | CF tunnel 완성 | **가이드 완료** | ops-guide.md Section 1 존재. 사용자 WebUI 설정 필요 |
-| 6 | CLI 이름 scalex | **완료** | `main.rs:8`: `name = "scalex"` |
-| 7 | Rust + FP 스타일 | **완료** | 23 파일, ~180 pure functions, 160 tests, clippy clean |
-| 8 | CLI 기능 완성도 | **90%** | 순수 함수 100%, I/O 오케스트레이션 미검증 (아래 상세) |
-| 9 | 베어메탈 확장성 | **완료** | `ClusterMode::Baremetal` + `generate_inventory_baremetal()`, k3s 없음 |
-| 10 | Secrets 구조화 | **완료** | `secrets.rs` → K8s Secret YAML, `credentials/*.example` 템플릿 |
-| 11 | 커널 튜닝 가이드 | **완료** | ops-guide.md Section 3, facts에 kernel_params 수집 포함 |
-| 12a | 디렉토리 구조 | **완료** | scalex-cli/, gitops/, credentials/, config/, docs/ 정상 |
-| 12b | 멱등성 | **순수함수만 완료** | 순수함수 멱등 OK. I/O 함수 멱등성 미검증 |
-| 13 | CF tunnel 가이드 | **완료** | ops-guide.md Section 1 |
-| 14 | 외부 접근 가이드 | **완료** | ops-guide.md Section 4: CF Tunnel + Tailscale + LAN |
+| 1.1 | 단일 노드 SDI 설정 테스트 (tower+sandbox on 1 host) | CL-1 | TODO |
+| 1.2 | Baremetal 모드 cluster init inventory 생성 테스트 | CL-9 | TODO |
+| 1.3 | 멱등성 종합 테스트 (동일 입력 2회 → 동일 출력) | CL-13 | TODO |
+| 1.4 | E2E dry-run 파이프라인 테스트 (facts→sdi→cluster→secrets) | CL-8 | TODO |
+| 1.5 | 레거시 파일 삭제 커밋 (.legacy-*, lib/, tests/bats/) | CL-12 | TODO |
 
-### Kyverno 배치: **Common** (확정)
+### Sprint 2: README + 문서 강화
 
-모든 클러스터에 일관된 보안/운영 정책. `gitops/common/kyverno/` 위치. 클러스터별 예외는 PolicyException으로.
+| # | Task | Checklist | 상태 |
+|---|------|-----------|------|
+| 2.1 | README.md에 설계 철학 섹션 추가 | CL-6 | TODO |
+| 2.2 | README.md에 상세 Installation Guide 작성 | CL-7 | TODO |
+| 2.3 | ops-guide.md 터널 이름 `playbox-admin-static` 반영 | CL-14 | TODO |
+| 2.4 | Cloudflare Tunnel만으로 kubectl 접근 시나리오 문서화 | CL-3, CL-14 | TODO |
 
----
+### Sprint 3: `sdi init` (no flag) 리소스 풀 뷰 구현
 
-## 작업 계획: 최소 핵심 기능 단위
+| # | Task | Checklist | 상태 |
+|---|------|-----------|------|
+| 3.1 | `sdi init` (no flag) 시 통합 리소스 풀 상태 JSON 생성 | CL-1, CL-8 | TODO |
+| 3.2 | `scalex get sdi-pools` 에서 통합 뷰 표시 | CL-8 | TODO |
+| 3.3 | 단일 노드에서 전체 파이프라인 dry-run 테스트 | CL-1 | TODO |
 
-### Sprint 1: DataX Kubespray 완전 대응 — **완료** (TDD, 160→163 tests)
+### Sprint 4: 확장성 검증
 
-| ID | 작업 | 상태 |
-|----|------|------|
-| S1-1 | `etcd_deployment_type: host` CommonConfig + kubespray.rs 추가 | **완료** |
-| S1-2 | `dns_mode: coredns` CommonConfig + kubespray.rs 추가 | **완료** |
-| S1-3 | 3개 TDD 테스트 (etcd, dns_mode, required_keys) | **완료** |
-| S1-4 | k8s-clusters.yaml.example 업데이트 | **완료** |
-| S1-5 | 전체 회귀 테스트 통과 | **완료** (163 tests) |
+| # | Task | Checklist | 상태 |
+|---|------|-----------|------|
+| 4.1 | 3번째 클러스터 추가 테스트 (gitops generator 자동 생성) | CL-8 | TODO |
+| 4.2 | 2-Layer 템플릿 관리 검증 (SDI values ↔ GitOps values 분리) | CL-6 | TODO |
+| 4.3 | `scalex sdi sync` 노드 추가/제거 시 사이드이펙트 테스트 | CL-8 | TODO |
 
-### Sprint 2: GitOps 동적 설정 생성 — **완료** (TDD, 163→168 tests)
+### Sprint 5: 실환경 검증 (물리 인프라 필요)
 
-| ID | 작업 | 상태 |
-|----|------|------|
-| S2-1 | Cilium values.yaml 동적 생성 (`generate_cilium_values` + `cilium_values_path`) | **완료** |
-| S2-2 | `cluster init`에서 Cilium values 자동 업데이트 통합 | **완료** |
-| S2-3 | cluster-config ConfigMap common/ → per-cluster 이동 | **완료** |
-| S2-4 | `generate_cluster_config_manifest()` 순수함수 + 테스트 | **완료** |
-| S2-5 | GitOps generators 업데이트 (common에서 제거, per-cluster에 추가) | **완료** |
-
-### Sprint 3: 통합 파이프라인 검증 — **완료** (TDD, 168→170 tests)
-
-| ID | 작업 | 상태 |
-|----|------|------|
-| S3-1 | DataX 프로덕션 설정 완전 커버리지 통합 테스트 | **완료** |
-| S3-2 | cluster-config per-cluster 구조 검증 (common 미존재 + tower/sandbox 존재 + type 검증) | **완료** |
-
-### Sprint 4: GitOps 보안/정책 기반 — **완료** (TDD, 170 tests)
-
-| ID | 작업 | 상태 |
-|----|------|------|
-| S4-1 | cert-manager ClusterIssuer 템플릿 (Let's Encrypt staging + prod) | **완료** |
-| S4-2 | Kyverno 기본 정책 세트 (disallow-privileged, require-labels, restrict-host-namespaces) | **완료** |
-| S4-3 | GitOps generators 업데이트 (kyverno-policies, cert-issuers 추가) | **완료** |
-| S4-4 | 6개 TDD 테스트 (Checklist A-1~A-5, DASHBOARD 구조 검증) | **완료** |
-
-### Sprint 5: scalex status 서브커맨드 — **완료** (TDD, 170→191 tests)
-
-| ID | 작업 | 상태 |
-|----|------|------|
-| S5-1 | 5-layer 플랫폼 상태 순수함수 (Facts/SDI/Clusters/Config/GitOps) | **완료** |
-| S5-2 | 상태 포맷팅 순수함수 (format_layer_line, format_platform_report) | **완료** |
-| S5-3 | I/O run() 함수 (실제 파일시스템 스캔) | **완료** |
-| S5-4 | CLI 서브커맨드 등록 (main.rs + mod.rs) | **완료** |
-| S5-5 | 21개 TDD 테스트 | **완료** |
-
-### Sprint 6: ArgoCD persistence — **완료** (TDD, 191→192 tests)
-
-| ID | 작업 | 상태 |
-|----|------|------|
-| S6-1 | ArgoCD `persistence.enabled: true` 설정 | **완료** |
-| S6-2 | TDD 검증 테스트 (`test_argocd_persistence_enabled`) | **완료** |
-
-### Sprint 7: scalex kernel-tune 서브커맨드 — **완료** (TDD, 192→206 tests)
-
-| ID | 작업 | 상태 |
-|----|------|------|
-| S7-1 | K8s 노드 커널 파라미터 생성 순수함수 (역할별: worker/control-plane) | **완료** |
-| S7-2 | sysctl.conf / Ansible task 포맷 출력 | **완료** |
-| S7-3 | 현재 커널 파라미터 diff 분석 함수 | **완료** |
-| S7-4 | CLI 서브커맨드 등록 + I/O 연동 | **완료** |
-| S7-5 | 14개 TDD 테스트 | **완료** |
-
-### Sprint 8: Cilium ClusterMesh 자동화 — **완료** (TDD, 206→213 tests)
-
-| ID | 작업 | 상태 |
-|----|------|------|
-| S8-1 | `generate_cilium_values_with_mesh()` — 클러스터 ID + mesh 설정 | **완료** |
-| S8-2 | `generate_clustermesh_peer_secret()` — 양방향 peering Secret 생성 | **완료** |
-| S8-3 | 7개 TDD 테스트 (YAML 검증, 양방향 연결, 엔드포인트) | **완료** |
-
-### 카테고리 B: 사용자 수동 작업 (코드로 해결 불가)
-
-| ID | 작업 | 가이드 위치 |
-|----|------|-------------|
-| B-1 | Cloudflare Tunnel WebUI 설정 | `docs/ops-guide.md` Section 1 |
-| B-2 | Keycloak Realm/Client 설정 | `docs/ops-guide.md` Section 2 |
-| B-3 | `credentials/` 실제 파일 작성 | `credentials/*.example` |
-| B-4 | `config/` 실제 파일 작성 | `config/*.example` |
-| B-5 | GitOps repo URL 확인 | `gitops/bootstrap/spread.yaml` |
-
-### 카테고리 C: 향후 개선
-
-| ID | 작업 | 설명 |
-|----|------|------|
-| ~~C-1~~ | ~~`scalex kernel-tune` 서브커맨드~~ | **Sprint 7에서 완료** |
-| ~~C-2~~ | ~~Cilium ClusterMesh 자동화~~ | **Sprint 8에서 완료** |
-| ~~C-3~~ | ~~`scalex status` 서브커맨드~~ | **Sprint 5에서 완료** |
+| # | Task | Checklist | 상태 |
+|---|------|-----------|------|
+| 5.1 | `scalex facts --all` 실행 (4노드) | CL-1, CL-8 | TODO |
+| 5.2 | `scalex sdi init sdi-specs.yaml` 실행 | CL-1 | TODO |
+| 5.3 | `scalex cluster init k8s-clusters.yaml` 실행 | CL-8 | TODO |
+| 5.4 | `scalex secrets apply` + `kubectl apply -f gitops/bootstrap/spread.yaml` | CL-8 | TODO |
+| 5.5 | 외부망에서 `kubectl get pods` 접근 검증 | CL-14 | TODO |
+| 5.6 | `scalex sdi clean --hard --yes-i-really-want-to` + 재구축 (멱등성) | CL-13 | TODO |
 
 ---
 
-## 아키텍처 요약
+## Architecture
 
 ```
 credentials/                    config/
@@ -174,7 +276,7 @@ secrets.yaml
 |              scalex CLI (Rust)             |
 |  facts -> sdi init -> cluster init        |
 |  get baremetals/sdi-pools/clusters        |
-|  secrets apply                            |
+|  secrets apply / status / kernel-tune     |
 +-------------------------------------------+
         |
         v
@@ -190,28 +292,4 @@ _generated/
 |  generators/{tower,sandbox}/              |
 |  common/ tower/ sandbox/                  |
 +-------------------------------------------+
-```
-
-## 프로젝트 구조
-
-```
-scalex-cli/                # Rust CLI (primary) — 213 tests, 0 clippy warnings
-gitops/                    # Multi-cluster GitOps (ArgoCD)
-+-- bootstrap/spread.yaml  # tower-root + sandbox-root
-+-- generators/            # ApplicationSets per cluster
-+-- projects/              # AppProjects (tower, sandbox)
-+-- common/                # cert-manager, cilium-resources, kyverno, kyverno-policies
-+-- tower/                 # argocd, cert-issuers, cilium, cloudflared-tunnel, cluster-config, keycloak, socks5-proxy
-+-- sandbox/               # cilium, local-path-provisioner, rbac, test-resources
-credentials/               # Secrets + init (gitignored, .example templates)
-config/                    # User config templates (sdi-specs, k8s-clusters)
-docs/                      # ops-guide, architecture, troubleshooting
-ansible/                   # Node preparation playbooks
-kubespray/                 # Kubespray submodule (v2.30.0)
-tests/                     # BATS + pytest + YAML validation (legacy shell tests)
-_generated/                # Gitignored output (facts, SDI HCL, cluster configs)
-.legacy-datax-kubespray/   # Archived DataX kubespray reference
-.legacy-gitops-apps/       # Archived old ArgoCD app structure
-.legacy-gitops-manual/     # Archived manual kubespray configs
-.legacy-tofu/              # Archived old tower VM config
 ```
