@@ -45,6 +45,11 @@
 - `DIRECTION.md` (55줄): 프로젝트 방향. DASHBOARD.md에 통합 가능
 - 이 파일들은 참고 자료로서의 가치가 있으나, CL-12 "불필요한 내용이 포함되어 있지는 않은가?"에 해당
 
+> **해결 완료 (Sprint 12a~12e):**
+> - 위 1~3번 GAP → Sprint 12a에서 5개 테스트 추가 (G-1~G-5 해소)
+> - 위 4번 GAP → Sprint 12b에서 3개 meta-file 삭제 (G-6 해소)
+> - 추가: Sprint 12d (3rd cluster 확장성), Sprint 12e (GitOps 구조 정합성)
+
 ---
 
 ## Checklist 심층 검증 (Sprint 12a)
