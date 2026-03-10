@@ -110,10 +110,23 @@ kubectl -n keycloak get secret keycloak -o jsonpath="{.data.admin-password}" | b
 - `argocd-cm` ConfigMap에 OIDC 설정이 포함됨
 - Client Secret은 `credentials/secrets.yaml`에서 관리
 
-### 미완성 항목
-- [ ] Redirect URI 정확한 값 확인 (Cloudflare Tunnel 도메인 기준)
-- [ ] 사용자 그룹 할당 (cluster-admin 등)
-- [ ] ArgoCD RBAC policy와 Keycloak 그룹 매핑 검증
+### 검증 체크리스트
+- Redirect URI: `http://localhost:8000/*` (kubelogin), `https://cd.jinwang.dev/auth/callback` (ArgoCD)
+- Keycloak 그룹 → K8s RBAC 매핑: `cluster-admin` → `ClusterRoleBinding`, `developer` → `RoleBinding`
+- ArgoCD RBAC: `argocd-rbac-cm` ConfigMap에서 `policy.csv`로 Keycloak 그룹 매핑
+
+### OIDC kubeconfig 배포 (외부 사용자)
+```bash
+# 1. kubelogin 설치
+kubectl krew install oidc-login
+
+# 2. OIDC kubeconfig 사용
+export KUBECONFIG=client/kubeconfig-oidc.yaml
+kubectl get nodes  # 브라우저가 열리며 Keycloak 로그인
+
+# 3. 또는 client/setup-client.sh 실행
+cd client && ./setup-client.sh
+```
 
 ---
 

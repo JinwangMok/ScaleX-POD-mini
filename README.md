@@ -256,17 +256,24 @@ kubectl -n argocd get secret argocd-initial-admin-secret \
 ### 부트스트랩 체인
 
 ```
-spread.yaml (Root Application + AppProjects)
-  → generators/ (ApplicationSets)
-    → catalog.yaml 읽기 (jsonPath)
-      → apps/{generator}/{app}/ 에서 Application 생성
+kubectl apply -f gitops/bootstrap/spread.yaml
+  → tower-root Application → gitops/generators/tower/
+    → tower-common (ApplicationSet) → gitops/common/{app}/
+    → tower-apps (ApplicationSet) → gitops/tower/{app}/
+  → sandbox-root Application → gitops/generators/sandbox/
+    → sandbox-common (ApplicationSet) → gitops/common/{app}/
+    → sandbox-apps (ApplicationSet) → gitops/sandbox/{app}/
 ```
 
 ### 새 앱 추가 방법
 
-1. `gitops/clusters/playbox/catalog.yaml`의 해당 제너레이터에 앱 이름 추가
-2. `gitops/clusters/playbox/apps/{generator}/{app}/kustomization.yaml` 생성
-3. `catalog.yaml`의 `apps` 섹션에서 namespace, syncWave 등 오버라이드 설정
+**공통 앱 (모든 클러스터):**
+1. `gitops/common/{app}/kustomization.yaml` 생성
+2. `gitops/generators/tower/common-generator.yaml`과 `gitops/generators/sandbox/common-generator.yaml`에 element 추가
+
+**클러스터 전용 앱:**
+1. `gitops/{tower|sandbox}/{app}/kustomization.yaml` 생성
+2. `gitops/generators/{tower|sandbox}/{tower|sandbox}-generator.yaml`에 element 추가
 
 ---
 

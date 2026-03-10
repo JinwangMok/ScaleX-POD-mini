@@ -4,139 +4,133 @@
 
 ---
 
-## Gap Analysis: 이전 DASHBOARD 비판
+## 이전 DASHBOARD 비판적 분석
 
-이전 DASHBOARD는 모든 Phase를 "완료"로 표시했으나, 실제 검증 결과 **다수의 심각한 불일치**가 발견됨:
+이전 DASHBOARD는 모든 WS(Work Stream) 8개를 "완료"로 표시했으나, **실제 코드와 대조 검증 결과 다수의 미해결 문제가 발견됨**.
 
-### 치명적 문제 (Critical)
+### 1. 거짓 완료 (False Completion)
 
-| # | 문제 | 영향 |
+| 항목 | DASHBOARD 주장 | 실제 상태 | 근거 |
+|------|---------------|----------|------|
+| WS-1-3 `gitops/clusters/playbox/` 삭제 | "완료" | **미완료** | `gitops/clusters/tower/catalog.yaml` 여전히 존재 |
+| WS-1-5 OLD 경로 참조 없음 | "완료" | **미완료** | `gitops/bootstrap/multi-cluster-spread.yaml` OLD 파일 잔존 |
+| Checklist #2 DataX 반영 | "해결" | **부분 달성** | 7개 필드 추가했으나 `kubeconfig_localhost`, `nodelocaldns`, `ntp`, `node_prefix` 등 핵심 설정 누락 |
+| Checklist #8 CLI 기능 | "완료" | **부분 달성** | `sdi init` (no flag)이 리소스 풀 관측 미구현, `sdi clean --hard`가 SSH 기반 정리 미구현 |
+
+### 2. 구조적 문제 (Structural Issues)
+
+| # | 문제 | 상세 |
 |---|------|------|
-| **C1** | `spread.yaml`이 OLD 경로(`gitops/clusters/playbox/generators`) 참조 → NEW 구조(`gitops/generators/tower/`, `gitops/generators/sandbox/`)와 단절 | ArgoCD 부트스트랩 시 NEW multi-cluster 구조가 적용되지 않음 |
-| **C2** | `tofu/main.tf`가 k3s 단일 VM 하드코딩 — scalex-cli가 생성하는 멀티호스트 HCL과 완전히 별개 | Tower 클러스터가 k3s(비-프로덕션)로 동작, Checklist #9 위반 |
-| **C3** | `gitops/clusters/playbox/` (OLD 단일클러스터 구조)와 `gitops/{common,tower,sandbox,generators}/` (NEW 멀티클러스터 구조) 공존 | 어느 쪽이 실제 적용되는지 불명확, 배포 혼란 |
-| **C4** | Kyverno가 `gitops/common/kyverno/`에 존재하지만 tower/sandbox common-generator에 미포함 | 배포되지 않음 |
+| S1 | `sdi init` (no flag)이 "전체 리소스 풀로 관측"을 구현하지 않음 | 호스트 준비(KVM/bridge/VFIO)만 수행하고 종료. Checklist는 "통합하여 전체 리소스 풀로 관측되도록 구성"을 요구 |
+| S2 | `sdi clean --hard`가 OpenTofu destroy만 수행 | SSH로 노드에 접속하여 K8s/KVM/패키지 정리를 하지 않음. Checklist는 "최소 요구 조건을 제외한 모든 프로그램 삭제" 요구 |
+| S3 | `generate_cluster_vars()`에 DataX 핵심 설정 다수 누락 | `kubeconfig_localhost`, `kubectl_localhost`, `enable_nodelocaldns`, `ntp_enabled`, `kube_network_node_prefix` |
+| S4 | `gitops/clusters/` OLD 디렉토리 잔존 | `catalog.yaml` 1개 파일 남아있음 |
+| S5 | `gitops/bootstrap/multi-cluster-spread.yaml` 불필요 파일 잔존 | `spread.yaml`과 역할 중복 가능성 |
 
-### 중요 문제 (Major)
+### 3. 근본 원인 분석
 
-| # | 문제 | 영향 |
-|---|------|------|
-| **M1** | Sandbox server URL이 `https://sandbox-api:6443` 플레이스홀더 — 자동화 없음 | `scalex cluster init` 후 수동 교체 필요, 멱등성 깨짐 |
-| **M2** | `kubespray.rs` cluster-vars에 DataX 핵심 설정 누락: `firewalld_enabled`, `kubelet_custom_flags`, Gateway API, graceful shutdown | Checklist #2 미달성 |
-| **M3** | 레포 URL이 `k8s-playbox.git`으로 하드코딩 — 실제 레포명(`playbox-provisioning`)과 불일치 가능 | GitOps sync 실패 위험 |
-| **M4** | `playbox` bash CLI와 `scalex` Rust CLI가 중복 기능 보유 (cluster 생성 등) — 통합 안 됨 | 사용자 혼란, 유지보수 부담 |
-
-### 경미한 문제 (Minor)
-
-| # | 문제 | 영향 |
-|---|------|------|
-| **m1** | `tofu.rs` L233: gateway가 `192.168.88.1`로 하드코딩 (TODO 주석) | SDI spec의 gateway 미반영 |
-| **m2** | OLD `gitops/clusters/playbox/catalog.yaml` 정리 안 됨 | 혼란 유발 |
+1. **검증 없는 완료 선언**: 실제 `grep`/`find` 기반 검증 없이 코드 변경만으로 완료 처리
+2. **DataX 설정 부분 비교**: 7개 필드만 추출하고, kubespray 운영에 필수적인 나머지 설정들을 누락
+3. **CLI 기능 정의 불일치**: Checklist #8의 상세 기능 정의와 실제 구현 간 gap 미확인
+4. **테스트 커버리지 부족**: 37개 테스트가 pass하지만, 새로 발견된 gap 영역은 테스트 미존재
 
 ---
 
-## Checklist 재검증
+## Checklist 재검증 (2차)
 
-| # | 질문 | 상태 | 조치 |
-|---|------|------|------|
-| 1 | OpenTofu 전체 가상화 | **해결** | `tofu/` → `.legacy-tofu/`, scalex SDI가 `_generated/sdi/`에 멀티호스트 HCL 생성 |
-| 2 | DataX kubespray 반영 | **해결** | 7개 필드 추가 (firewalld, kube_vip, gateway_api, graceful_shutdown, kubelet_custom_flags) |
-| 3 | Keycloak 완성 | **가이드** | ops-guide.md에 수동 설정 가이드 (사용자 WebUI 설정 필요) |
-| 4 | CF tunnel GitOps | **완료** | Helm chart via ArgoCD ApplicationSet |
-| 5 | CF tunnel 완성 | **가이드** | WebUI 설정 필요 (docs/ops-guide.md Section 1) |
-| 6 | CLI 이름 scalex | **완료** | Rust CLI `scalex` |
-| 7 | Rust CLI | **완료** | 35 tests, clippy clean, FP style |
-| 8 | CLI 기능 | **완료** | facts/get/sdi(+sync)/cluster + gitops URL 자동화 |
-| 9 | 베어메탈 확장성 | **해결** | k3s 제거, 전체 Kubespray 통일, `ClusterMode::Baremetal` 지원 |
+| # | 질문 | 상태 | 근거 / 조치 필요 |
+|---|------|------|-----------------|
+| 1 | OpenTofu 전체 가상화 | **부분** | `sdi init <spec>` HCL 생성 OK, `sdi init` (no flag) 리소스 풀 관측 미구현 |
+| 2 | DataX kubespray 반영 | **부분** | 7개 추가 OK, `kubeconfig_localhost`/`nodelocaldns`/`ntp`/`node_prefix` 누락 |
+| 3 | Keycloak 설정 | **가이드** | Helm chart via GitOps OK, WebUI 설정 필요 (ops-guide.md) |
+| 4 | CF tunnel GitOps | **완료** | `gitops/tower/cloudflared-tunnel/` Helm chart |
+| 5 | CF tunnel 완성 | **가이드** | WebUI 설정 필요 (ops-guide.md Section 1) |
+| 6 | CLI 이름 scalex | **완료** | `scalex-cli/` Rust CLI |
+| 7 | Rust CLI | **완료** | 37 tests, clippy clean, FP style |
+| 8 | CLI 기능 | **부분** | facts/get/sdi-init(spec)/cluster-init OK. sdi-init(no-flag)/sdi-clean/sdi-sync 미흡 |
+| 9 | 베어메탈 확장성 | **완료** | `ClusterMode::Baremetal`, k3s 제거 |
 | 10 | credentials 구조화 | **완료** | example 파일들 + .gitignore 적용 |
-| 11 | 커널 튜닝 | **가이드** | ops-guide.md Section 3 (IOMMU, network, storage) |
-| 12 | 디렉토리 구조 | **해결** | OLD `gitops/clusters/playbox/` 삭제, common/tower/sandbox 단일 구조 |
-| 13 | CF tunnel 가이드 | **완료** | 6단계 WebUI 가이드 |
+| 11 | 커널 튜닝 | **가이드** | ops-guide.md Section 3 |
+| 12 | 디렉토리 구조 | **부분** | NEW 구조 OK, OLD `gitops/clusters/` 잔존 |
+| 12b | 멱등성 | **미검증** | 개별 연산은 멱등적 설계이나 end-to-end 검증 없음 |
+| 13 | CF tunnel 가이드 | **완료** | ops-guide.md |
 | 14 | 외부 접근 | **완료** | CF tunnel + Tailscale + LAN 가이드 |
+| Q | Kyverno 위치 | **Common** | `gitops/common/kyverno/` + 양쪽 generator 포함 (정책 일관성) |
 
 ---
 
 ## 실행 계획 (최소 핵심 기능 단위)
 
-### WS-1: GitOps 이중구조 해소 (Critical C1, C3, C4, m2)
+### Phase 1: OLD 구조 정리
 
-> spread.yaml → NEW 경로로 전환, OLD 구조 제거, Kyverno 추가
+> `gitops/clusters/` 잔존 파일 삭제, 불필요 bootstrap 파일 정리
 
-- [x] **1-1** `spread.yaml` 재작성: tower-root → `gitops/generators/tower/`, sandbox-root → `gitops/generators/sandbox/`
-- [x] **1-2** Kyverno를 tower/sandbox common-generator에 추가
-- [x] **1-3** `gitops/clusters/playbox/` (OLD) 전체 삭제
-- [x] **1-4** YAML 유효성 검증 통과
-- [x] **1-5** 테스트: OLD 경로 참조 없음 확인 (grep 검증)
+- [ ] **1-1** `gitops/clusters/` 디렉토리 전체 삭제
+- [ ] **1-2** `gitops/bootstrap/multi-cluster-spread.yaml` 검토 후 삭제 (spread.yaml과 중복시)
+- [ ] **1-3** `grep -r "gitops/clusters"` 로 참조 없음 확인
+- [ ] **1-4** YAML 유효성 검증
 
-### WS-2: 레포 URL 통일 (Major M3)
+### Phase 2: DataX Kubespray 설정 보강 (TDD)
 
-> 모든 gitops YAML의 repoURL을 실제 레포와 일치시킴
+> `generate_cluster_vars()` 에 DataX 프로덕션 핵심 설정 추가
 
-- [x] **2-1** 실제 GitHub 레포 URL 확인 → `k8s-playbox.git` 이미 일치
-- [x] **2-2** 교체 불필요 (URL 일치 확인)
-- [x] **2-3** 검증 완료
+- [ ] **2-1** RED: `test_generate_cluster_vars_datax_production_settings` 작성
+- [ ] **2-2** GREEN: `CommonConfig`에 필드 추가 및 `generate_cluster_vars()` 출력 추가
+- [ ] **2-3** REFACTOR: 중복 제거 및 코드 정리
+- [ ] **2-4** `k8s-clusters.yaml.example` 업데이트
+- [ ] **2-5** `cargo test` 전체 통과 확인
 
-### WS-3: tofu/ 정리 — k3s 제거 (Critical C2, Checklist #9)
+### Phase 3: SDI Clean 강화 (TDD)
 
-> tofu/ 디렉토리는 scalex-cli가 `_generated/sdi/`에 생성하는 HCL로 대체. 기존 k3s 기반 tofu/는 레거시로 표시 또는 제거.
+> `sdi clean --hard` 가 SSH로 노드에 접속하여 KVM/K8s/패키지를 정리
 
-- [x] **3-1** `tofu/` → `.legacy-tofu/`로 이동 (참고용 보존)
-- [x] **3-2** `CLAUDE.md` 업데이트: scalex 기반 아키텍처로 전면 재작성
-- [x] **3-3** `playbox` bash CLI 상단 deprecation notice 추가
+- [ ] **3-1** RED: `test_generate_node_cleanup_script` 작성
+- [ ] **3-2** GREEN: `host_prepare.rs`에 `generate_node_cleanup_script()` 순수 함수 구현
+- [ ] **3-3** `sdi.rs` `run_clean()`에 SSH 기반 정리 로직 통합
+- [ ] **3-4** `cargo test` 전체 통과 확인
 
-### WS-4: kubespray cluster-vars DataX 설정 보강 (Major M2, Checklist #2)
+### Phase 4: SDI Init (no flag) 리소스 풀 관측 (TDD)
 
-> DataX kubespray의 핵심 설정을 scalex-cli의 cluster-vars 생성기에 반영
+> `sdi init` (spec 없이 실행)시 모든 호스트의 리소스를 집계하여 통합 리소스 풀로 표시
 
-- [x] **4-1** DataX 설정 diff 분석 완료
-- [x] **4-2** `CommonConfig` 모델에 7개 필드 추가: `firewalld_enabled`, `kube_vip_enabled`, `kubelet_custom_flags`, `gateway_api_enabled`, `gateway_api_version`, `graceful_node_shutdown`, `graceful_node_shutdown_sec`
-- [x] **4-3** `generate_cluster_vars()` 함수에 새 필드 출력 추가
-- [x] **4-4** TDD: `test_generate_cluster_vars_datax_settings` 테스트 작성 → RED → GREEN → 통과
-- [x] **4-5** `k8s-clusters.yaml.example` 업데이트 (새 필드 반영)
+- [ ] **4-1** RED: `test_generate_resource_pool_summary` 작성
+- [ ] **4-2** GREEN: `core/resource_pool.rs` 모듈 생성
+- [ ] **4-3** `sdi.rs` `run_init()`에 no-spec 경로 통합
+- [ ] **4-4** `cargo test` 전체 통과 확인
 
-### WS-5: Sandbox server URL 자동화 (Major M1)
+### Phase 5: repoURL 일관성
 
-> `scalex cluster init` 실행 시 sandbox API server URL을 generators/projects에 자동 주입
+- [ ] **5-1** `git remote -v` 로 실제 remote URL 확인
+- [ ] **5-2** gitops YAML 내 repoURL과 비교, 불일치시 수정
 
-- [x] **5-1** `core/gitops.rs` 모듈 설계 (순수 함수)
-- [x] **5-2** `replace_sandbox_server_url()`, `has_sandbox_placeholder()`, `replace_all_sandbox_urls()` 구현
-- [x] **5-3** TDD: 4개 테스트 작성 → GREEN (치환, 감지, 일괄 치환, 내용 보존)
-- [x] **5-4** `scalex cluster init` 파이프라인에 통합 (kubeconfig → server URL 추출 → gitops 치환)
+### Phase 6: 문서 보강
 
-### WS-6: tofu.rs gateway 하드코딩 수정 (Minor m1)
+- [ ] **6-1** Cloudflare Tunnel WebUI 설정 가이드 검토 및 보완
+- [ ] **6-2** Keycloak Realm/Client 설정 가이드 검토 및 보완
+- [ ] **6-3** LAN 내부 접근 (스위치 경유) 가이드 검토 및 보완
 
-- [x] **6-1** `generate_vm_resource()`에 gateway 파라미터 추가, 하드코딩 제거
-- [x] **6-2** TDD: `test_generate_tofu_uses_spec_gateway` 테스트 → RED → GREEN
+### Phase 7: 최종 검증 및 커밋
 
-### WS-7: playbox CLI deprecation 정리 (Major M4)
-
-> playbox bash CLI는 scalex Rust CLI로 대체되는 과도기. CLAUDE.md에 관계 명시.
-
-- [x] **7-1** `playbox` 스크립트 상단에 deprecation notice 추가
-- [x] **7-2** `CLAUDE.md` 업데이트: scalex가 primary CLI임을 명시
-
-### WS-8: 최종 검증
-
-- [x] **8-1** `cargo test` 전체 통과 (35 tests, 0 failures)
-- [x] **8-2** `cargo clippy` clean, `cargo fmt --check` clean
-- [x] **8-3** gitops YAML 유효성 검증 통과 (python3 yaml.safe_load_all)
-- [x] **8-4** gitops 구조 일관성 검증 (spread → generators → common/tower/sandbox, OLD 경로 참조 0건)
-- [x] **8-5** 커밋 및 푸쉬 (b56a034)
+- [ ] **7-1** `cargo test` 전체 통과
+- [ ] **7-2** `cargo clippy` clean
+- [ ] **7-3** `cargo fmt --check` clean
+- [ ] **7-4** gitops YAML 유효성 검증
+- [ ] **7-5** OLD 경로 참조 0건 확인
+- [ ] **7-6** 커밋 및 푸쉬
 
 ---
 
 ## 진행 상황 추적
 
-| WS | 설명 | 상태 | 비고 |
-|----|------|------|------|
-| WS-1 | GitOps 이중구조 해소 | **완료** | spread.yaml 재작성, OLD 삭제, Kyverno 추가 |
-| WS-2 | 레포 URL 통일 | **완료** | 이미 일치 확인 |
-| WS-3 | tofu/ k3s 제거 | **완료** | `.legacy-tofu/`로 이동, CLAUDE.md 재작성 |
-| WS-4 | kubespray DataX 설정 보강 | **완료** | TDD: 7개 필드 추가, 35 tests pass |
-| WS-5 | Sandbox URL 자동화 | **완료** | TDD: `core/gitops.rs` 4개 순수 함수 + 4 tests |
-| WS-6 | tofu.rs gateway 수정 | **완료** | TDD: spec에서 gateway 전달, 하드코딩 제거 |
-| WS-7 | playbox deprecation | **완료** | deprecation notice + CLAUDE.md 업데이트 |
-| WS-8 | 최종 검증 | **완료** | 37 tests, clippy clean, fmt clean |
+| Phase | 설명 | 상태 | 비고 |
+|-------|------|------|------|
+| 1 | OLD 구조 정리 | **대기** | |
+| 2 | DataX kubespray 보강 | **대기** | TDD |
+| 3 | SDI clean 강화 | **대기** | TDD |
+| 4 | SDI init 리소스 풀 | **대기** | TDD |
+| 5 | repoURL 일관성 | **대기** | |
+| 6 | 문서 보강 | **대기** | |
+| 7 | 최종 검증 | **대기** | |
 
 ---
 
@@ -145,22 +139,28 @@
 - [x] credentials/ 구조 (`.baremetal-init.yaml.example`, `.env.example`, `secrets.yaml.example`)
 - [x] config/ 스키마 (`baremetal.yaml.example`, `sdi-specs.yaml.example`, `k8s-clusters.yaml.example`)
 - [x] scalex-cli Rust 프로젝트 (clap, serde, thiserror, FP style)
-- [x] `scalex facts` (SSH → HW 정보 수집 → JSON)
+- [x] `scalex facts` (SSH → HW 정보 수집 → JSON 파싱)
 - [x] `scalex get` (baremetals, sdi-pools, clusters, config-files)
-- [x] `scalex sdi init/clean/sync` (OpenTofu HCL 생성, host prep)
-- [x] `scalex cluster init` (inventory + vars 생성, kubespray 실행)
+- [x] `scalex sdi init <spec>` (OpenTofu HCL 생성 + 호스트 준비)
+- [x] `scalex sdi sync` (기본 diff 기반 동기화)
+- [x] `scalex cluster init` (inventory + vars 생성 + kubespray 실행 + kubeconfig 수집)
 - [x] `ClusterMode::Baremetal` 지원 (SDI 없이 직접 kubespray)
 - [x] gitops/common/ (cilium, cilium-resources, cert-manager, cluster-config, kyverno)
 - [x] gitops/tower/ (argocd, keycloak, cloudflared-tunnel, socks5-proxy)
 - [x] gitops/sandbox/ (local-path-provisioner, rbac, test-resources)
 - [x] generators/ (tower-common, tower-apps, sandbox-common, sandbox-apps)
 - [x] projects/ (tower-project, sandbox-project)
-- [x] 커널 튜닝 가이드 (docs/ops-guide.md)
-- [x] Cloudflare Tunnel 가이드 (docs/ops-guide.md)
-- [x] Keycloak 설정 가이드 (docs/ops-guide.md)
-- [x] LAN/외부 접근 가이드 (docs/ops-guide.md)
+- [x] spread.yaml → NEW 경로
+- [x] Kyverno → common/ + 양쪽 generator 포함
+- [x] tofu/ → .legacy-tofu/ 이동, k3s 제거
+- [x] playbox CLI deprecation notice
+- [x] Sandbox URL 자동화 (core/gitops.rs)
+- [x] tofu.rs gateway spec에서 전달
 
-## 사용자 수동 작업 (변경 없음)
+## 사용자 수동 작업
 
 - Cloudflare Tunnel WebUI 설정 (`docs/ops-guide.md` Section 1)
 - Keycloak Realm/Client 설정 (`docs/ops-guide.md` Section 2)
+- `credentials/.baremetal-init.yaml` 및 `credentials/.env` 작성
+- `config/sdi-specs.yaml` 작성
+- `config/k8s-clusters.yaml` 작성

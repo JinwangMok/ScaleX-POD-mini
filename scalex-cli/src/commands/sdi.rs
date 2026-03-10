@@ -298,6 +298,32 @@ fn run_clean(hard: bool, confirm: bool, output_dir: PathBuf, dry_run: bool) -> a
     }
 
     if hard {
+        // SSH into each node and run full cleanup (K8s, KVM, bridge removal)
+        let config_path = PathBuf::from("credentials/.baremetal-init.yaml");
+        let env_path = PathBuf::from("credentials/.env");
+        if config_path.exists() && env_path.exists() {
+            let bm_config = load_baremetal_config(&config_path, &env_path)?;
+            let cleanup_script = host_prepare::generate_node_cleanup_script();
+
+            println!(
+                "[sdi] Running full node cleanup on {} nodes...",
+                bm_config.target_nodes.len()
+            );
+            for node in &bm_config.target_nodes {
+                println!("[sdi] {} — cleaning K8s, KVM, bridge...", node.name);
+                if !dry_run {
+                    let ssh_cmd =
+                        build_ssh_command(node, &cleanup_script, &bm_config.target_nodes)?;
+                    match execute_ssh(&ssh_cmd) {
+                        Ok(out) => println!("{}", out),
+                        Err(e) => eprintln!("[sdi] ERROR on {}: {}", node.name, e),
+                    }
+                }
+            }
+        } else {
+            println!("[sdi] No baremetal config found, skipping node cleanup (only removing local state)");
+        }
+
         if dry_run {
             println!("[dry-run] Would remove {}", output_dir.display());
         } else {

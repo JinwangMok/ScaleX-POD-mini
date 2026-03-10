@@ -26,6 +26,15 @@ config:
     # Gateway API (for future Cilium Gateway)
     gateway_api_enabled: true
     gateway_api_version: "1.3.0"
+    # Kubeconfig/kubectl on Ansible host (for bastion access)
+    kubeconfig_localhost: true
+    kubectl_localhost: true
+    # Node-local DNS cache (performance)
+    enable_nodelocaldns: true
+    # Pod network node prefix (default: 24 = up to 254 pods/node)
+    kube_network_node_prefix: 24
+    # NTP synchronization
+    ntp_enabled: true
 
   clusters:
     # Mode: "sdi" (default) uses SDI VM pools, "baremetal" uses physical nodes directly

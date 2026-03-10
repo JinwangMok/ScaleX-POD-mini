@@ -165,6 +165,31 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
         ));
     }
 
+    // Kubeconfig and kubectl on Ansible host
+    if common.kubeconfig_localhost {
+        vars.push_str("kubeconfig_localhost: true\n");
+        vars.push_str("kubeconfig_localhost_ansible_host: true\n");
+    }
+    if common.kubectl_localhost {
+        vars.push_str("kubectl_localhost: true\n");
+    }
+
+    // Node-local DNS cache
+    if common.enable_nodelocaldns {
+        vars.push_str("enable_nodelocaldns: true\n");
+    }
+
+    // Network node prefix
+    vars.push_str(&format!(
+        "kube_network_node_prefix: {}\n",
+        common.kube_network_node_prefix
+    ));
+
+    // NTP
+    if common.ntp_enabled {
+        vars.push_str("ntp_enabled: true\n");
+    }
+
     // Native routing CIDR
     if let Some(ref cidr) = cluster.network.native_routing_cidr {
         vars.push_str(&format!("cilium_native_routing_cidr: \"{cidr}\"\n"));
@@ -362,6 +387,11 @@ mod tests {
             graceful_node_shutdown: false,
             graceful_node_shutdown_sec: 120,
             kubelet_custom_flags: vec![],
+            kubeconfig_localhost: true,
+            kubectl_localhost: true,
+            enable_nodelocaldns: true,
+            kube_network_node_prefix: 24,
+            ntp_enabled: true,
         }
     }
 
@@ -490,6 +520,43 @@ mod tests {
         assert!(vars.contains("cilium_cluster_id: 1"));
         assert!(vars.contains("helm_enabled: true"));
         assert!(vars.contains("NodeRestriction"));
+    }
+
+    #[test]
+    fn test_generate_cluster_vars_datax_production_settings() {
+        // DataX kubespray production settings that must be present
+        let mut common = make_common();
+        common.kubeconfig_localhost = true;
+        common.kubectl_localhost = true;
+        common.enable_nodelocaldns = true;
+        common.kube_network_node_prefix = 24;
+        common.ntp_enabled = true;
+
+        let cluster = make_cluster_def("tower", "tower");
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // DataX production-required settings
+        assert!(
+            vars.contains("kubeconfig_localhost: true"),
+            "missing kubeconfig_localhost"
+        );
+        assert!(
+            vars.contains("kubectl_localhost: true"),
+            "missing kubectl_localhost"
+        );
+        assert!(
+            vars.contains("kubeconfig_localhost_ansible_host: true"),
+            "missing kubeconfig_localhost_ansible_host"
+        );
+        assert!(
+            vars.contains("enable_nodelocaldns: true"),
+            "missing enable_nodelocaldns"
+        );
+        assert!(
+            vars.contains("kube_network_node_prefix: 24"),
+            "missing kube_network_node_prefix"
+        );
+        assert!(vars.contains("ntp_enabled: true"), "missing ntp_enabled");
     }
 
     #[test]

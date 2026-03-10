@@ -21,10 +21,23 @@ print('valid')
 "
 }
 
-@test "catalog.yaml lists all expected base apps" {
-    local catalog="${PROJECT_ROOT}/gitops/clusters/playbox/catalog.yaml"
-    [ -f "${catalog}" ]
-    for app in argocd cilium cilium-resources cert-manager cloudflared-tunnel socks5-proxy keycloak local-path-provisioner rbac cluster-config; do
-        grep -q "${app}" "${catalog}"
+@test "generators exist for tower and sandbox" {
+    [ -f "${PROJECT_ROOT}/gitops/generators/tower/common-generator.yaml" ]
+    [ -f "${PROJECT_ROOT}/gitops/generators/tower/tower-generator.yaml" ]
+    [ -f "${PROJECT_ROOT}/gitops/generators/sandbox/common-generator.yaml" ]
+    [ -f "${PROJECT_ROOT}/gitops/generators/sandbox/sandbox-generator.yaml" ]
+}
+
+@test "common apps present in tower common-generator" {
+    local gen="${PROJECT_ROOT}/gitops/generators/tower/common-generator.yaml"
+    for app in cilium cilium-resources cert-manager cluster-config kyverno; do
+        grep -q "${app}" "${gen}"
+    done
+}
+
+@test "tower-specific apps present in tower-generator" {
+    local gen="${PROJECT_ROOT}/gitops/generators/tower/tower-generator.yaml"
+    for app in argocd keycloak cloudflared-tunnel socks5-proxy; do
+        grep -q "${app}" "${gen}"
     done
 }

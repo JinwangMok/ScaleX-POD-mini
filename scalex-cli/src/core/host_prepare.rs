@@ -159,6 +159,96 @@ pub fn extract_gpu_pci_ids(facts: &NodeFacts) -> Vec<String> {
         .collect()
 }
 
+/// Generate the shell script to fully clean a node (remove K8s, KVM, bridge).
+/// Used by `sdi clean --hard` to reset nodes to bare-metal state.
+/// Pure function. Preserves SSH access and basic networking.
+pub fn generate_node_cleanup_script() -> String {
+    r#"#!/bin/bash
+set -euo pipefail
+
+echo "[scalex] === Node Cleanup: Resetting to bare-metal state ==="
+
+# ─── Phase 1: Kubernetes cleanup ───
+echo "[scalex] Phase 1: Removing Kubernetes components..."
+
+if command -v kubeadm &>/dev/null; then
+    echo "[scalex] Running kubeadm reset..."
+    kubeadm reset -f --cri-socket unix:///run/containerd/containerd.sock 2>/dev/null || true
+fi
+
+echo "[scalex] Stopping Kubernetes services..."
+systemctl stop kubelet 2>/dev/null || true
+systemctl stop containerd 2>/dev/null || true
+systemctl disable kubelet 2>/dev/null || true
+systemctl disable containerd 2>/dev/null || true
+
+echo "[scalex] Removing Kubernetes packages..."
+apt-get purge -y -qq kubeadm kubelet kubectl containerd.io 2>/dev/null || true
+apt-get purge -y -qq kubernetes-cni cri-tools 2>/dev/null || true
+
+echo "[scalex] Cleaning Kubernetes directories..."
+rm -rf /etc/kubernetes
+rm -rf /var/lib/kubelet
+rm -rf /var/lib/etcd
+rm -rf /etc/cni
+rm -rf /opt/cni
+rm -rf /var/lib/containerd
+rm -rf /run/containerd
+rm -rf /var/lib/calico
+rm -rf /etc/calico
+rm -rf /var/run/calico
+rm -rf /var/lib/cni
+
+echo "[scalex] Flushing iptables rules..."
+iptables -F 2>/dev/null || true
+iptables -t nat -F 2>/dev/null || true
+iptables -t mangle -F 2>/dev/null || true
+iptables -X 2>/dev/null || true
+ip6tables -F 2>/dev/null || true
+
+# ─── Phase 2: KVM/libvirt cleanup ───
+echo "[scalex] Phase 2: Removing KVM/libvirt..."
+
+echo "[scalex] Destroying all VMs..."
+for vm in $(virsh list --all --name 2>/dev/null); do
+    virsh destroy "$vm" 2>/dev/null || true
+    virsh undefine "$vm" --remove-all-storage 2>/dev/null || true
+done
+
+echo "[scalex] Stopping libvirt services..."
+systemctl stop libvirtd 2>/dev/null || true
+systemctl disable libvirtd 2>/dev/null || true
+
+echo "[scalex] Removing KVM/libvirt packages..."
+apt-get purge -y -qq qemu-kvm libvirt-daemon-system libvirt-clients virtinst bridge-utils 2>/dev/null || true
+rm -rf /var/lib/libvirt
+rm -rf /etc/libvirt
+
+# ─── Phase 3: Bridge cleanup ───
+echo "[scalex] Phase 3: Removing br0 bridge configuration..."
+
+if ip link show br0 &>/dev/null; then
+    ip link set br0 down 2>/dev/null || true
+    ip link delete br0 type bridge 2>/dev/null || true
+fi
+rm -f /etc/netplan/50-scalex-bridge.yaml
+
+echo "[scalex] Restoring original netplan from backup..."
+if [ -d /etc/netplan/backup ]; then
+    cp /etc/netplan/backup/*.yaml /etc/netplan/ 2>/dev/null || true
+fi
+netplan apply 2>/dev/null || true
+
+# ─── Phase 4: Final cleanup ───
+echo "[scalex] Phase 4: Cleaning up remaining packages..."
+apt-get autoremove -y -qq 2>/dev/null || true
+apt-get clean
+
+echo "[scalex] === Node cleanup complete. SSH access preserved. ==="
+"#
+    .to_string()
+}
+
 /// Check if a host already has br0 configured.
 /// Pure function: examines facts data.
 pub fn has_bridge(facts: &NodeFacts) -> bool {
@@ -323,5 +413,47 @@ mod tests {
         assert!(script.contains("vfio-pci"));
         assert!(script.contains("10de:2544"));
         assert!(script.contains("intel_iommu=on"));
+    }
+
+    #[test]
+    fn test_generate_node_cleanup_script_structure() {
+        let script = generate_node_cleanup_script();
+        // Must be a proper bash script
+        assert!(script.starts_with("#!/bin/bash\nset -euo pipefail"));
+        // Must clean up Kubernetes components
+        assert!(script.contains("kubeadm reset"));
+        assert!(script.contains("kubelet"));
+        assert!(script.contains("kubectl"));
+        // Must clean up container runtime
+        assert!(script.contains("containerd"));
+        // Must clean up KVM/libvirt
+        assert!(script.contains("libvirt"));
+        assert!(script.contains("qemu"));
+        // Must remove bridge configuration
+        assert!(script.contains("br0"));
+        // Must clean up data directories
+        assert!(script.contains("/etc/cni"));
+        assert!(script.contains("/var/lib/kubelet"));
+        assert!(script.contains("/etc/kubernetes"));
+        // Must preserve SSH access — never kill sshd or remove openssh
+        assert!(!script.contains("openssh-server"));
+        assert!(!script.contains("stop sshd"));
+        // Must have [scalex] logging prefix
+        assert!(script.contains("[scalex]"));
+    }
+
+    #[test]
+    fn test_generate_node_cleanup_script_ordering() {
+        let script = generate_node_cleanup_script();
+        // Kubernetes must be cleaned before KVM (dependent services first)
+        let k8s_pos = script.find("kubeadm reset").unwrap();
+        let kvm_pos = script.find("libvirt").unwrap();
+        assert!(k8s_pos < kvm_pos, "k8s cleanup must precede KVM cleanup");
+        // Bridge removal must come after KVM cleanup
+        let bridge_pos = script.find("br0").unwrap();
+        assert!(
+            kvm_pos < bridge_pos,
+            "KVM cleanup must precede bridge removal"
+        );
     }
 }

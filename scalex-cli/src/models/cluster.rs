@@ -56,10 +56,33 @@ pub struct CommonConfig {
     /// Custom kubelet flags
     #[serde(default)]
     pub kubelet_custom_flags: Vec<String>,
+    /// Copy kubeconfig to Ansible host (default: true for production)
+    #[serde(default = "default_true")]
+    pub kubeconfig_localhost: bool,
+    /// Download kubectl to Ansible host (default: true for production)
+    #[serde(default = "default_true")]
+    pub kubectl_localhost: bool,
+    /// Enable nodelocal DNS cache (default: true for production)
+    #[serde(default = "default_true")]
+    pub enable_nodelocaldns: bool,
+    /// Pod network node prefix length (default: 24)
+    #[serde(default = "default_node_prefix")]
+    pub kube_network_node_prefix: u32,
+    /// Enable NTP synchronization (default: true)
+    #[serde(default = "default_true")]
+    pub ntp_enabled: bool,
 }
 
 fn default_graceful_shutdown_sec() -> u32 {
     120
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_node_prefix() -> u32 {
+    24
 }
 
 fn default_container_runtime() -> String {
