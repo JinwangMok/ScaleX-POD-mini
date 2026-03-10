@@ -124,6 +124,94 @@ fn resolve_env_var(
     }
 }
 
+/// Validate baremetal config semantically. Pure function: no I/O.
+/// Returns list of human-readable error messages (empty = valid).
+/// Designed for newbie-friendly diagnostics (CL-5).
+#[allow(dead_code)]
+pub fn validate_baremetal_config(config: &BaremetalInitConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    if config.target_nodes.is_empty() {
+        errors.push("targetNodes is empty. At least 1 bare-metal node is required.".to_string());
+        return errors;
+    }
+
+    let mut seen_names = std::collections::HashSet::new();
+    let mut seen_ips = std::collections::HashSet::new();
+
+    for (i, node) in config.target_nodes.iter().enumerate() {
+        let ctx = format!("targetNodes[{}] (name='{}')", i, node.name);
+
+        // Unique name
+        if !seen_names.insert(&node.name) {
+            errors.push(format!("{}: duplicate node name '{}'", ctx, node.name));
+        }
+
+        // Non-empty name
+        if node.name.trim().is_empty() {
+            errors.push(format!("targetNodes[{}]: name must not be empty", i));
+        }
+
+        // Non-empty node_ip
+        if node.node_ip.trim().is_empty() {
+            errors.push(format!("{}: node_ip must not be empty", ctx));
+        }
+
+        // Unique IP
+        if !node.node_ip.trim().is_empty() && !seen_ips.insert(&node.node_ip) {
+            errors.push(format!("{}: duplicate node_ip '{}'", ctx, node.node_ip));
+        }
+
+        // Auth mode consistency
+        match node.ssh_auth_mode {
+            SshAuthMode::Password => {
+                if node.ssh_password.is_none() {
+                    errors.push(format!(
+                        "{}: sshAuthMode is 'password' but sshPassword is missing. \
+                         Add sshPassword with a .env variable name (e.g., PLAYBOX_0_PASSWORD)",
+                        ctx
+                    ));
+                }
+            }
+            SshAuthMode::Key => {
+                if node.ssh_key_path.is_none() && node.ssh_key_path_of_reachable_node.is_none() {
+                    errors.push(format!(
+                        "{}: sshAuthMode is 'key' but neither sshKeyPath nor \
+                         sshKeyPathOfReachableNode is set",
+                        ctx
+                    ));
+                }
+            }
+        }
+
+        // Reachability: non-direct must have reachable_node_ip or reachable_via
+        if !node.direct_reachable
+            && node.reachable_node_ip.is_none()
+            && node.reachable_via.is_none()
+        {
+            errors.push(format!(
+                "{}: direct_reachable is false but neither reachable_node_ip \
+                 nor reachable_via is set. How should this node be reached?",
+                ctx
+            ));
+        }
+
+        // reachable_via references must exist
+        if let Some(ref via) = node.reachable_via {
+            for hop in via {
+                if !config.target_nodes.iter().any(|n| &n.name == hop) {
+                    errors.push(format!(
+                        "{}: reachable_via references '{}' which is not in targetNodes",
+                        ctx, hop
+                    ));
+                }
+            }
+        }
+    }
+
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +314,144 @@ targetNodes:
         let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.network_defaults.is_none());
         assert_eq!(config.target_nodes.len(), 1);
+    }
+
+    // ── Semantic validation tests (CL-5, CL-8) ──
+
+    #[test]
+    fn test_validate_baremetal_config_valid() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id_ed25519"
+  - name: "node-1"
+    direct_reachable: false
+    reachable_via: ["node-0"]
+    node_ip: "10.0.0.2"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "MY_PASS"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(errors.is_empty(), "valid config must pass: {:?}", errors);
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_empty_nodes() {
+        let config = BaremetalInitConfig {
+            target_nodes: vec![],
+            network_defaults: None,
+        };
+        let errors = validate_baremetal_config(&config);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_duplicate_name() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id"
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "10.0.0.2"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(errors.iter().any(|e| e.contains("duplicate node name")));
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_duplicate_ip() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id"
+  - name: "node-1"
+    direct_reachable: true
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(errors.iter().any(|e| e.contains("duplicate node_ip")));
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_password_mode_missing_password() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "password"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(errors.iter().any(|e| e.contains("sshPassword is missing")));
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_unreachable_node() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: false
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("How should this node be reached")));
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_reachable_via_invalid_ref() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id"
+  - name: "node-1"
+    direct_reachable: false
+    reachable_via: ["nonexistent"]
+    node_ip: "10.0.0.2"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("nonexistent") && e.contains("not in targetNodes")));
     }
 
     /// Verify the actual .example file content can be parsed by our code.
