@@ -15,6 +15,10 @@ gitops_bootstrap() {
     # Ensure namespace
     ensure_namespace "${argocd_ns}"
 
+    # Add helm repo if needed
+    ${HELM} repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
+    ${HELM} repo update argo 2>/dev/null || true
+
     # Install ArgoCD via helm (syncWave 0)
     log_info "Installing ArgoCD..."
     local argocd_version
@@ -26,10 +30,6 @@ gitops_bootstrap() {
         --set controller.replicas=1 \
         --set "configs.params.server\.insecure=true" \
         --set "global.domain=$(yq_read '.domains.argocd')"
-
-    # Add helm repo if needed
-    ${HELM} repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
-    ${HELM} repo update argo 2>/dev/null || true
 
     # Create secrets
     gitops_create_secrets

@@ -74,28 +74,63 @@ network_apply_netplan() {
     ssh_cmd "${user}@${node_ip}" "sudo netplan try --timeout 120"
 }
 
+network_generate_initial_inventory() {
+    # Generate inventory for prepare-nodes using superuser (ansible_user may not exist yet)
+    local output="${PLAYBOX_ROOT}/_generated/prepare-inventory.ini"
+    mkdir -p "${PLAYBOX_ROOT}/_generated"
+
+    local bastion
+    bastion=$(yq_read '.management.bastion_host')
+    local bastion_ip
+    bastion_ip=$(get_bastion_ip)
+    local superuser
+    superuser=$(get_superuser)
+    local ssh_key
+    ssh_key=$(get_ssh_key)
+
+    cat > "${output}" <<EOF
+[all]
+EOF
+
+    local nodes
+    nodes=$(get_all_nodes)
+    for node in ${nodes}; do
+        local ip
+        ip=$(get_node_ip "${node}")
+        local host_ip="${ip}"
+        local proxy_cmd=""
+
+        if [[ "${node}" == "${bastion}" ]]; then
+            # Bastion reached directly via Tailscale IP
+            host_ip="${bastion_ip}"
+            proxy_cmd="ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+        else
+            # Other nodes reached via ProxyJump through bastion
+            proxy_cmd="ansible_ssh_common_args='-o ProxyJump=${superuser}@${bastion_ip} -o StrictHostKeyChecking=no'"
+        fi
+        echo "${node} ansible_host=${host_ip} ansible_user=${superuser} ansible_ssh_private_key_file=${ssh_key} ${proxy_cmd}" >> "${output}"
+    done
+
+    log_info "Initial inventory written to ${output}"
+    echo "${output}"
+}
+
 network_prepare_all() {
     log_step "Preparing network configuration..."
 
-    local ansible_user
-    ansible_user=$(get_ansible_user)
-    local superuser
-    superuser=$(get_superuser)
-
-    # Use ansible to apply netplan
     if [[ "${DRY_RUN}" == "true" ]]; then
         log_info "[dry-run] Would run ansible prepare-nodes playbook"
         return 0
     fi
 
-    local bastion
-    bastion=$(yq_read '.management.bastion_host')
-    local bastion_ip
-    bastion_ip=$(get_node_ip "${bastion}")
+    # Generate inventory using superuser (ansible_user may not exist yet)
+    local inventory
+    inventory=$(network_generate_initial_inventory)
 
     ${ANSIBLE_PLAYBOOK} \
-        -i "${PLAYBOX_ROOT}/_generated/inventory.ini" \
+        -i "${inventory}" \
         "${PLAYBOX_ROOT}/ansible/prepare-nodes.yml" \
         --extra-vars "@${VALUES_FILE}" \
-        -e "playbox_root=${PLAYBOX_ROOT}"
+        -e "playbox_root=${PLAYBOX_ROOT}" \
+        ${ANSIBLE_CHECK:+"${ANSIBLE_CHECK}"}
 }

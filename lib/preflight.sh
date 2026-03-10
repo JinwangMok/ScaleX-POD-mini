@@ -79,7 +79,7 @@ preflight_check_ssh() {
     local bastion
     bastion=$(yq_read '.management.bastion_host')
     local bastion_ip
-    bastion_ip=$(get_node_ip "${bastion}")
+    bastion_ip=$(get_bastion_ip)
 
     # Test SSH to bastion
     if ! ssh_cmd "${superuser}@${bastion_ip}" "hostname" &>/dev/null; then

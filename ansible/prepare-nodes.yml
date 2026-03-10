@@ -5,6 +5,10 @@
   vars:
     ansible_user_name: "{{ nodes.ansible_user | default('ansible_user') }}"
     ssh_key_path: "{{ nodes.ssh_key | default('~/.ssh/id_ed25519') }}"
+    node_data: >-
+      {{ (nodes.control_plane + (nodes.workers | default([])))
+         | selectattr('name', 'equalto', inventory_hostname)
+         | first }}
 
   tasks:
     # --- User Creation ---
@@ -44,26 +48,22 @@
         state: present
 
     # --- Network Configuration ---
-    - name: Prepare bond interface list
+    - name: Initialize bond interface list
       set_fact:
-        bond_interfaces: >-
-          {{ interfaces
-             | selectattr('role', 'in', network.bond_roles)
-             | rejectattr('state', 'defined')
-             | list
-             + interfaces
-             | selectattr('role', 'in', network.bond_roles)
-             | selectattr('state', 'defined')
-             | rejectattr('state', 'equalto', 'down')
-             | list
-             | sort(attribute='speed', reverse=true) }}
-        create_bridge: "{{ tower.enabled | default(false) and inventory_hostname == tower.host | default('') }}"
-      vars:
-        node_data: >-
-          {{ (nodes.control_plane + nodes.workers)
-             | selectattr('name', 'equalto', inventory_hostname)
-             | first }}
-        interfaces: "{{ node_data.interfaces }}"
+        bond_interfaces: []
+        create_bridge: "{{ (tower.enabled | default(false)) and (inventory_hostname == (tower.host | default(''))) }}"
+
+    - name: Collect bond-eligible interfaces
+      set_fact:
+        bond_interfaces: "{{ bond_interfaces + [item] }}"
+      loop: "{{ node_data.interfaces }}"
+      when:
+        - item.role in node_data.network.bond_roles
+        - (item.state | default('up')) != 'down'
+
+    - name: Sort bond interfaces by speed (fastest first)
+      set_fact:
+        bond_interfaces: "{{ bond_interfaces | sort(attribute='speed', reverse=true) | list }}"
 
     - name: Fail if no valid bond interfaces
       fail:
@@ -76,10 +76,6 @@
         dest: /etc/netplan/01-playbox.yaml
         mode: "0600"
       vars:
-        node_data: >-
-          {{ (nodes.control_plane + nodes.workers)
-             | selectattr('name', 'equalto', inventory_hostname)
-             | first }}
         node_ip: "{{ node_data.ip }}"
         bond_mode: "{{ node_data.network.bond_mode | default('active-backup') }}"
       notify: Apply netplan
@@ -94,18 +90,6 @@
       notify: Apply netplan
 
     # --- Kernel Parameters ---
-    - name: Set kernel parameters for Kubernetes
-      sysctl:
-        name: "{{ item.key }}"
-        value: "{{ item.value }}"
-        sysctl_set: true
-        state: present
-        reload: true
-      loop:
-        - { key: "net.ipv4.ip_forward", value: "1" }
-        - { key: "net.bridge.bridge-nf-call-iptables", value: "1" }
-        - { key: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
-
     - name: Load required kernel modules
       modprobe:
         name: "{{ item }}"
@@ -124,6 +108,18 @@
           bonding
         mode: "0644"
 
+    - name: Set kernel parameters for Kubernetes
+      sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: true
+        state: present
+        reload: true
+      loop:
+        - { key: "net.ipv4.ip_forward", value: "1" }
+        - { key: "net.bridge.bridge-nf-call-iptables", value: "1" }
+        - { key: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+
     # --- KVM/libvirt for tower host ---
     - name: Install KVM/libvirt on tower host
       apt:
@@ -135,8 +131,8 @@
           - virtinst
         state: present
         update_cache: true
-      when: tower.enabled | default(false) and inventory_hostname == tower.host | default('')
+      when: (tower.enabled | default(false)) and (inventory_hostname == (tower.host | default('')))
 
   handlers:
     - name: Apply netplan
-      command: netplan apply
+      command: netplan try --timeout 120

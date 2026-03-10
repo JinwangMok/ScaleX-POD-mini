@@ -4,6 +4,9 @@ set -euo pipefail
 
 PLAYBOX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Ensure ~/bin is in PATH (tools installed there)
+export PATH="${HOME}/bin:${PATH}"
+
 # Source all library modules
 source "${PLAYBOX_ROOT}/lib/common.sh"
 source "${PLAYBOX_ROOT}/lib/preflight.sh"

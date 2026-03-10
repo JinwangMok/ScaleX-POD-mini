@@ -116,6 +116,19 @@ get_node_ip() {
     echo "${ip%%/*}"
 }
 
+get_bastion_ip() {
+    # Use management.bastion_ip (e.g., Tailscale) if set, otherwise fall back to node LAN IP
+    local explicit_ip
+    explicit_ip=$(yq_read_default '.management.bastion_ip' '')
+    if [[ -n "${explicit_ip}" && "${explicit_ip}" != "null" ]]; then
+        echo "${explicit_ip}"
+    else
+        local bastion
+        bastion=$(yq_read '.management.bastion_host')
+        get_node_ip "${bastion}"
+    fi
+}
+
 get_ansible_user() {
     yq_read '.nodes.ansible_user'
 }

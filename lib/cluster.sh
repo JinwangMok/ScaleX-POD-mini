@@ -150,14 +150,23 @@ cluster_sandbox_create() {
     cd "${PLAYBOX_ROOT}"
 
     # Fetch kubeconfig
-    local cp_ip
-    cp_ip=$(get_node_ip "$(${YQ} eval '.nodes.control_plane[0].name' "${VALUES_FILE}")")
+    local cp_name cp_ip bastion bastion_ip
+    cp_name=$(${YQ} eval '.nodes.control_plane[0].name' "${VALUES_FILE}")
+    cp_ip=$(get_node_ip "${cp_name}")
+    bastion=$(yq_read '.management.bastion_host')
+    bastion_ip=$(get_bastion_ip)
     local ansible_user
     ansible_user=$(get_ansible_user)
 
     log_info "Fetching sandbox kubeconfig..."
-    ssh_cmd "${ansible_user}@${cp_ip}" "sudo cat /etc/kubernetes/admin.conf" | \
-        sed "s|https://.*:6443|https://${cp_ip}:6443|" > "${PLAYBOX_ROOT}/_generated/sandbox.kubeconfig"
+    if [[ "${cp_name}" == "${bastion}" ]]; then
+        ssh_cmd "${ansible_user}@${bastion_ip}" "sudo cat /etc/kubernetes/admin.conf" | \
+            sed "s|https://.*:6443|https://${cp_ip}:6443|" > "${PLAYBOX_ROOT}/_generated/sandbox.kubeconfig"
+    else
+        ssh -o StrictHostKeyChecking=no -o ProxyJump="${ansible_user}@${bastion_ip}" \
+            "${ansible_user}@${cp_ip}" "sudo cat /etc/kubernetes/admin.conf" | \
+            sed "s|https://.*:6443|https://${cp_ip}:6443|" > "${PLAYBOX_ROOT}/_generated/sandbox.kubeconfig"
+    fi
 
     # Delete kube-proxy DaemonSet (Cilium replaces it)
     export KUBECONFIG="${PLAYBOX_ROOT}/_generated/sandbox.kubeconfig"
@@ -193,9 +202,11 @@ cluster_sandbox_clone_kubespray() {
             https://github.com/kubernetes-sigs/kubespray.git "${kubespray_dir}"
     fi
 
-    # Install requirements
+    # Install requirements in ansible venv
     log_info "Installing kubespray requirements..."
+    source "${HOME}/ansible-venv/bin/activate"
     pip install -r "${kubespray_dir}/requirements.txt"
+    deactivate
 }
 
 cluster_sandbox_generate_inventory() {
@@ -204,7 +215,7 @@ cluster_sandbox_generate_inventory() {
     local bastion
     bastion=$(yq_read '.management.bastion_host')
     local bastion_ip
-    bastion_ip=$(get_node_ip "${bastion}")
+    bastion_ip=$(get_bastion_ip)
     local bastion_user
     bastion_user=$(yq_read '.management.bastion_user')
     local ansible_user
@@ -222,11 +233,18 @@ EOF
     for node in ${nodes}; do
         local ip
         ip=$(get_node_ip "${node}")
+        local host_ip="${ip}"
         local proxy_cmd=""
-        if [[ "${node}" != "${bastion}" ]]; then
-            proxy_cmd="ansible_ssh_common_args='-o ProxyJump=${bastion_user}@${bastion_ip}'"
+
+        if [[ "${node}" == "${bastion}" ]]; then
+            # Bastion reached directly via Tailscale IP
+            host_ip="${bastion_ip}"
+            proxy_cmd="ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+        else
+            # Other nodes reached via ProxyJump through bastion
+            proxy_cmd="ansible_ssh_common_args='-o ProxyJump=${bastion_user}@${bastion_ip} -o StrictHostKeyChecking=no'"
         fi
-        echo "${node} ansible_host=${ip} ansible_user=${ansible_user} ansible_ssh_private_key_file=${ssh_key} ${proxy_cmd}" >> "${output}"
+        echo "${node} ansible_host=${host_ip} ansible_user=${ansible_user} ansible_ssh_private_key_file=${ssh_key} ip=${ip} ${proxy_cmd}" >> "${output}"
     done
 
     cat >> "${output}" <<EOF
@@ -261,18 +279,18 @@ cluster_sandbox_generate_vars() {
     log_info "Generating kubespray cluster vars..."
     local output="${PLAYBOX_ROOT}/_generated/cluster-vars.yml"
 
-    local ansible_user k8s_version auth_domain realm client_id
+    local ansible_user k8s_version auth_domain realm client_id bastion_ip
     ansible_user=$(get_ansible_user)
     k8s_version=$(yq_read '.sandbox.kubernetes_version')
     auth_domain=$(yq_read '.domains.auth')
     realm=$(yq_read '.keycloak.realm')
     client_id=$(yq_read '.keycloak.client_id')
+    bastion_ip=$(get_bastion_ip)
 
     cat > "${output}" <<EOF
 ansible_user: ${ansible_user}
 kube_owner: "{{ ansible_user }}"
 
-kube_version: v${k8s_version}
 kube_network_plugin: cni
 kube_proxy_remove: true
 
@@ -292,6 +310,9 @@ kube_apiserver_enable_admission_plugins:
   - PodTolerationRestriction
 
 kube_api_anonymous_auth: true
+
+supplementary_addresses_in_ssl_keys:
+  - "${bastion_ip}"
 EOF
 
     log_info "Cluster vars generated: ${output}"
