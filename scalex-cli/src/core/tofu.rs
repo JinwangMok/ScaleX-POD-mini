@@ -1,5 +1,72 @@
 use crate::models::sdi::{NodeSpec, SdiSpec};
 
+/// Input for host-level infrastructure generation.
+/// Represents a bare-metal host that should be set up as a libvirt hypervisor.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct HostInfraInput {
+    pub name: String,
+    pub ip: String,
+}
+
+/// Generate OpenTofu HCL for host-level libvirt infrastructure.
+/// Sets up libvirt providers, storage pools, and outputs for each bare-metal host.
+/// Pure function: takes host list + network config, returns HCL string.
+pub fn generate_tofu_host_infra(
+    hosts: &[HostInfraInput],
+    _bridge: &str,
+    _mgmt_cidr: &str,
+    _gateway: &str,
+) -> String {
+    let mut hcl = String::new();
+
+    // Terraform block
+    hcl.push_str(&generate_terraform_block());
+    hcl.push('\n');
+
+    // Provider blocks — one per host (SSH-based libvirt)
+    for host in hosts {
+        hcl.push_str(&format!(
+            r#"provider "libvirt" {{
+  alias = "{name}"
+  uri   = "qemu+ssh://root@{name}/system"
+}}
+"#,
+            name = host.name,
+        ));
+        hcl.push('\n');
+    }
+
+    // Storage pool on each host
+    for host in hosts {
+        hcl.push_str(&format!(
+            r#"resource "libvirt_pool" "scalex_pool_{name}" {{
+  name = "scalex-pool"
+  type = "dir"
+  path = "/var/lib/libvirt/scalex-pool"
+  provider = libvirt.{name}
+}}
+"#,
+            name = host.name,
+        ));
+        hcl.push('\n');
+    }
+
+    // Outputs — host pool status
+    hcl.push_str("# --- Host Infrastructure Outputs ---\n");
+    for host in hosts {
+        hcl.push_str(&format!(
+            r#"output "{name}_pool_id" {{
+  value = libvirt_pool.scalex_pool_{name}.id
+}}
+"#,
+            name = host.name,
+        ));
+    }
+
+    hcl
+}
+
 /// Generate OpenTofu HCL for a complete SDI spec.
 /// Pure function: returns HCL string without writing files.
 pub fn generate_tofu_main(spec: &SdiSpec) -> String {
@@ -360,5 +427,100 @@ mod tests {
         let xslt = generate_vfio_xslt();
         assert!(xslt.contains("ioapic"));
         assert!(xslt.contains("xsl:stylesheet"));
+    }
+
+    #[test]
+    fn test_generate_tofu_host_infra_single_node() {
+        let hosts = vec![HostInfraInput {
+            name: "playbox-0".to_string(),
+            ip: "192.168.88.8".to_string(),
+        }];
+        let hcl = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
+
+        // Must have terraform block with libvirt provider
+        assert!(
+            hcl.contains("required_providers"),
+            "missing terraform block"
+        );
+        assert!(
+            hcl.contains("dmacvicar/libvirt"),
+            "missing libvirt provider source"
+        );
+
+        // Must have provider for the host
+        assert!(
+            hcl.contains("provider \"libvirt\""),
+            "missing provider block"
+        );
+        assert!(
+            hcl.contains("qemu+ssh://root@playbox-0/system"),
+            "missing SSH URI for host"
+        );
+
+        // Must create a libvirt storage pool on the host
+        assert!(
+            hcl.contains("libvirt_pool"),
+            "missing libvirt_pool resource"
+        );
+        assert!(hcl.contains("scalex-pool"), "missing pool name");
+
+        // Must create output for resource pool status
+        assert!(hcl.contains("output"), "missing output block");
+    }
+
+    #[test]
+    fn test_generate_tofu_host_infra_multi_node() {
+        let hosts = vec![
+            HostInfraInput {
+                name: "playbox-0".to_string(),
+                ip: "192.168.88.8".to_string(),
+            },
+            HostInfraInput {
+                name: "playbox-1".to_string(),
+                ip: "192.168.88.9".to_string(),
+            },
+            HostInfraInput {
+                name: "playbox-2".to_string(),
+                ip: "192.168.88.10".to_string(),
+            },
+            HostInfraInput {
+                name: "playbox-3".to_string(),
+                ip: "192.168.88.11".to_string(),
+            },
+        ];
+        let hcl = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
+
+        // All 4 hosts must have providers
+        for host in &hosts {
+            assert!(
+                hcl.contains(&format!("qemu+ssh://root@{}/system", host.name)),
+                "missing provider for {}",
+                host.name
+            );
+        }
+
+        // All 4 hosts must have storage pool resources
+        assert_eq!(
+            hcl.matches("resource \"libvirt_pool\"").count(),
+            4,
+            "expected 4 libvirt_pool resource blocks"
+        );
+    }
+
+    #[test]
+    fn test_generate_tofu_host_infra_idempotent() {
+        let hosts = vec![
+            HostInfraInput {
+                name: "playbox-0".to_string(),
+                ip: "192.168.88.8".to_string(),
+            },
+            HostInfraInput {
+                name: "playbox-1".to_string(),
+                ip: "192.168.88.9".to_string(),
+            },
+        ];
+        let hcl1 = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
+        let hcl2 = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
+        assert_eq!(hcl1, hcl2, "generate_tofu_host_infra must be deterministic");
     }
 }

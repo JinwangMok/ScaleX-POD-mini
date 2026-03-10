@@ -355,4 +355,121 @@ config:
         let config: K8sClustersConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.config.clusters[0].oidc.is_none());
     }
+
+    /// Verify the actual k8s-clusters.yaml.example content can be parsed.
+    #[test]
+    fn test_parse_k8s_clusters_example_content() {
+        let yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+    container_runtime: "containerd"
+    cni: "cilium"
+    cilium_version: "1.17.5"
+    kube_proxy_remove: true
+    cgroup_driver: "systemd"
+    helm_enabled: true
+    kube_apiserver_admission_plugins:
+      - NodeRestriction
+      - PodTolerationRestriction
+    firewalld_enabled: false
+    kube_vip_enabled: false
+    graceful_node_shutdown: true
+    graceful_node_shutdown_sec: 120
+    kubelet_custom_flags:
+      - "--node-ip={{ ip }}"
+    gateway_api_enabled: true
+    gateway_api_version: "1.3.0"
+    kubeconfig_localhost: true
+    kubectl_localhost: true
+    enable_nodelocaldns: true
+    kube_network_node_prefix: 24
+    ntp_enabled: true
+  clusters:
+    - cluster_name: "tower"
+      cluster_sdi_resource_pool: "tower"
+      cluster_role: "management"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+        dns_domain: "tower.local"
+      cilium:
+        cluster_id: 1
+        cluster_name: "tower"
+      kubespray_extra_vars:
+        kube_api_anonymous_auth: true
+    - cluster_name: "sandbox"
+      cluster_sdi_resource_pool: "sandbox"
+      cluster_role: "workload"
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+        dns_domain: "sandbox.local"
+        native_routing_cidr: "10.233.0.0/16"
+      cilium:
+        cluster_id: 2
+        cluster_name: "sandbox"
+      oidc:
+        enabled: true
+        client_id: "kubernetes"
+        issuer_url: "https://auth.jinwang.dev/realms/kubernetes"
+        username_claim: "preferred_username"
+        username_prefix: "oidc:"
+        groups_claim: "groups"
+        groups_prefix: "oidc:"
+      kubespray_extra_vars:
+        kube_api_anonymous_auth: true
+  argocd:
+    namespace: "argocd"
+    repo_url: "https://github.com/JinwangMok/k8s-playbox.git"
+    repo_branch: "main"
+    tower_manages: ["sandbox"]
+  domains:
+    auth: "auth.jinwang.dev"
+    argocd: "cd.jinwang.dev"
+"#;
+        let config: K8sClustersConfig = serde_yaml::from_str(yaml).unwrap();
+
+        // Common settings
+        assert_eq!(config.config.common.kubernetes_version, "1.33.1");
+        assert!(config.config.common.kube_proxy_remove);
+        assert!(config.config.common.helm_enabled);
+        assert!(config.config.common.ntp_enabled);
+        assert!(config.config.common.kubeconfig_localhost);
+        assert_eq!(
+            config.config.common.kube_apiserver_admission_plugins,
+            vec!["NodeRestriction", "PodTolerationRestriction"]
+        );
+
+        // Clusters
+        assert_eq!(config.config.clusters.len(), 2);
+
+        // Tower
+        let tower = &config.config.clusters[0];
+        assert_eq!(tower.cluster_name, "tower");
+        assert_eq!(tower.cluster_role, "management");
+        assert_eq!(tower.cluster_mode, ClusterMode::Sdi);
+        assert!(tower.oidc.is_none());
+
+        // Sandbox with OIDC
+        let sandbox = &config.config.clusters[1];
+        assert_eq!(sandbox.cluster_name, "sandbox");
+        assert_eq!(sandbox.cluster_role, "workload");
+        let oidc = sandbox.oidc.as_ref().unwrap();
+        assert!(oidc.enabled);
+        assert_eq!(oidc.client_id, "kubernetes");
+        assert_eq!(
+            oidc.issuer_url,
+            "https://auth.jinwang.dev/realms/kubernetes"
+        );
+        assert_eq!(
+            sandbox.network.native_routing_cidr,
+            Some("10.233.0.0/16".to_string())
+        );
+
+        // ArgoCD
+        let argocd = config.config.argocd.as_ref().unwrap();
+        assert_eq!(argocd.tower_manages, vec!["sandbox"]);
+    }
 }

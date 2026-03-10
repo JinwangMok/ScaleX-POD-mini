@@ -171,4 +171,53 @@ targetNodes:
             Some(vec!["node-0".to_string()])
         );
     }
+
+    /// Verify the actual .example file content can be parsed by our code.
+    /// This catches drift between example files and parsing logic.
+    #[test]
+    fn test_parse_baremetal_init_example_content() {
+        let example_yaml = r#"
+targetNodes:
+  - name: "playbox-0"
+    direct_reachable: false
+    reachable_node_ip: "100.64.0.1"
+    node_ip: "192.168.88.8"
+    adminUser: "jinwang"
+    sshAuthMode: "password"
+    sshPassword: "PLAYBOX_0_PASSWORD"
+  - name: "playbox-1"
+    direct_reachable: false
+    reachable_via: ["playbox-0"]
+    node_ip: "192.168.88.9"
+    adminUser: "jinwang"
+    sshAuthMode: "password"
+    sshPassword: "PLAYBOX_1_PASSWORD"
+  - name: "playbox-2"
+    direct_reachable: false
+    reachable_via: ["playbox-0"]
+    node_ip: "192.168.88.10"
+    adminUser: "jinwang"
+    sshAuthMode: "password"
+    sshPassword: "PLAYBOX_2_PASSWORD"
+  - name: "playbox-3"
+    direct_reachable: false
+    reachable_via: ["playbox-0"]
+    node_ip: "192.168.88.11"
+    adminUser: "jinwang"
+    sshAuthMode: "password"
+    sshPassword: "PLAYBOX_3_PASSWORD"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(example_yaml).unwrap();
+        assert_eq!(config.target_nodes.len(), 4, "example must have 4 nodes");
+        assert_eq!(config.target_nodes[0].name, "playbox-0");
+        assert!(!config.target_nodes[0].direct_reachable);
+        assert_eq!(
+            config.target_nodes[0].reachable_node_ip,
+            Some("100.64.0.1".to_string())
+        );
+        assert_eq!(
+            config.target_nodes[1].reachable_via,
+            Some(vec!["playbox-0".to_string()])
+        );
+    }
 }

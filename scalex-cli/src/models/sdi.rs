@@ -168,4 +168,99 @@ spec:
                 .gpu_passthrough
         );
     }
+
+    /// Verify the actual sdi-specs.yaml.example content can be parsed.
+    #[test]
+    fn test_parse_sdi_specs_example_content() {
+        let yaml = r#"
+resource_pool:
+  name: "playbox-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8", "8.8.4.4"]
+
+os_image:
+  source: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+  format: "qcow2"
+
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id_ed25519.pub"
+  packages: [curl, apt-transport-https, nfs-common, open-iscsi]
+
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      purpose: "management"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 2
+          mem_gb: 3
+          disk_gb: 30
+          roles: [control-plane, worker]
+
+    - pool_name: "sandbox"
+      purpose: "workload"
+      placement:
+        spread: true
+      node_specs:
+        - node_name: "sandbox-cp-0"
+          ip: "192.168.88.110"
+          cpu: 4
+          mem_gb: 8
+          disk_gb: 60
+          host: "playbox-0"
+          roles: [control-plane, etcd]
+        - node_name: "sandbox-w-0"
+          ip: "192.168.88.120"
+          cpu: 8
+          mem_gb: 16
+          disk_gb: 100
+          host: "playbox-1"
+          roles: [worker]
+        - node_name: "sandbox-w-1"
+          ip: "192.168.88.121"
+          cpu: 8
+          mem_gb: 16
+          disk_gb: 100
+          host: "playbox-2"
+          roles: [worker]
+        - node_name: "sandbox-w-2"
+          ip: "192.168.88.122"
+          cpu: 12
+          mem_gb: 32
+          disk_gb: 200
+          host: "playbox-3"
+          roles: [worker]
+          devices:
+            gpu_passthrough: true
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.resource_pool.name, "playbox-pool");
+        assert_eq!(spec.spec.sdi_pools.len(), 2);
+        assert_eq!(spec.spec.sdi_pools[0].pool_name, "tower");
+        assert_eq!(spec.spec.sdi_pools[1].pool_name, "sandbox");
+        assert_eq!(spec.spec.sdi_pools[1].node_specs.len(), 4);
+        // Total resources: 2+4+8+8+12 = 34 CPU, 3+8+16+16+32 = 75 GB RAM
+        let total_cpu: u32 = spec
+            .spec
+            .sdi_pools
+            .iter()
+            .flat_map(|p| &p.node_specs)
+            .map(|n| n.cpu)
+            .sum();
+        assert_eq!(total_cpu, 34);
+        // GPU passthrough on last sandbox worker
+        assert!(
+            spec.spec.sdi_pools[1].node_specs[3]
+                .devices
+                .as_ref()
+                .unwrap()
+                .gpu_passthrough
+        );
+    }
 }

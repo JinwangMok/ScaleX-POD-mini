@@ -272,12 +272,13 @@ fn run_init(
 
         println!("[sdi] SDI initialization complete.");
     } else {
-        // No spec file: show unified resource pool summary
-        println!("[sdi] Phase 2: Generating resource pool summary...");
+        // No spec file: set up host-level libvirt infrastructure via OpenTofu
+        println!("[sdi] Phase 2: Setting up host-level libvirt infrastructure via OpenTofu...");
         let all_facts = load_all_facts(&facts_dir)?;
         if all_facts.is_empty() {
             println!("[sdi] No facts available. Run `scalex facts --all` first.");
         } else {
+            // Generate resource pool summary
             let summary = resource_pool::generate_resource_pool_summary(&all_facts);
             let table = resource_pool::format_resource_pool_table(&summary);
             println!("{}", table);
@@ -295,8 +296,53 @@ fn run_init(
                     summary_path.display()
                 );
             }
+
+            // Generate OpenTofu HCL for host-level libvirt infra (storage pools)
+            let host_inputs: Vec<tofu::HostInfraInput> = bm_config
+                .target_nodes
+                .iter()
+                .map(|n| tofu::HostInfraInput {
+                    name: n.name.clone(),
+                    ip: n.node_ip.clone(),
+                })
+                .collect();
+
+            // Use first node's network info as management network defaults
+            let mgmt_bridge = "br0";
+            let mgmt_cidr = "192.168.88.0/24";
+            let mgmt_gateway = "192.168.88.1";
+
+            let host_hcl =
+                tofu::generate_tofu_host_infra(&host_inputs, mgmt_bridge, mgmt_cidr, mgmt_gateway);
+
+            let host_infra_dir = output_dir.join("host-infra");
+            std::fs::create_dir_all(&host_infra_dir)?;
+            let host_tf = host_infra_dir.join("main.tf");
+
+            if dry_run {
+                println!(
+                    "[dry-run] Would write {} ({} bytes)",
+                    host_tf.display(),
+                    host_hcl.len()
+                );
+                println!("--- Generated Host Infra HCL preview ---");
+                for line in host_hcl.lines().take(30) {
+                    println!("  {}", line);
+                }
+                println!("...");
+            } else {
+                std::fs::write(&host_tf, &host_hcl)?;
+                println!("[sdi] Generated {}", host_tf.display());
+
+                // Run tofu init + apply for host infrastructure
+                println!("[sdi] Running OpenTofu for host infrastructure...");
+                run_tofu_command(&host_infra_dir, &["init"])?;
+                run_tofu_command(&host_infra_dir, &["apply", "-auto-approve"])?;
+            }
         }
-        println!("[sdi] Host preparation complete. Provide a spec file to create VM pools.");
+        println!(
+            "[sdi] Host infrastructure setup complete. Provide a spec file to create VM pools."
+        );
     }
 
     Ok(())

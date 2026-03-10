@@ -675,6 +675,145 @@ mod tests {
     }
 
     #[test]
+    fn test_cluster_vars_valid_yaml() {
+        // Generated cluster-vars must be parseable as valid YAML
+        let common = make_common();
+        let cluster = make_cluster_def("tower", "tower");
+        let vars = generate_cluster_vars(&cluster, &common);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&vars)
+            .unwrap_or_else(|e| panic!("cluster-vars is not valid YAML: {e}\n---\n{vars}"));
+        assert!(parsed.is_mapping(), "parsed YAML must be a mapping");
+    }
+
+    #[test]
+    fn test_cluster_vars_valid_yaml_full_config() {
+        // Full production config (all features enabled) must also be valid YAML
+        let mut common = make_common();
+        common.gateway_api_enabled = true;
+        common.gateway_api_version = "1.3.0".to_string();
+        common.graceful_node_shutdown = true;
+        common.graceful_node_shutdown_sec = 120;
+        common.kubelet_custom_flags = vec!["--node-ip={{ ip }}".to_string()];
+
+        let mut cluster = make_cluster_def("sandbox", "sandbox");
+        cluster.network.native_routing_cidr = Some("10.233.0.0/16".to_string());
+        cluster.oidc = Some(crate::models::cluster::OidcConfig {
+            enabled: true,
+            client_id: "kubernetes".to_string(),
+            issuer_url: "https://auth.jinwang.dev/realms/kubernetes".to_string(),
+            username_claim: "preferred_username".to_string(),
+            username_prefix: "oidc:".to_string(),
+            groups_claim: "groups".to_string(),
+            groups_prefix: "oidc:".to_string(),
+        });
+        cluster.kubespray_extra_vars = Some(serde_yaml::from_str(
+            "kube_api_anonymous_auth: true\nkubelet_config_extra_args:\n  systemReserved:\n    cpu: \"200m\"",
+        ).unwrap());
+
+        let vars = generate_cluster_vars(&cluster, &common);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&vars)
+            .unwrap_or_else(|e| panic!("full cluster-vars is not valid YAML: {e}\n---\n{vars}"));
+        assert!(parsed.is_mapping());
+    }
+
+    #[test]
+    fn test_cluster_vars_contains_all_required_keys() {
+        // Kubespray requires these keys in group_vars/all.yml
+        let common = make_common();
+        let cluster = make_cluster_def("tower", "tower");
+        let vars = generate_cluster_vars(&cluster, &common);
+        let parsed: serde_yaml::Mapping = serde_yaml::from_str(&vars).unwrap();
+
+        let required_keys = [
+            "kube_version",
+            "container_manager",
+            "kube_network_plugin",
+            "kubelet_cgroup_driver",
+            "kube_pods_subnet",
+            "kube_service_addresses",
+            "cluster_name",
+            "dns_domain",
+            "firewalld_enabled",
+            "kube_vip_enabled",
+            "kube_network_node_prefix",
+        ];
+
+        for key in &required_keys {
+            assert!(
+                parsed.contains_key(serde_yaml::Value::String(key.to_string())),
+                "missing required kubespray key: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_inventory_contains_all_required_sections() {
+        let sdi = make_sdi_spec();
+        let cluster = make_cluster_def("sandbox", "sandbox");
+        let ini = generate_inventory(&cluster, &sdi).unwrap();
+
+        let required_sections = [
+            "[all]",
+            "[kube_control_plane]",
+            "[etcd]",
+            "[kube_node]",
+            "[k8s_cluster:children]",
+        ];
+
+        for section in &required_sections {
+            assert!(
+                ini.contains(section),
+                "inventory missing required section: {section}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_inventory_baremetal_contains_all_required_sections() {
+        let cluster = ClusterDef {
+            cluster_name: "prod".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Baremetal,
+            cluster_sdi_resource_pool: String::new(),
+            baremetal_nodes: vec![
+                crate::models::cluster::BaremetalNode {
+                    node_name: "bm-0".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                },
+                crate::models::cluster::BaremetalNode {
+                    node_name: "bm-1".to_string(),
+                    ip: "10.0.0.2".to_string(),
+                    roles: vec!["worker".to_string()],
+                },
+            ],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.233.0.0/17".to_string(),
+                service_cidr: "10.233.128.0/18".to_string(),
+                dns_domain: "prod.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+        };
+        let ini = generate_inventory_baremetal(&cluster).unwrap();
+
+        for section in &[
+            "[all]",
+            "[kube_control_plane]",
+            "[etcd]",
+            "[kube_node]",
+            "[k8s_cluster:children]",
+        ] {
+            assert!(
+                ini.contains(section),
+                "baremetal inventory missing: {section}"
+            );
+        }
+    }
+
+    #[test]
     fn test_generate_cluster_vars_oidc_disabled() {
         let common = make_common();
         let mut cluster = make_cluster_def("sandbox", "sandbox");
@@ -692,5 +831,192 @@ mod tests {
             !vars.contains("kube_oidc_auth"),
             "should not have kube_oidc_auth when oidc.enabled is false"
         );
+    }
+
+    /// Full pipeline dry-run: parse example configs → generate inventory + cluster-vars for each cluster.
+    /// Ensures the entire data flow works end-to-end without side effects.
+    #[test]
+    fn test_full_pipeline_dryrun() {
+        // Parse the same YAML content as in config examples
+        let k8s_yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+    container_runtime: "containerd"
+    cni: "cilium"
+    cilium_version: "1.17.5"
+    kube_proxy_remove: true
+    cgroup_driver: "systemd"
+    helm_enabled: true
+    kube_apiserver_admission_plugins:
+      - NodeRestriction
+      - PodTolerationRestriction
+    firewalld_enabled: false
+    kube_vip_enabled: false
+    graceful_node_shutdown: true
+    graceful_node_shutdown_sec: 120
+    kubelet_custom_flags:
+      - "--node-ip={{ ip }}"
+    gateway_api_enabled: true
+    gateway_api_version: "1.3.0"
+    kubeconfig_localhost: true
+    kubectl_localhost: true
+    enable_nodelocaldns: true
+    kube_network_node_prefix: 24
+    ntp_enabled: true
+  clusters:
+    - cluster_name: "tower"
+      cluster_sdi_resource_pool: "tower"
+      cluster_role: "management"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+        dns_domain: "tower.local"
+      cilium:
+        cluster_id: 1
+        cluster_name: "tower"
+      kubespray_extra_vars:
+        kube_api_anonymous_auth: true
+    - cluster_name: "sandbox"
+      cluster_sdi_resource_pool: "sandbox"
+      cluster_role: "workload"
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+        dns_domain: "sandbox.local"
+        native_routing_cidr: "10.233.0.0/16"
+      cilium:
+        cluster_id: 2
+        cluster_name: "sandbox"
+      oidc:
+        enabled: true
+        client_id: "kubernetes"
+        issuer_url: "https://auth.jinwang.dev/realms/kubernetes"
+      kubespray_extra_vars:
+        kube_api_anonymous_auth: true
+  argocd:
+    namespace: "argocd"
+    repo_url: "https://github.com/JinwangMok/k8s-playbox.git"
+    repo_branch: "main"
+    tower_manages: ["sandbox"]
+"#;
+
+        let sdi_yaml = r#"
+resource_pool:
+  name: "playbox-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id_ed25519.pub"
+  packages: [curl, nfs-common]
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      purpose: "management"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 2
+          mem_gb: 3
+          disk_gb: 30
+          roles: [control-plane, worker]
+    - pool_name: "sandbox"
+      purpose: "workload"
+      placement:
+        spread: true
+      node_specs:
+        - node_name: "sandbox-cp-0"
+          ip: "192.168.88.110"
+          cpu: 4
+          mem_gb: 8
+          disk_gb: 60
+          host: "playbox-0"
+          roles: [control-plane, etcd]
+        - node_name: "sandbox-w-0"
+          ip: "192.168.88.120"
+          cpu: 8
+          mem_gb: 16
+          disk_gb: 100
+          host: "playbox-1"
+          roles: [worker]
+"#;
+
+        // Step 1: Parse configs
+        let k8s_config: crate::models::cluster::K8sClustersConfig =
+            serde_yaml::from_str(k8s_yaml).expect("failed to parse k8s-clusters config");
+        let sdi_spec: crate::models::sdi::SdiSpec =
+            serde_yaml::from_str(sdi_yaml).expect("failed to parse sdi-specs config");
+
+        // Step 2: Generate inventory + cluster-vars for each cluster
+        for cluster in &k8s_config.config.clusters {
+            // Inventory
+            let inventory = generate_inventory(cluster, &sdi_spec)
+                .unwrap_or_else(|e| panic!("inventory failed for {}: {e}", cluster.cluster_name));
+            assert!(
+                inventory.contains("[all]"),
+                "{} inventory missing [all]",
+                cluster.cluster_name
+            );
+            assert!(
+                inventory.contains("[k8s_cluster:children]"),
+                "{} inventory missing [k8s_cluster:children]",
+                cluster.cluster_name
+            );
+
+            // Cluster vars — must be valid YAML
+            let vars = generate_cluster_vars(cluster, &k8s_config.config.common);
+            let parsed: serde_yaml::Value = serde_yaml::from_str(&vars).unwrap_or_else(|e| {
+                panic!(
+                    "{} cluster-vars invalid YAML: {e}\n---\n{vars}",
+                    cluster.cluster_name
+                )
+            });
+            assert!(parsed.is_mapping());
+
+            // Must have cluster-specific values
+            assert!(
+                vars.contains(&format!("cluster_name: \"{}\"", cluster.cluster_name)),
+                "{} missing cluster_name",
+                cluster.cluster_name
+            );
+        }
+
+        // Step 3: Verify cross-cluster uniqueness (cluster_ids must be unique)
+        let cluster_ids: Vec<u32> = k8s_config
+            .config
+            .clusters
+            .iter()
+            .filter_map(|c| c.cilium.as_ref().map(|cil| cil.cluster_id))
+            .collect();
+        let mut unique_ids = cluster_ids.clone();
+        unique_ids.sort();
+        unique_ids.dedup();
+        assert_eq!(
+            cluster_ids.len(),
+            unique_ids.len(),
+            "cilium cluster_ids must be unique across clusters"
+        );
+
+        // Step 4: Verify OIDC only on sandbox (not tower)
+        let tower = &k8s_config.config.clusters[0];
+        let sandbox = &k8s_config.config.clusters[1];
+        assert!(tower.oidc.is_none(), "tower should not have OIDC");
+        assert!(
+            sandbox.oidc.as_ref().unwrap().enabled,
+            "sandbox should have OIDC enabled"
+        );
+        let sandbox_vars = generate_cluster_vars(sandbox, &k8s_config.config.common);
+        assert!(sandbox_vars.contains("kube_oidc_auth: true"));
+        let tower_vars = generate_cluster_vars(tower, &k8s_config.config.common);
+        assert!(!tower_vars.contains("kube_oidc_auth"));
     }
 }
