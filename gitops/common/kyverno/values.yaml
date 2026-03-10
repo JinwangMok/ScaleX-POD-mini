@@ -1,0 +1,14 @@
+# Kyverno — policy engine for all clusters
+# Deployed to common/ for consistent policy enforcement
+
+admissionController:
+  replicas: 1
+
+backgroundController:
+  replicas: 1
+
+cleanupController:
+  replicas: 1
+
+reportsController:
+  replicas: 1

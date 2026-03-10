@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: sandbox-project
+  namespace: argocd
+spec:
+  description: "Sandbox cluster: workload infrastructure (storage, RBAC, apps)"
+  sourceRepos:
+    - "https://github.com/JinwangMok/k8s-playbox.git"
+    - "https://helm.cilium.io/"
+    - "https://charts.jetstack.io"
+  destinations:
+    # Update with actual Sandbox cluster server after registration
+    - server: "https://sandbox-api:6443"
+      namespace: "*"
+  clusterResourceWhitelist:
+    - group: ""
+      kind: "Namespace"
+    - group: "rbac.authorization.k8s.io"
+      kind: "ClusterRole"
+    - group: "rbac.authorization.k8s.io"
+      kind: "ClusterRoleBinding"
+    - group: "apiextensions.k8s.io"
+      kind: "CustomResourceDefinition"
+    - group: "cilium.io"
+      kind: "CiliumLoadBalancerIPPool"
+    - group: "cilium.io"
+      kind: "CiliumL2AnnouncementPolicy"
+    - group: "admissionregistration.k8s.io"
+      kind: "ValidatingWebhookConfiguration"
+    - group: "admissionregistration.k8s.io"
+      kind: "MutatingWebhookConfiguration"
+    - group: "cert-manager.io"
+      kind: "ClusterIssuer"
+    - group: "storage.k8s.io"
+      kind: "StorageClass"
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  orphanedResources:
+    warn: true

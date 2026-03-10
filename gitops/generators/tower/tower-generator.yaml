@@ -1,0 +1,44 @@
+# Tower-specific apps (management cluster)
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tower-apps
+  namespace: argocd
+spec:
+  goTemplate: true
+  generators:
+    - list:
+        elements:
+          - appName: argocd
+            namespace: argocd
+            syncWave: "0"
+          - appName: keycloak
+            namespace: keycloak
+            syncWave: "3"
+          - appName: cloudflared-tunnel
+            namespace: kube-tunnel
+            syncWave: "3"
+          - appName: socks5-proxy
+            namespace: kube-tunnel
+            syncWave: "3"
+  template:
+    metadata:
+      name: "tower-{{.appName}}"
+      annotations:
+        argocd.argoproj.io/sync-wave: "{{.syncWave}}"
+    spec:
+      project: tower-project
+      source:
+        repoURL: https://github.com/JinwangMok/k8s-playbox.git
+        targetRevision: main
+        path: "gitops/tower/{{.appName}}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{.namespace}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - ServerSideApply=true
+          - CreateNamespace=true

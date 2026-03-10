@@ -35,16 +35,16 @@
 - [x] **3-4** `scalex cluster init` (inventory + vars 생성 → kubespray 실행 → kubeconfig 수집)
 - [x] **3-5** kubeconfig 수집 + 멀티 클러스터 컨텍스트 (scp from control-plane)
 - [x] **3-6** `scalex get clusters` (inventory 기반 테이블 출력)
-- [ ] **3-7** ArgoCD에 Sandbox 원격 클러스터 등록 (Phase 4 GitOps와 함께 진행)
+- [x] **3-7** ArgoCD에 Sandbox 원격 클러스터 등록 (generators + projects 생성, server URL 교체 필요)
 
 ## Phase 4: GitOps 재구조화
 
-- [ ] **4-1** `gitops/common/` (cilium, cert-manager, kyverno)
-- [ ] **4-2** `gitops/tower/` (argocd, keycloak, cloudflared-tunnel)
-- [ ] **4-3** `gitops/sandbox/` (local-path-provisioner, rbac)
-- [ ] **4-4** `spread.yaml` 멀티클러스터 재작성
-- [ ] **4-5** ApplicationSet 분리
-- [ ] **4-6** ArgoCD multi-cluster 설정
+- [x] **4-1** `gitops/common/` (cilium, cilium-resources, cert-manager, cluster-config, kyverno)
+- [x] **4-2** `gitops/tower/` (argocd, keycloak, cloudflared-tunnel, socks5-proxy)
+- [x] **4-3** `gitops/sandbox/` (local-path-provisioner, rbac, test-resources)
+- [x] **4-4** `multi-cluster-spread.yaml` 멀티클러스터 부트스트랩 (tower-root + sandbox-root)
+- [x] **4-5** ApplicationSet 분리 (common/tower/sandbox generators per cluster)
+- [x] **4-6** ArgoCD multi-cluster 설정 (projects + generators, sandbox server URL 교체 필요)
 
 ## Phase 5-6: Advanced
 
@@ -73,7 +73,7 @@
 | 9 | 베어메탈 확장성 | 설계 완료 (mode: baremetal 향후 추가) | 6 |
 | 10 | credentials 구조화 | **완료** (secrets.yaml fallback) | Done |
 | 11 | 커널 튜닝 | **가이드 완료** (storage/network/IOMMU) | docs |
-| 12 | 디렉토리 구조 | scalex-cli+config+credentials 완료, gitops 재구조화 대기 | 4 |
+| 12 | 디렉토리 구조 | **완료** (common/tower/sandbox + scalex-cli + config + credentials) | Done |
 | 13 | CF tunnel 가이드 | **완료** (6단계 WebUI 가이드) | docs |
 | 14 | 외부 접근 | **완료** (CF tunnel + Tailscale + LAN 가이드) | docs |
 

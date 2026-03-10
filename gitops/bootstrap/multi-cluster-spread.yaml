@@ -1,0 +1,83 @@
+# Multi-cluster bootstrap: Tower (management) + Sandbox (workload)
+# Tower ArgoCD manages both clusters via this bootstrap.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: scalex-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: "Root AppProject for multi-cluster bootstrap"
+  sourceRepos:
+    - "https://github.com/JinwangMok/k8s-playbox.git"
+  destinations:
+    - server: "https://kubernetes.default.svc"
+      namespace: "argocd"
+    - server: "{{.sandbox_server}}"
+      namespace: "argocd"
+  namespaceResourceWhitelist:
+    - group: "argoproj.io"
+      kind: "AppProject"
+    - group: "argoproj.io"
+      kind: "Application"
+    - group: "argoproj.io"
+      kind: "ApplicationSet"
+---
+# Tower root: manages generators for Tower cluster (local)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tower-root
+  namespace: argocd
+spec:
+  project: scalex-root
+  source:
+    repoURL: https://github.com/JinwangMok/k8s-playbox.git
+    targetRevision: main
+    path: gitops/generators/tower
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+# Sandbox root: manages generators for Sandbox cluster (remote)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sandbox-root
+  namespace: argocd
+spec:
+  project: scalex-root
+  source:
+    repoURL: https://github.com/JinwangMok/k8s-playbox.git
+    targetRevision: main
+    path: gitops/generators/sandbox
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+# Lock down default project
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: default
+spec:
+  sourceRepos: []
+  sourceNamespaces: []
+  destinations: []
+  namespaceResourceBlacklist:
+    - group: "*"
+      kind: "*"

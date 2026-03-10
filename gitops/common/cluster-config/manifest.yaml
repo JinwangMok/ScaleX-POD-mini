@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-info
+  namespace: kube-system
+data:
+  cluster.name: "playbox"
+  cluster.domain: "jinwang.dev"
+  cluster.type: "sandbox"
+  managed-by: "argocd"
