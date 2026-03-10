@@ -88,9 +88,12 @@ fn run_init(
         // Generate inventory based on mode
         let inventory = match cluster.cluster_mode {
             ClusterMode::Sdi => {
-                let spec = sdi_spec
-                    .as_ref()
-                    .expect("SDI spec must be loaded for SDI-mode clusters");
+                let spec = sdi_spec.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "SDI spec required for cluster '{}' (mode=sdi)",
+                        cluster.cluster_name
+                    )
+                })?;
                 kubespray::generate_inventory(cluster, spec).map_err(|e| anyhow::anyhow!(e))?
             }
             ClusterMode::Baremetal => {

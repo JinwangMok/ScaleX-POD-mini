@@ -420,7 +420,7 @@ fn run_sync(
                 .target_nodes
                 .iter()
                 .find(|n| n.name == *node_name)
-                .expect("node must exist in desired config");
+                .ok_or_else(|| anyhow::anyhow!("Node '{}' not found in config", node_name))?;
             println!("[sdi] Gathering facts from {}...", node_name);
             let script = crate::commands::facts::build_facts_script_public();
             let ssh_cmd = build_ssh_command(node, &script, &bm_config.target_nodes)?;
@@ -448,7 +448,7 @@ fn run_sync(
                 .target_nodes
                 .iter()
                 .find(|n| n.name == *node_name)
-                .expect("node must exist");
+                .ok_or_else(|| anyhow::anyhow!("Node '{}' not found in config", node_name))?;
             let facts = all_facts.iter().find(|f| f.node_name == *node_name);
             if let Some(facts) = facts {
                 let steps = host_prepare::plan_host_preparation(node, facts, false);
