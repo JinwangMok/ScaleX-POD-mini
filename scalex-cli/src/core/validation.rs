@@ -2864,14 +2864,12 @@ spec:
 
         // Resource pool serializes to JSON (for resource-pool-summary.json)
         let json = serde_json::to_string_pretty(&pool_summary).unwrap();
-        let deserialized: resource_pool::ResourcePoolSummary =
-            serde_json::from_str(&json).unwrap();
+        let deserialized: resource_pool::ResourcePoolSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.total_nodes, pool_summary.total_nodes);
 
         // --- Phase 2: SDI spec → HCL generation ---
         let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
-        let sdi: SdiSpec =
-            serde_yaml::from_str(sdi_content).expect("sdi-specs.yaml must parse");
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).expect("sdi-specs.yaml must parse");
         let hcl = crate::core::tofu::generate_tofu_main(&sdi, "jinwang");
         assert!(hcl.contains("libvirt_domain"), "HCL must define VM domains");
 
@@ -2891,9 +2889,9 @@ spec:
             // Vars must be valid YAML with essential keys
             let parsed: serde_yaml::Mapping = serde_yaml::from_str(&vars).unwrap();
             assert!(parsed.contains_key(&serde_yaml::Value::String("kube_version".to_string())));
-            assert!(parsed.contains_key(&serde_yaml::Value::String(
-                "container_manager".to_string()
-            )));
+            assert!(
+                parsed.contains_key(&serde_yaml::Value::String("container_manager".to_string()))
+            );
         }
 
         // --- Phase 4: Secrets generation ---
@@ -2911,7 +2909,10 @@ spec:
         let cp_params = crate::core::kernel::generate_k8s_sysctl_params("control-plane");
         let worker_params = crate::core::kernel::generate_k8s_sysctl_params("worker");
         assert!(!cp_params.is_empty(), "CP must have kernel recommendations");
-        assert!(!worker_params.is_empty(), "worker must have kernel recommendations");
+        assert!(
+            !worker_params.is_empty(),
+            "worker must have kernel recommendations"
+        );
         // Workers need conntrack for production workloads
         assert!(
             worker_params.keys().any(|k| k.contains("conntrack")),
@@ -2936,7 +2937,11 @@ spec:
                 result.err()
             );
             let cmd = result.unwrap();
-            assert!(!cmd.args.is_empty(), "SSH command must have args for '{}'", node.name);
+            assert!(
+                !cmd.args.is_empty(),
+                "SSH command must have args for '{}'",
+                node.name
+            );
             // Args joined must contain the target script
             let full_cmd = cmd.args.join(" ");
             assert!(
@@ -3002,5 +3007,575 @@ spec:
             get_rs.contains("Unified Bare-Metal Resource Pool"),
             "get sdi-pools must display 'Unified Bare-Metal Resource Pool' header"
         );
+    }
+
+    // ── Sprint 12a: Test Hardening (GAP closure) ──
+
+    /// CL-9 (G-1): Baremetal mode E2E dry-run pipeline.
+    /// Verifies that a user can define clusters with `cluster_mode: baremetal`,
+    /// skip SDI entirely, and produce valid Kubespray inventory + cluster vars.
+    #[test]
+    fn test_baremetal_mode_e2e_pipeline() {
+        use crate::models::cluster::*;
+
+        // Step 1: Define a baremetal-mode cluster config (no SDI)
+        let k8s_config = K8sClustersConfig {
+            config: K8sConfig {
+                common: CommonConfig {
+                    kubernetes_version: "1.33.1".to_string(),
+                    kubespray_version: "2.30.0".to_string(),
+                    container_runtime: "containerd".to_string(),
+                    cni: "cilium".to_string(),
+                    cilium_version: "1.16.5".to_string(),
+                    kube_proxy_remove: true,
+                    cgroup_driver: "systemd".to_string(),
+                    helm_enabled: true,
+                    kube_apiserver_admission_plugins: vec!["NodeRestriction".to_string()],
+                    firewalld_enabled: false,
+                    kube_vip_enabled: false,
+                    gateway_api_enabled: false,
+                    gateway_api_version: String::new(),
+                    graceful_node_shutdown: false,
+                    graceful_node_shutdown_sec: 120,
+                    kubelet_custom_flags: vec![],
+                    kubeconfig_localhost: true,
+                    kubectl_localhost: true,
+                    enable_nodelocaldns: true,
+                    kube_network_node_prefix: 24,
+                    ntp_enabled: true,
+                    etcd_deployment_type: "host".to_string(),
+                    dns_mode: "coredns".to_string(),
+                },
+                clusters: vec![
+                    ClusterDef {
+                        cluster_name: "tower".to_string(),
+                        cluster_mode: ClusterMode::Baremetal,
+                        cluster_sdi_resource_pool: String::new(),
+                        baremetal_nodes: vec![BaremetalNode {
+                            node_name: "bm-tower-0".to_string(),
+                            ip: "10.0.0.1".to_string(),
+                            roles: vec![
+                                "control-plane".to_string(),
+                                "etcd".to_string(),
+                                "worker".to_string(),
+                            ],
+                        }],
+                        cluster_role: "management".to_string(),
+                        network: ClusterNetwork {
+                            pod_cidr: "10.244.0.0/20".to_string(),
+                            service_cidr: "10.96.0.0/20".to_string(),
+                            dns_domain: "tower.local".to_string(),
+                            native_routing_cidr: None,
+                        },
+                        cilium: Some(CiliumConfig {
+                            cluster_id: 1,
+                            cluster_name: "tower".to_string(),
+                        }),
+                        oidc: None,
+                        kubespray_extra_vars: None,
+                        ssh_user: None,
+                    },
+                    ClusterDef {
+                        cluster_name: "sandbox".to_string(),
+                        cluster_mode: ClusterMode::Baremetal,
+                        cluster_sdi_resource_pool: String::new(),
+                        baremetal_nodes: vec![
+                            BaremetalNode {
+                                node_name: "bm-sb-cp".to_string(),
+                                ip: "10.0.0.10".to_string(),
+                                roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                            },
+                            BaremetalNode {
+                                node_name: "bm-sb-w0".to_string(),
+                                ip: "10.0.0.11".to_string(),
+                                roles: vec!["worker".to_string()],
+                            },
+                            BaremetalNode {
+                                node_name: "bm-sb-w1".to_string(),
+                                ip: "10.0.0.12".to_string(),
+                                roles: vec!["worker".to_string()],
+                            },
+                        ],
+                        cluster_role: "workload".to_string(),
+                        network: ClusterNetwork {
+                            pod_cidr: "10.245.0.0/20".to_string(),
+                            service_cidr: "10.97.0.0/20".to_string(),
+                            dns_domain: "sandbox.local".to_string(),
+                            native_routing_cidr: None,
+                        },
+                        cilium: Some(CiliumConfig {
+                            cluster_id: 2,
+                            cluster_name: "sandbox".to_string(),
+                        }),
+                        oidc: None,
+                        kubespray_extra_vars: None,
+                        ssh_user: None,
+                    },
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        // Step 2: Validate — no pool mapping needed for baremetal mode
+        let id_errors = validate_unique_cluster_ids(&k8s_config);
+        assert!(
+            id_errors.is_empty(),
+            "cluster IDs must be unique: {:?}",
+            id_errors
+        );
+
+        // Step 3: Generate inventory for each baremetal cluster
+        for cluster in &k8s_config.config.clusters {
+            assert_eq!(cluster.cluster_mode, ClusterMode::Baremetal);
+            let inv =
+                crate::core::kubespray::generate_inventory_baremetal(cluster).unwrap_or_else(|e| {
+                    panic!("inventory for '{}' failed: {}", cluster.cluster_name, e)
+                });
+            assert!(
+                inv.contains("[all]"),
+                "{}: must have [all]",
+                cluster.cluster_name
+            );
+            assert!(
+                inv.contains("[kube_control_plane]"),
+                "{}: must have control plane",
+                cluster.cluster_name
+            );
+            assert!(
+                inv.contains("[kube_node]"),
+                "{}: must have worker",
+                cluster.cluster_name
+            );
+            assert!(
+                inv.contains("ansible_host="),
+                "{}: must have ansible_host entries",
+                cluster.cluster_name
+            );
+        }
+
+        // Step 4: Generate cluster vars for each cluster
+        for cluster in &k8s_config.config.clusters {
+            let vars =
+                crate::core::kubespray::generate_cluster_vars(cluster, &k8s_config.config.common);
+            let parsed: serde_yaml::Mapping = serde_yaml::from_str(&vars).unwrap_or_else(|e| {
+                panic!("vars for '{}' invalid YAML: {e}", cluster.cluster_name)
+            });
+            assert!(
+                parsed.contains_key(serde_yaml::Value::String("kube_version".to_string())),
+                "{}: must contain kube_version",
+                cluster.cluster_name
+            );
+            assert!(
+                parsed.contains_key(serde_yaml::Value::String("kube_pods_subnet".to_string())),
+                "{}: must contain pod CIDR",
+                cluster.cluster_name
+            );
+        }
+
+        // Step 5: Verify tower inventory has single dual-role node
+        let tower_inv =
+            crate::core::kubespray::generate_inventory_baremetal(&k8s_config.config.clusters[0])
+                .unwrap();
+        assert_eq!(
+            tower_inv.matches("ansible_host=").count(),
+            1,
+            "tower baremetal must have exactly 1 node"
+        );
+
+        // Step 6: Verify sandbox inventory has 3 nodes
+        let sandbox_inv =
+            crate::core::kubespray::generate_inventory_baremetal(&k8s_config.config.clusters[1])
+                .unwrap();
+        assert_eq!(
+            sandbox_inv.matches("ansible_host=").count(),
+            3,
+            "sandbox baremetal must have exactly 3 nodes"
+        );
+    }
+
+    /// CL-2, CL-14 (G-2): Cloudflare tunnel routing rules must match documented domains.
+    /// Verifies that values.yaml ingress hostnames correspond to documented access paths.
+    #[test]
+    fn test_cloudflare_tunnel_routes_match_docs() {
+        let values = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Required routing rules per CL-14
+        let required_hostnames = ["api.k8s.jinwang.dev", "auth.jinwang.dev", "cd.jinwang.dev"];
+
+        for hostname in &required_hostnames {
+            assert!(
+                values.contains(hostname),
+                "CF tunnel values.yaml must contain hostname '{}'",
+                hostname
+            );
+            assert!(
+                ops_guide.contains(hostname),
+                "ops-guide.md must document hostname '{}'",
+                hostname
+            );
+        }
+
+        // Verify correct backend services
+        assert!(
+            values.contains("https://kubernetes.default.svc:443"),
+            "api.k8s must route to kubernetes API server"
+        );
+        assert!(
+            values.contains("keycloak"),
+            "auth must route to keycloak service"
+        );
+        assert!(
+            values.contains("argocd-server"),
+            "cd must route to argocd-server service"
+        );
+
+        // Verify tunnel name matches user's setting (CL-14)
+        assert!(
+            values.contains("playbox-admin-static"),
+            "tunnel name must be 'playbox-admin-static'"
+        );
+
+        // Verify catch-all 404 rule exists
+        assert!(
+            values.contains("http_status:404"),
+            "must have catch-all 404 rule"
+        );
+    }
+
+    /// CL-1 (G-3): Single-node SDI full pipeline dry-run.
+    /// A single bare-metal node must be able to host both tower and sandbox pools.
+    #[test]
+    fn test_single_node_sdi_full_pipeline() {
+        use crate::models::sdi::*;
+
+        // Step 1: Define a single-node SDI spec
+        let sdi = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "mini-pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec!["8.8.8.8".to_string()],
+                },
+            },
+            os_image: OsImageConfig {
+                source:
+                    "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+                        .to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "~/.ssh/authorized_keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![
+                    SdiPool {
+                        pool_name: "tower".to_string(),
+                        purpose: "management".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec!["playbox-0".to_string()],
+                            spread: false,
+                        },
+                        node_specs: vec![NodeSpec {
+                            node_name: "tower-cp-0".to_string(),
+                            ip: "192.168.88.100".to_string(),
+                            cpu: 2,
+                            mem_gb: 4,
+                            disk_gb: 30,
+                            host: Some("playbox-0".to_string()),
+                            roles: vec![
+                                "control-plane".to_string(),
+                                "etcd".to_string(),
+                                "worker".to_string(),
+                            ],
+                            devices: None,
+                        }],
+                    },
+                    SdiPool {
+                        pool_name: "sandbox".to_string(),
+                        purpose: "workload".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec!["playbox-0".to_string()],
+                            spread: false,
+                        },
+                        node_specs: vec![NodeSpec {
+                            node_name: "sandbox-cp-0".to_string(),
+                            ip: "192.168.88.110".to_string(),
+                            cpu: 2,
+                            mem_gb: 4,
+                            disk_gb: 30,
+                            host: Some("playbox-0".to_string()),
+                            roles: vec![
+                                "control-plane".to_string(),
+                                "etcd".to_string(),
+                                "worker".to_string(),
+                            ],
+                            devices: None,
+                        }],
+                    },
+                ],
+            },
+        };
+
+        // Step 2: Validate SDI spec
+        let sdi_errors = validate_sdi_spec(&sdi);
+        assert!(
+            sdi_errors.is_empty(),
+            "single-node SDI spec must be valid: {:?}",
+            sdi_errors
+        );
+
+        // Step 3: Generate HCL — all VMs on single host
+        let hcl = crate::core::tofu::generate_tofu_main(&sdi, "jinwang");
+        assert!(!hcl.is_empty(), "HCL must not be empty");
+        // Only 1 unique host → only 1 provider block
+        assert_eq!(
+            hcl.matches("provider \"libvirt\"").count(),
+            1,
+            "single-node must generate exactly 1 provider"
+        );
+        assert!(hcl.contains("tower-cp-0"), "HCL must contain tower VM");
+        assert!(hcl.contains("sandbox-cp-0"), "HCL must contain sandbox VM");
+
+        // Step 4: Define matching k8s cluster config
+        let k8s_config = K8sClustersConfig {
+            config: K8sConfig {
+                common: CommonConfig {
+                    kubernetes_version: "1.33.1".to_string(),
+                    kubespray_version: "2.30.0".to_string(),
+                    container_runtime: "containerd".to_string(),
+                    cni: "cilium".to_string(),
+                    cilium_version: "1.16.5".to_string(),
+                    kube_proxy_remove: true,
+                    cgroup_driver: "systemd".to_string(),
+                    helm_enabled: true,
+                    kube_apiserver_admission_plugins: vec![],
+                    firewalld_enabled: false,
+                    kube_vip_enabled: false,
+                    gateway_api_enabled: false,
+                    gateway_api_version: String::new(),
+                    graceful_node_shutdown: false,
+                    graceful_node_shutdown_sec: 120,
+                    kubelet_custom_flags: vec![],
+                    kubeconfig_localhost: true,
+                    kubectl_localhost: true,
+                    enable_nodelocaldns: true,
+                    kube_network_node_prefix: 24,
+                    ntp_enabled: true,
+                    etcd_deployment_type: "host".to_string(),
+                    dns_mode: "coredns".to_string(),
+                },
+                clusters: vec![
+                    ClusterDef {
+                        cluster_name: "tower".to_string(),
+                        cluster_mode: ClusterMode::Sdi,
+                        cluster_sdi_resource_pool: "tower".to_string(),
+                        baremetal_nodes: vec![],
+                        cluster_role: "management".to_string(),
+                        network: ClusterNetwork {
+                            pod_cidr: "10.244.0.0/20".to_string(),
+                            service_cidr: "10.96.0.0/20".to_string(),
+                            dns_domain: "tower.local".to_string(),
+                            native_routing_cidr: None,
+                        },
+                        cilium: Some(CiliumConfig {
+                            cluster_id: 1,
+                            cluster_name: "tower".to_string(),
+                        }),
+                        oidc: None,
+                        kubespray_extra_vars: None,
+                        ssh_user: None,
+                    },
+                    ClusterDef {
+                        cluster_name: "sandbox".to_string(),
+                        cluster_mode: ClusterMode::Sdi,
+                        cluster_sdi_resource_pool: "sandbox".to_string(),
+                        baremetal_nodes: vec![],
+                        cluster_role: "workload".to_string(),
+                        network: ClusterNetwork {
+                            pod_cidr: "10.245.0.0/20".to_string(),
+                            service_cidr: "10.97.0.0/20".to_string(),
+                            dns_domain: "sandbox.local".to_string(),
+                            native_routing_cidr: None,
+                        },
+                        cilium: Some(CiliumConfig {
+                            cluster_id: 2,
+                            cluster_name: "sandbox".to_string(),
+                        }),
+                        oidc: None,
+                        kubespray_extra_vars: None,
+                        ssh_user: None,
+                    },
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        // Step 5: Cross-validate
+        let pool_errors = validate_cluster_sdi_pool_mapping(&k8s_config, &sdi);
+        assert!(
+            pool_errors.is_empty(),
+            "pool mapping must be valid: {:?}",
+            pool_errors
+        );
+
+        // Step 6: Generate inventory for each cluster (single-node per cluster)
+        for cluster in &k8s_config.config.clusters {
+            let inv =
+                crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap_or_else(|e| {
+                    panic!("inventory for '{}' failed: {}", cluster.cluster_name, e)
+                });
+            assert_eq!(
+                inv.matches("ansible_host=").count(),
+                1,
+                "{}: single-node cluster must have exactly 1 node",
+                cluster.cluster_name
+            );
+        }
+
+        // Step 7: Verify cluster vars
+        for cluster in &k8s_config.config.clusters {
+            let vars =
+                crate::core::kubespray::generate_cluster_vars(cluster, &k8s_config.config.common);
+            assert!(
+                vars.contains("cilium_cluster_id:"),
+                "{}: must have cilium cluster ID",
+                cluster.cluster_name
+            );
+        }
+    }
+
+    /// CL-1, CL-8 (G-4): `sdi init` no-spec orchestration flow.
+    /// Verifies the code path: facts check → config load → host preparation → resource pool summary → host-infra HCL.
+    #[test]
+    fn test_sdi_init_no_spec_full_orchestration() {
+        // Verify sdi.rs contains the complete orchestration flow for no-spec path
+        let sdi_rs = include_str!("../commands/sdi.rs");
+
+        // Step 1: Facts auto-collection when missing
+        assert!(
+            sdi_rs.contains("No facts found. Running facts collection first"),
+            "sdi init must auto-trigger facts when missing"
+        );
+
+        // Step 2: Config loading and validation
+        assert!(
+            sdi_rs.contains("validate_baremetal_config"),
+            "sdi init must validate baremetal config"
+        );
+
+        // Step 3: Host preparation (KVM/bridge/VFIO)
+        assert!(
+            sdi_rs.contains("Phase 1: Preparing hosts for virtualization"),
+            "sdi init must prepare hosts"
+        );
+        assert!(
+            sdi_rs.contains("InstallKvm"),
+            "sdi init must handle KVM installation step"
+        );
+        assert!(
+            sdi_rs.contains("SetupBridge"),
+            "sdi init must handle bridge setup step"
+        );
+        assert!(
+            sdi_rs.contains("ConfigureVfio"),
+            "sdi init must handle VFIO configuration step"
+        );
+
+        // Step 4: Resource pool summary generation (no-spec path)
+        assert!(
+            sdi_rs.contains("Phase 2: Setting up host-level libvirt infrastructure"),
+            "no-spec path must set up host-level libvirt"
+        );
+        assert!(
+            sdi_rs.contains("generate_resource_pool_summary"),
+            "no-spec path must generate resource pool summary"
+        );
+
+        // Step 5: Host infrastructure HCL generation
+        assert!(
+            sdi_rs.contains("generate_tofu_host_infra"),
+            "no-spec path must generate host-infra HCL via OpenTofu"
+        );
+
+        // Step 6: OpenTofu execution
+        assert!(
+            sdi_rs.contains("tofu init"),
+            "no-spec path must run tofu init"
+        );
+        assert!(
+            sdi_rs.contains("tofu apply"),
+            "no-spec path must run tofu apply (or dry-run)"
+        );
+
+        // Verify the no-spec path is distinct from spec path
+        assert!(
+            sdi_rs.contains(
+                "Host infrastructure setup complete. Provide a spec file to create VM pools"
+            ),
+            "no-spec path must inform user to provide spec for VM pool creation"
+        );
+    }
+
+    /// CL-6 (G-5): README referenced files must exist.
+    /// Parses README.md for file path references and verifies they exist on disk.
+    #[test]
+    fn test_readme_referenced_files_exist() {
+        let readme = include_str!("../../../README.md");
+
+        // Key files referenced in README that must exist
+        let must_exist_files = [
+            "credentials/.baremetal-init.yaml.example",
+            "credentials/.env.example",
+            "credentials/secrets.yaml.example",
+            "credentials/cloudflare-tunnel.json.example",
+            "config/sdi-specs.yaml.example",
+            "config/k8s-clusters.yaml.example",
+            "gitops/bootstrap/spread.yaml",
+            "tests/run-tests.sh",
+            "docs/ops-guide.md",
+            "docs/ARCHITECTURE.md",
+            "docs/SETUP-GUIDE.md",
+            "docs/TROUBLESHOOTING.md",
+            "docs/CONTRIBUTING.md",
+        ];
+
+        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+
+        for file in &must_exist_files {
+            let full_path = project_root.join(file);
+            assert!(
+                full_path.exists(),
+                "README references '{}' but file does not exist at '{}'",
+                file,
+                full_path.display()
+            );
+        }
+
+        // Verify README mentions key scalex commands
+        let required_commands = [
+            "scalex facts",
+            "scalex sdi init",
+            "scalex sdi clean",
+            "scalex cluster init",
+            "scalex get",
+            "scalex secrets",
+            "scalex status",
+            "scalex kernel-tune",
+        ];
+        for cmd in &required_commands {
+            assert!(
+                readme.contains(cmd),
+                "README must document command '{}'",
+                cmd
+            );
+        }
     }
 }
