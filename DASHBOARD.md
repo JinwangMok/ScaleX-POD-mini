@@ -6,8 +6,8 @@
 
 ## Current Status (Sprint 9a complete)
 
-- **Tests**: 300 pass / clippy 0 warnings / fmt clean
-- **Code**: ~12,800 lines Rust, 27 source files
+- **Tests**: 301 pass / clippy 0 warnings / fmt clean
+- **Code**: ~12,900 lines Rust, 27 source files
 - **GitOps**: 41 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
 
@@ -216,7 +216,9 @@ TDD 원칙에서 "테스트"는 단위 테스트만을 의미하지 않는다.
 | 9a-4 | **TEST**: CF Tunnel ingress 완성도 | **DONE** | 3개 hostname + catch-all 404 + noTLSVerify 검증 |
 | 9a-5 | **TEST**: cross-config 정합성 | **DONE** | 이미 5+개 테스트 존재 확인 (pool ref, CIDR overlap, DNS unique, cilium ID unique) |
 | 9a-6 | **TEST**: 단일 노드 SDI + 베어메탈 파이프라인 + GitOps generator 확장성 | **DONE** | single-node, baremetal pipeline, generator YAML 생성 테스트 추가 -> 300 pass |
-| 9a-7 | Commit + Push | **DONE** | 300 tests, 0 clippy warnings |
+| 9a-7 | **FIX**: sandbox test-resources syncWave 0→2 (Cilium 필요) | **DONE** | sync wave 순서 테스트 추가 → 301 pass |
+| 9a-8 | **AUDIT**: gitops YAML 구조 검증 + 전체 코드 심층 감사 | **DONE** | baremetal-init, sync, cluster-init, 2-layer 모두 정합 확인 |
+| 9a-9 | Commit + Push | **DONE** | 301 tests, 0 clippy warnings |
 
 ### Sprint 9b: 실환경 E2E 검증 (물리 인프라 필요)
 
@@ -285,7 +287,7 @@ _generated/
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| core/validation | 57 | pool mapping, cluster IDs, CIDR overlap, DNS uniqueness, legacy detection, single-node, baremetal, idempotency, E2E pipeline, clean->rebuild, cross-config, sync, 2-layer consistency, README verification |
+| core/validation | 58 | pool mapping, cluster IDs, CIDR overlap, DNS uniqueness, legacy detection, single-node, baremetal, idempotency, E2E pipeline, clean->rebuild, cross-config, sync, 2-layer consistency, README verification, sync wave ordering |
 | core/gitops | 39 | ApplicationSet, kustomization, sync waves, Cilium, ClusterMesh, generator consistency, cluster/common generator YAML 생성 |
 | core/kubespray | 32 | inventory (SDI + baremetal), cluster vars, OIDC, Cilium, extra vars, single-node dual-role, no-CP rejection |
 | commands/status | 21 | platform status reporting |
