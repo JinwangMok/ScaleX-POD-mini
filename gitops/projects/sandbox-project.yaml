@@ -6,7 +6,7 @@ metadata:
 spec:
   description: "Sandbox cluster: workload infrastructure (storage, RBAC, apps)"
   sourceRepos:
-    - "https://github.com/JinwangMok/k8s-playbox.git"
+    - "https://github.com/JinwangMok/ScaleX-POD-mini.git"
     - "https://helm.cilium.io/"
     - "https://charts.jetstack.io"
   destinations:

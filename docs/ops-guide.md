@@ -179,7 +179,13 @@ scalex facts --host playbox-0  # 현재 커널 파라미터 확인
 # 방법 2: SSH로 직접 적용
 ssh admin@playbox-0 'sudo sysctl -p /etc/sysctl.d/99-scalex-storage.conf'
 
-# 방법 3: 전 노드에 일괄 적용 (향후 scalex kernel-tune 명령으로 지원 예정)
+# 방법 3: scalex kernel-tune으로 권장 파라미터 확인 및 적용
+scalex kernel-tune                        # worker 역할 기본 권장값 출력
+scalex kernel-tune --role control-plane   # control-plane 권장값 출력
+scalex kernel-tune --format ansible       # Ansible playbook 형식 출력
+scalex kernel-tune --diff-node playbox-0  # 현재 값과 권장값 비교
+
+# 방법 4: SSH로 전 노드에 일괄 적용
 for node in playbox-{0..3}; do
   ssh admin@$node 'sudo sysctl -p /etc/sysctl.d/99-scalex-network.conf'
 done
@@ -204,11 +210,68 @@ scalex facts --host playbox-0
   - Keycloak: `https://auth.jinwang.dev`
 - K8s API: `https://api.k8s.jinwang.dev` (kubectl 설정 필요)
 
+##### Keycloak 설정 전 kubectl 접근 (Pre-OIDC)
+
+Keycloak이 아직 설정되지 않은 경우에도 Cloudflare Tunnel을 통해 kubectl 접근이 가능합니다.
+Tower 클러스터의 admin kubeconfig에서 server URL만 변경하면 됩니다:
+
+```bash
+# 1. admin kubeconfig 복사
+cp _generated/clusters/tower/kubeconfig.yaml ~/.kube/tower-tunnel.yaml
+
+# 2. server URL을 Cloudflare Tunnel URL로 변경
+# 변경 전: server: https://192.168.88.100:6443
+# 변경 후: server: https://api.k8s.jinwang.dev
+sed -i 's|server: https://.*:6443|server: https://api.k8s.jinwang.dev|' ~/.kube/tower-tunnel.yaml
+
+# 3. 접근 테스트
+export KUBECONFIG=~/.kube/tower-tunnel.yaml
+kubectl get nodes
+```
+
+> **참고**: 이 방식은 admin 인증서를 사용하므로 개인 작업용으로만 사용하세요.
+> Keycloak 설정 완료 후에는 OIDC 기반 kubeconfig를 사용하는 것을 권장합니다.
+
 #### 방법 2: Tailscale VPN
-- Tailscale 설치 필요 (bastion 노드에 설치됨)
-- bastion IP: `100.64.0.1` (예시, Tailscale 할당 IP)
-- SSH 접근: `ssh admin@100.64.0.1`
-- kubectl 접근: kubeconfig의 server를 Tailscale IP로 변경
+
+##### 설치 및 설정
+```bash
+# 1. bastion 노드(playbox-0)에 Tailscale 설치
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# 2. Tailscale 연결 (브라우저 인증)
+sudo tailscale up
+
+# 3. 할당된 Tailscale IP 확인
+tailscale ip -4
+# 예시 출력: 100.64.0.1
+```
+
+##### Tailscale을 통한 SSH 접근
+```bash
+# bastion 노드에 직접 SSH (Tailscale IP 사용)
+ssh jinwang@100.64.0.1
+
+# bastion 경유로 다른 노드 접근
+ssh -J jinwang@100.64.0.1 jinwang@192.168.88.9
+```
+
+##### Tailscale을 통한 kubectl 접근
+```bash
+# kubeconfig의 server를 Tailscale IP로 변경
+cp _generated/clusters/tower/kubeconfig.yaml ~/.kube/tower-tailscale.yaml
+sed -i 's|server: https://192.168.88.100:6443|server: https://100.64.0.1:6443|' ~/.kube/tower-tailscale.yaml
+export KUBECONFIG=~/.kube/tower-tailscale.yaml
+kubectl get nodes
+```
+
+#### 접근 방법 비교
+
+| 방법 | 설치 필요 | 속도 | 보안 | 사용 시나리오 |
+|------|----------|------|------|-------------|
+| **Cloudflare Tunnel** | 없음 | 보통 (CDN 경유) | TLS + CF WAF | 외부 어디서든 kubectl/웹 접근 |
+| **Tailscale VPN** | Tailscale 앱 | 빠름 (P2P) | WireGuard 암호화 | SSH + kubectl 직접 접근 |
+| **LAN 직접** | 없음 | 가장 빠름 | 물리 네트워크 | 동일 LAN 내 작업 |
 
 ### LAN 내부에서 접근
 

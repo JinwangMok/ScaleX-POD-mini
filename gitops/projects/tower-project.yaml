@@ -6,7 +6,7 @@ metadata:
 spec:
   description: "Tower cluster: management infrastructure (ArgoCD, Keycloak, Tunnel)"
   sourceRepos:
-    - "https://github.com/JinwangMok/k8s-playbox.git"
+    - "https://github.com/JinwangMok/ScaleX-POD-mini.git"
     - "https://argoproj.github.io/argo-helm"
     - "https://helm.cilium.io/"
     - "https://community-charts.github.io/helm-charts"

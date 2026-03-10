@@ -3,7 +3,6 @@ use crate::models::sdi::SdiSpec;
 
 /// Validate that every SDI-mode cluster references a pool that exists in the SDI spec.
 /// Pure function: returns list of error messages (empty = valid).
-#[allow(dead_code)]
 pub fn validate_cluster_sdi_pool_mapping(
     k8s_config: &K8sClustersConfig,
     sdi_spec: &SdiSpec,
@@ -43,7 +42,6 @@ pub fn validate_cluster_sdi_pool_mapping(
 
 /// Validate that Cilium cluster IDs are unique across all clusters.
 /// Pure function.
-#[allow(dead_code)]
 pub fn validate_unique_cluster_ids(k8s_config: &K8sClustersConfig) -> Vec<String> {
     let mut seen = std::collections::HashMap::new();
     let mut errors = Vec::new();
@@ -64,7 +62,6 @@ pub fn validate_unique_cluster_ids(k8s_config: &K8sClustersConfig) -> Vec<String
 
 /// Validate SDI spec semantically. Pure function: no I/O.
 /// Checks: unique pool names, unique VM IPs, unique VM names, non-empty pools.
-#[allow(dead_code)]
 pub fn validate_sdi_spec(spec: &SdiSpec) -> Vec<String> {
     let mut errors = Vec::new();
 

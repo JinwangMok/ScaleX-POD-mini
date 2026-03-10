@@ -11,7 +11,7 @@ metadata:
 spec:
   description: "Root AppProject for bootstrap — manages generators (ApplicationSets) only."
   sourceRepos:
-    - "https://github.com/JinwangMok/k8s-playbox.git"
+    - "https://github.com/JinwangMok/ScaleX-POD-mini.git"
   destinations:
     - server: "https://kubernetes.default.svc"
       namespace: "argocd"
@@ -32,7 +32,7 @@ metadata:
 spec:
   project: playbox-root
   source:
-    repoURL: https://github.com/JinwangMok/k8s-playbox.git
+    repoURL: https://github.com/JinwangMok/ScaleX-POD-mini.git
     targetRevision: main
     path: gitops/generators/tower
     directory:
@@ -54,7 +54,7 @@ metadata:
 spec:
   project: playbox-root
   source:
-    repoURL: https://github.com/JinwangMok/k8s-playbox.git
+    repoURL: https://github.com/JinwangMok/ScaleX-POD-mini.git
     targetRevision: main
     path: gitops/generators/sandbox
     directory:

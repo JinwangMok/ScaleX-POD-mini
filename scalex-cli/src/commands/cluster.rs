@@ -1,4 +1,4 @@
-use crate::core::{gitops, kubespray};
+use crate::core::{gitops, kubespray, validation};
 use crate::models::cluster::{ClusterMode, K8sClustersConfig};
 use crate::models::sdi::SdiSpec;
 use clap::{Args, Subcommand};
@@ -70,6 +70,45 @@ fn run_init(
     } else {
         None
     };
+
+    // Step 2.5: Cross-config validation (pure functions)
+    let id_errors = validation::validate_unique_cluster_ids(&k8s_config);
+    if !id_errors.is_empty() {
+        eprintln!("[cluster] Cluster ID validation errors:");
+        for err in &id_errors {
+            eprintln!("  - {}", err);
+        }
+        anyhow::bail!(
+            "Fix {} cluster ID error(s) before proceeding",
+            id_errors.len()
+        );
+    }
+
+    if let Some(ref spec) = sdi_spec {
+        let pool_errors = validation::validate_cluster_sdi_pool_mapping(&k8s_config, spec);
+        if !pool_errors.is_empty() {
+            eprintln!("[cluster] SDI pool mapping errors:");
+            for err in &pool_errors {
+                eprintln!("  - {}", err);
+            }
+            anyhow::bail!(
+                "Fix {} pool mapping error(s) before proceeding",
+                pool_errors.len()
+            );
+        }
+
+        let spec_errors = validation::validate_sdi_spec(spec);
+        if !spec_errors.is_empty() {
+            eprintln!("[cluster] SDI spec validation errors:");
+            for err in &spec_errors {
+                eprintln!("  - {}", err);
+            }
+            anyhow::bail!(
+                "Fix {} SDI spec error(s) before proceeding",
+                spec_errors.len()
+            );
+        }
+    }
 
     // Step 3: For each cluster, generate inventory + vars + run kubespray
     for cluster in &k8s_config.config.clusters {
@@ -330,7 +369,7 @@ fn update_gitops_cilium_values(
 
 /// Determine which clusters require an SDI spec for inventory generation.
 /// Pure function: returns list of cluster names that use SDI mode.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn clusters_requiring_sdi(config: &K8sClustersConfig) -> Vec<String> {
     config
         .config
@@ -371,7 +410,7 @@ pub fn find_control_plane_ip(
 /// Determine which clusters need GitOps sandbox URL updates.
 /// Non-management clusters that have kubeconfigs need their URLs replaced.
 /// Pure function: returns cluster names needing URL updates.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn clusters_needing_gitops_update(config: &K8sClustersConfig) -> Vec<String> {
     config
         .config

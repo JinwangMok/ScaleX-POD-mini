@@ -38,7 +38,7 @@ spec:
     spec:
       project: tower-project
       source:
-        repoURL: https://github.com/JinwangMok/k8s-playbox.git
+        repoURL: https://github.com/JinwangMok/ScaleX-POD-mini.git
         targetRevision: main
         path: "gitops/tower/{{.appName}}"
       destination:

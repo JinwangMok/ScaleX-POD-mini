@@ -1,9 +1,6 @@
 //! Pure functions for GitOps YAML manipulation.
 //! No I/O — returns transformed strings.
-#![allow(dead_code)]
 
-/// Default placeholder used in generator/project YAML for sandbox cluster server URL.
-#[allow(dead_code)]
 const SANDBOX_SERVER_PLACEHOLDER: &str = "https://sandbox-api:6443";
 
 /// Replace sandbox server URL placeholder in a YAML string.
@@ -21,6 +18,7 @@ pub fn has_sandbox_placeholder(content: &str) -> bool {
 /// Given a list of (path, content) tuples, return only those that contain
 /// the sandbox placeholder, with the placeholder replaced.
 /// Pure function.
+#[cfg(test)]
 pub fn replace_all_sandbox_urls(
     files: &[(String, String)],
     actual_url: &str,
@@ -63,6 +61,7 @@ pub fn gitops_files_needing_replacement() -> Vec<&'static str> {
 
 /// Generate a cluster-config ConfigMap manifest for a specific cluster.
 /// Pure function: returns YAML string with correct cluster metadata.
+#[cfg(test)]
 pub fn generate_cluster_config_manifest(
     cluster_name: &str,
     cluster_domain: &str,
@@ -89,6 +88,7 @@ data:
 
 /// Return the gitops-relative path for a cluster's cluster-config manifest.
 /// Pure function.
+#[cfg(test)]
 pub fn cluster_config_path(cluster_name: &str) -> String {
     format!("{cluster_name}/cluster-config/manifest.yaml")
 }
@@ -133,6 +133,7 @@ pub fn generate_cilium_values(control_plane_ip: &str, service_port: u16) -> Stri
 }
 
 /// ClusterMesh peer information for Cilium multi-cluster connectivity.
+#[cfg(test)]
 pub struct ClusterMeshPeer {
     pub name: String,
     pub id: u32,
@@ -141,6 +142,7 @@ pub struct ClusterMeshPeer {
 
 /// Generate Cilium Helm values with ClusterMesh enabled.
 /// Pure function: adds cluster identity and mesh configuration.
+#[cfg(test)]
 pub fn generate_cilium_values_with_mesh(
     control_plane_ip: &str,
     service_port: u16,
@@ -155,6 +157,7 @@ pub fn generate_cilium_values_with_mesh(
 
 /// Generate a Cilium ClusterMesh connect manifest (Secret) for peering.
 /// Pure function: generates the connection config for a remote cluster.
+#[cfg(test)]
 pub fn generate_clustermesh_peer_secret(local_cluster: &str, peer: &ClusterMeshPeer) -> String {
     format!(
         r#"apiVersion: v1

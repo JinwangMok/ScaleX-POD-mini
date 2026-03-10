@@ -980,7 +980,7 @@ config:
         kube_api_anonymous_auth: true
   argocd:
     namespace: "argocd"
-    repo_url: "https://github.com/JinwangMok/k8s-playbox.git"
+    repo_url: "https://github.com/JinwangMok/ScaleX-POD-mini.git"
     repo_branch: "main"
     tower_manages: ["sandbox"]
 "#;

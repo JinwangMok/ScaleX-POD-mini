@@ -3,7 +3,6 @@ use crate::models::sdi::{NodeSpec, SdiSpec};
 /// Input for host-level infrastructure generation.
 /// Represents a bare-metal host that should be set up as a libvirt hypervisor.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct HostInfraInput {
     pub name: String,
     pub ip: String,
@@ -29,10 +28,11 @@ pub fn generate_tofu_host_infra(
         hcl.push_str(&format!(
             r#"provider "libvirt" {{
   alias = "{name}"
-  uri   = "qemu+ssh://root@{name}/system"
+  uri   = "qemu+ssh://root@{ip}/system"
 }}
 "#,
             name = host.name,
+            ip = host.ip,
         ));
         hcl.push('\n');
     }
@@ -453,7 +453,7 @@ mod tests {
             "missing provider block"
         );
         assert!(
-            hcl.contains("qemu+ssh://root@playbox-0/system"),
+            hcl.contains("qemu+ssh://root@192.168.88.8/system"),
             "missing SSH URI for host"
         );
 
@@ -493,9 +493,10 @@ mod tests {
         // All 4 hosts must have providers
         for host in &hosts {
             assert!(
-                hcl.contains(&format!("qemu+ssh://root@{}/system", host.name)),
-                "missing provider for {}",
-                host.name
+                hcl.contains(&format!("qemu+ssh://root@{}/system", host.ip)),
+                "missing provider for {} (ip: {})",
+                host.name,
+                host.ip
             );
         }
 

@@ -295,34 +295,23 @@ fn get_config_files() -> anyhow::Result<()> {
     let mut rows: Vec<ConfigFileRow> = Vec::new();
     for (path, desc) in &checks {
         let p = std::path::Path::new(path);
-        let status = if p.exists() {
-            if p.is_dir() {
-                let count = std::fs::read_dir(p).map(|d| d.count()).unwrap_or(0);
-                if count > 0 {
-                    format!("OK ({} items)", count)
-                } else {
-                    "EMPTY".to_string()
-                }
-            } else {
-                // Validate YAML files
-                if path.ends_with(".yaml") || path.ends_with(".yml") {
-                    match std::fs::read_to_string(p) {
-                        Ok(content) => {
-                            if serde_yaml::from_str::<serde_yaml::Value>(&content).is_ok() {
-                                "OK (valid YAML)".to_string()
-                            } else {
-                                "INVALID YAML".to_string()
-                            }
-                        }
-                        Err(_) => "READ ERROR".to_string(),
-                    }
-                } else {
-                    "OK".to_string()
-                }
+        let exists = p.exists();
+        let is_dir = p.is_dir();
+        let dir_count = if is_dir {
+            std::fs::read_dir(p).map(|d| d.count()).unwrap_or(0)
+        } else {
+            0
+        };
+        let yaml_valid = if exists && !is_dir && (path.ends_with(".yaml") || path.ends_with(".yml"))
+        {
+            match std::fs::read_to_string(p) {
+                Ok(content) => Some(serde_yaml::from_str::<serde_yaml::Value>(&content).is_ok()),
+                Err(_) => None,
             }
         } else {
-            "MISSING".to_string()
+            Some(true)
         };
+        let status = classify_config_status(path, exists, is_dir, dir_count, yaml_valid);
 
         rows.push(ConfigFileRow {
             path: path.to_string(),
@@ -337,7 +326,6 @@ fn get_config_files() -> anyhow::Result<()> {
 }
 
 /// Validate config file presence and type. Pure function.
-#[allow(dead_code)]
 fn classify_config_status(
     path: &str,
     exists: bool,
@@ -462,7 +450,7 @@ pub fn count_nodes_from_inventory(content: &str) -> u32 {
 }
 
 /// Extract cluster name from cluster-vars.yml content. Pure function.
-#[allow(dead_code)]
+#[cfg(test)]
 fn extract_cluster_name_from_vars(content: &str) -> Option<String> {
     content
         .lines()

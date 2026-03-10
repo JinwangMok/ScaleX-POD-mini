@@ -33,7 +33,7 @@ spec:
     spec:
       project: sandbox-project
       source:
-        repoURL: https://github.com/JinwangMok/k8s-playbox.git
+        repoURL: https://github.com/JinwangMok/ScaleX-POD-mini.git
         targetRevision: main
         path: "gitops/sandbox/{{.appName}}"
       destination:

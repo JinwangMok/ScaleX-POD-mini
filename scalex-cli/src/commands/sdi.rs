@@ -2,6 +2,7 @@ use crate::core::config::load_baremetal_config;
 use crate::core::host_prepare;
 use crate::core::resource_pool;
 use crate::core::ssh::{build_ssh_command, execute_ssh};
+use crate::core::sync;
 use crate::core::tofu;
 use crate::models::baremetal::NodeFacts;
 use crate::models::sdi::{SdiPoolState, SdiSpec};
@@ -459,7 +460,7 @@ fn run_sync(
             config_path.display()
         );
     }
-    let desired_nodes: std::collections::HashSet<String> = bm_config
+    let desired_nodes: Vec<String> = bm_config
         .target_nodes
         .iter()
         .map(|n| n.name.clone())
@@ -467,70 +468,48 @@ fn run_sync(
 
     // Step 2: Load current state from facts directory
     let current_facts = load_all_facts(&facts_dir)?;
-    let current_nodes: std::collections::HashSet<String> =
-        current_facts.iter().map(|f| f.node_name.clone()).collect();
+    let current_nodes: Vec<String> = current_facts.iter().map(|f| f.node_name.clone()).collect();
 
-    // Step 3: Compute diff
-    let to_add: Vec<&str> = desired_nodes
-        .iter()
-        .filter(|n| !current_nodes.contains(n.as_str()))
-        .map(|n| n.as_str())
-        .collect();
-    let to_remove: Vec<&str> = current_nodes
-        .iter()
-        .filter(|n| !desired_nodes.contains(n.as_str()))
-        .map(|n| n.as_str())
-        .collect();
-    let unchanged: Vec<&str> = desired_nodes
-        .iter()
-        .filter(|n| current_nodes.contains(n.as_str()))
-        .map(|n| n.as_str())
-        .collect();
+    // Step 3: Compute diff using pure function
+    let diff = sync::compute_sync_diff(&desired_nodes, &current_nodes);
 
     // Step 4: Report sync plan
     println!("[sdi] Sync plan:");
     println!(
         "  Unchanged nodes ({}): {}",
-        unchanged.len(),
-        unchanged.join(", ")
+        diff.unchanged.len(),
+        diff.unchanged.join(", ")
     );
-    if to_add.is_empty() && to_remove.is_empty() {
+    if diff.to_add.is_empty() && diff.to_remove.is_empty() {
         println!("[sdi] Already in sync. Nothing to do.");
         return Ok(());
     }
-    if !to_add.is_empty() {
-        println!("  + Add nodes ({}): {}", to_add.len(), to_add.join(", "));
+    if !diff.to_add.is_empty() {
+        println!(
+            "  + Add nodes ({}): {}",
+            diff.to_add.len(),
+            diff.to_add.join(", ")
+        );
     }
-    if !to_remove.is_empty() {
+    if !diff.to_remove.is_empty() {
         println!(
             "  - Remove nodes ({}): {}",
-            to_remove.len(),
-            to_remove.join(", ")
+            diff.to_remove.len(),
+            diff.to_remove.join(", ")
         );
     }
 
-    // Step 5: Check for side effects on removal
-    if !to_remove.is_empty() {
-        // Check if removed nodes host any SDI VMs
+    // Step 5: Check for side effects on removal using pure function
+    if !diff.to_remove.is_empty() {
         let sdi_state_path = output_dir.join("sdi-state.json");
         if sdi_state_path.exists() {
             let state_raw = std::fs::read_to_string(&sdi_state_path)?;
             let pools: Vec<SdiPoolState> = serde_json::from_str(&state_raw)?;
-            let mut affected_vms = Vec::new();
-            for pool in &pools {
-                for node in &pool.nodes {
-                    if to_remove.contains(&node.host.as_str()) {
-                        affected_vms.push(format!(
-                            "  {} (pool: {}, host: {})",
-                            node.node_name, pool.pool_name, node.host
-                        ));
-                    }
-                }
-            }
-            if !affected_vms.is_empty() {
+            let conflicts = sync::detect_vm_conflicts(&pools, &diff.to_remove);
+            if !conflicts.is_empty() {
                 println!("\n[sdi] WARNING: Removing these nodes will affect hosted VMs:");
-                for vm in &affected_vms {
-                    println!("{}", vm);
+                for c in &conflicts {
+                    println!("  {} (pool: {}, host: {})", c.vm_name, c.pool_name, c.host);
                 }
                 println!("[sdi] You must migrate or destroy these VMs before removing the host.");
                 if !dry_run {
@@ -548,10 +527,10 @@ fn run_sync(
     }
 
     // Step 6: Add new nodes — gather facts
-    if !to_add.is_empty() {
+    if !diff.to_add.is_empty() {
         println!("[sdi] Gathering facts for new nodes...");
         std::fs::create_dir_all(&facts_dir)?;
-        for node_name in &to_add {
+        for node_name in &diff.to_add {
             let node = bm_config
                 .target_nodes
                 .iter()
@@ -579,7 +558,7 @@ fn run_sync(
         // Prepare new hosts (KVM, bridge, VFIO)
         println!("[sdi] Preparing new hosts...");
         let all_facts = load_all_facts(&facts_dir)?;
-        for node_name in &to_add {
+        for node_name in &diff.to_add {
             let node = bm_config
                 .target_nodes
                 .iter()
@@ -641,9 +620,9 @@ fn run_sync(
     }
 
     // Step 7: Remove old nodes — clean up facts
-    if !to_remove.is_empty() {
+    if !diff.to_remove.is_empty() {
         println!("[sdi] Removing facts for decommissioned nodes...");
-        for node_name in &to_remove {
+        for node_name in &diff.to_remove {
             let facts_path = facts_dir.join(format!("{}.json", node_name));
             if facts_path.exists() {
                 std::fs::remove_file(&facts_path)?;
@@ -654,7 +633,7 @@ fn run_sync(
 
     // Step 8: Regenerate OpenTofu if sdi-state exists (needs re-plan with new hosts)
     let sdi_state_path = output_dir.join("sdi-state.json");
-    if sdi_state_path.exists() && !to_add.is_empty() {
+    if sdi_state_path.exists() && !diff.to_add.is_empty() {
         println!(
             "[sdi] NOTE: New hosts added. Re-run `scalex sdi init <spec>` to update VM placement."
         );

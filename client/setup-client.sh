@@ -2,7 +2,7 @@
 # setup-client.sh — Client setup helper
 set -euo pipefail
 
-echo "=== k8s-playbox Client Setup ==="
+echo "=== ScaleX-POD-mini Client Setup ==="
 echo ""
 
 # Check prerequisites
