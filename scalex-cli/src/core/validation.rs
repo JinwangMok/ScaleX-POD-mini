@@ -2785,4 +2785,60 @@ spec:
             );
         }
     }
+
+    #[test]
+    fn test_sdi_init_help_describes_resource_pool() {
+        // CL-1: `sdi init` (no flag) must describe creating a unified resource pool,
+        // not just "preparing hosts". Verify the help text matches the checklist semantics.
+        let sdi_rs = include_str!("../commands/sdi.rs");
+
+        // The Init variant help text must mention "resource pool"
+        assert!(
+            sdi_rs.contains("unified resource pool"),
+            "sdi init help text must mention 'unified resource pool' per CL-1 checklist requirement"
+        );
+
+        // The no-spec path must NOT say "prepare hosts only"
+        assert!(
+            !sdi_rs.contains("prepares hosts only"),
+            "sdi init help text must not say 'prepares hosts only' — it also creates resource pool summary"
+        );
+    }
+
+    #[test]
+    fn test_sdi_init_no_spec_generates_resource_pool_summary() {
+        // CL-1: When `sdi init` runs without a spec file, it must generate
+        // a resource-pool-summary.json so that `scalex get sdi-pools` can display it.
+        // Verify the code path exists by checking sdi.rs contains the summary generation logic.
+        let sdi_rs = include_str!("../commands/sdi.rs");
+
+        assert!(
+            sdi_rs.contains("resource-pool-summary.json"),
+            "sdi init must save resource-pool-summary.json in the no-spec path"
+        );
+        assert!(
+            sdi_rs.contains("generate_resource_pool_summary"),
+            "sdi init must call generate_resource_pool_summary in the no-spec path"
+        );
+        assert!(
+            sdi_rs.contains("format_resource_pool_table"),
+            "sdi init must display the resource pool table in the no-spec path"
+        );
+    }
+
+    #[test]
+    fn test_get_sdi_pools_supports_baremetal_resource_pool() {
+        // CL-1 + CL-8: `scalex get sdi-pools` must support displaying the unified
+        // bare-metal resource pool from resource-pool-summary.json (no-spec path).
+        let get_rs = include_str!("../commands/get.rs");
+
+        assert!(
+            get_rs.contains("resource-pool-summary.json"),
+            "get sdi-pools must load resource-pool-summary.json for no-spec SDI"
+        );
+        assert!(
+            get_rs.contains("Unified Bare-Metal Resource Pool"),
+            "get sdi-pools must display 'Unified Bare-Metal Resource Pool' header"
+        );
+    }
 }

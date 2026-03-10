@@ -17,9 +17,9 @@ pub struct SdiArgs {
 
 #[derive(Subcommand)]
 enum SdiCommand {
-    /// Initialize SDI: prepare hosts (no spec) or virtualize bare-metal into VM pools (with spec)
+    /// Initialize SDI: virtualize all bare-metal into a unified resource pool (no spec) or create VM pools from spec (with spec)
     Init {
-        /// SDI specs file (optional — without it, prepares hosts only: KVM, bridge, VFIO)
+        /// SDI specs file (optional — without it, virtualizes bare-metal and creates unified resource pool)
         spec_file: Option<String>,
 
         /// Path to baremetal-init.yaml
