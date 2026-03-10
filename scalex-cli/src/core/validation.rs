@@ -2335,6 +2335,103 @@ spec:
         }
     }
 
+    // === README Installation Guide Verification Tests ===
+    // Ensures all example config files referenced in README exist and parse correctly.
+
+    /// All .example credential files referenced in README Step 2 must exist.
+    #[test]
+    fn test_readme_credential_example_files_exist() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+
+        let required_files = [
+            "credentials/.baremetal-init.yaml.example",
+            "credentials/.env.example",
+            "credentials/secrets.yaml.example",
+            "config/sdi-specs.yaml.example",
+            "config/k8s-clusters.yaml.example",
+        ];
+
+        for file in &required_files {
+            let path = repo_root.join(file);
+            assert!(
+                path.exists(),
+                "README Installation Guide references '{}' but file does not exist",
+                file
+            );
+        }
+    }
+
+    /// All example YAML configs must parse without error (README Step 2 validation).
+    #[test]
+    fn test_readme_example_configs_parse_successfully() {
+        // sdi-specs.yaml.example
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: Result<crate::models::sdi::SdiSpec, _> = serde_yaml::from_str(sdi_content);
+        assert!(
+            sdi.is_ok(),
+            "sdi-specs.yaml.example fails to parse: {:?}",
+            sdi.err()
+        );
+
+        // k8s-clusters.yaml.example
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: Result<K8sClustersConfig, _> = serde_yaml::from_str(k8s_content);
+        assert!(
+            k8s.is_ok(),
+            "k8s-clusters.yaml.example fails to parse: {:?}",
+            k8s.err()
+        );
+
+        // baremetal-init.yaml.example
+        let bm_content = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let bm: Result<crate::core::config::BaremetalInitConfig, _> =
+            serde_yaml::from_str(bm_content);
+        assert!(
+            bm.is_ok(),
+            ".baremetal-init.yaml.example fails to parse: {:?}",
+            bm.err()
+        );
+    }
+
+    /// GitOps bootstrap file referenced in README Step 7 must exist.
+    #[test]
+    fn test_readme_gitops_bootstrap_exists() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let bootstrap = repo_root.join("gitops/bootstrap/spread.yaml");
+        assert!(
+            bootstrap.exists(),
+            "README Step 7 references gitops/bootstrap/spread.yaml but file does not exist"
+        );
+    }
+
+    /// Docs referenced in README Documentation section must exist.
+    #[test]
+    fn test_readme_referenced_docs_exist() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+
+        let required_docs = [
+            "docs/SETUP-GUIDE.md",
+            "docs/ARCHITECTURE.md",
+            "docs/ops-guide.md",
+            "docs/TROUBLESHOOTING.md",
+        ];
+
+        for doc in &required_docs {
+            let path = repo_root.join(doc);
+            assert!(
+                path.exists(),
+                "README references '{}' but file does not exist",
+                doc
+            );
+        }
+    }
+
     /// Each SDI-mode cluster must have at least one control-plane node in its pool.
     #[test]
     fn test_two_layer_sdi_pools_have_control_plane_nodes() {

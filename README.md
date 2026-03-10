@@ -202,7 +202,7 @@ cp config/k8s-clusters.yaml.example config/k8s-clusters.yaml
 - `config.clusters[].cluster_sdi_resource_pool`: sdi-specs.yaml의 `pool_name`과 일치시킬 것
 - `config.clusters[].network.pod_cidr`: 클러스터 간 겹치지 않게 (예: tower=`10.233.0.0/16`, sandbox=`10.234.0.0/16`)
 - `config.common.kubernetes_version`: 모든 클러스터에 동일 적용 (ClusterMesh 호환성)
-- `config.clusters[].argocd.repo_url`: 본인의 GitHub repo URL
+- `config.argocd.repo_url`: 본인의 GitHub repo URL (모든 클러스터에 공통)
 
 **검증**
 
@@ -414,7 +414,7 @@ kubectl apply -f gitops/bootstrap/spread.yaml
 ## Project Structure
 
 ```
-scalex-cli/                # Rust CLI — 244 tests, 0 clippy warnings
+scalex-cli/                # Rust CLI — 283 tests, 0 clippy warnings
   src/commands/            #   facts, sdi, cluster, get, status, kernel-tune, secrets
   src/core/                #   config, kubespray, tofu, gitops, kernel, validation, ...
   src/models/              #   baremetal, cluster, sdi data models
