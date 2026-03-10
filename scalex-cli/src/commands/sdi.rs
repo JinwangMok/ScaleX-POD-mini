@@ -1,5 +1,6 @@
 use crate::core::config::load_baremetal_config;
 use crate::core::host_prepare;
+use crate::core::resource_pool;
 use crate::core::ssh::{build_ssh_command, execute_ssh};
 use crate::core::tofu;
 use crate::models::baremetal::NodeFacts;
@@ -271,6 +272,30 @@ fn run_init(
 
         println!("[sdi] SDI initialization complete.");
     } else {
+        // No spec file: show unified resource pool summary
+        println!("[sdi] Phase 2: Generating resource pool summary...");
+        let all_facts = load_all_facts(&facts_dir)?;
+        if all_facts.is_empty() {
+            println!("[sdi] No facts available. Run `scalex facts --all` first.");
+        } else {
+            let summary = resource_pool::generate_resource_pool_summary(&all_facts);
+            let table = resource_pool::format_resource_pool_table(&summary);
+            println!("{}", table);
+
+            // Save summary JSON
+            std::fs::create_dir_all(&output_dir)?;
+            let summary_path = output_dir.join("resource-pool-summary.json");
+            let json = serde_json::to_string_pretty(&summary)?;
+            if dry_run {
+                println!("[dry-run] Would write {}", summary_path.display());
+            } else {
+                std::fs::write(&summary_path, &json)?;
+                println!(
+                    "[sdi] Saved resource pool summary to {}",
+                    summary_path.display()
+                );
+            }
+        }
         println!("[sdi] Host preparation complete. Provide a spec file to create VM pools.");
     }
 

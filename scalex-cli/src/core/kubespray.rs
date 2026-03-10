@@ -190,6 +190,32 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
         vars.push_str("ntp_enabled: true\n");
     }
 
+    // OIDC authentication (Keycloak integration)
+    if let Some(ref oidc) = cluster.oidc {
+        if oidc.enabled {
+            vars.push_str("\n# OIDC authentication (Keycloak)\n");
+            vars.push_str("kube_oidc_auth: true\n");
+            vars.push_str(&format!("kube_oidc_client_id: \"{}\"\n", oidc.client_id));
+            vars.push_str(&format!("kube_oidc_url: \"{}\"\n", oidc.issuer_url));
+            vars.push_str(&format!(
+                "kube_oidc_username_claim: \"{}\"\n",
+                oidc.username_claim
+            ));
+            vars.push_str(&format!(
+                "kube_oidc_username_prefix: \"{}\"\n",
+                oidc.username_prefix
+            ));
+            vars.push_str(&format!(
+                "kube_oidc_groups_claim: \"{}\"\n",
+                oidc.groups_claim
+            ));
+            vars.push_str(&format!(
+                "kube_oidc_groups_prefix: \"{}\"\n",
+                oidc.groups_prefix
+            ));
+        }
+    }
+
     // Native routing CIDR
     if let Some(ref cidr) = cluster.network.native_routing_cidr {
         vars.push_str(&format!("cilium_native_routing_cidr: \"{cidr}\"\n"));
@@ -412,6 +438,7 @@ mod tests {
                 cluster_id: 1,
                 cluster_name: "tower".to_string(),
             }),
+            oidc: None,
             kubespray_extra_vars: None,
         }
     }
@@ -475,6 +502,7 @@ mod tests {
                 native_routing_cidr: None,
             },
             cilium: None,
+            oidc: None,
             kubespray_extra_vars: None,
         };
         let ini = generate_inventory_baremetal(&cluster).unwrap();
@@ -499,6 +527,7 @@ mod tests {
                 native_routing_cidr: None,
             },
             cilium: None,
+            oidc: None,
             kubespray_extra_vars: None,
         };
         let result = generate_inventory_baremetal(&cluster);
@@ -582,5 +611,86 @@ mod tests {
         assert!(vars.contains("graceful_node_shutdown_sec: 120"));
         assert!(vars.contains("kubelet_custom_flags:"));
         assert!(vars.contains("--node-ip={{ ip }}"));
+    }
+
+    #[test]
+    fn test_generate_cluster_vars_oidc_settings() {
+        let common = make_common();
+        let mut cluster = make_cluster_def("sandbox", "sandbox");
+        cluster.oidc = Some(crate::models::cluster::OidcConfig {
+            enabled: true,
+            client_id: "kubernetes".to_string(),
+            issuer_url: "https://auth.jinwang.dev/realms/kubernetes".to_string(),
+            username_claim: "preferred_username".to_string(),
+            username_prefix: "oidc:".to_string(),
+            groups_claim: "groups".to_string(),
+            groups_prefix: "oidc:".to_string(),
+        });
+
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // Must contain all OIDC settings for kube-apiserver
+        assert!(
+            vars.contains("kube_oidc_auth: true"),
+            "missing kube_oidc_auth"
+        );
+        assert!(
+            vars.contains("kube_oidc_client_id: \"kubernetes\""),
+            "missing kube_oidc_client_id"
+        );
+        assert!(
+            vars.contains("kube_oidc_url: \"https://auth.jinwang.dev/realms/kubernetes\""),
+            "missing kube_oidc_url"
+        );
+        assert!(
+            vars.contains("kube_oidc_username_claim: \"preferred_username\""),
+            "missing kube_oidc_username_claim"
+        );
+        assert!(
+            vars.contains("kube_oidc_username_prefix: \"oidc:\""),
+            "missing kube_oidc_username_prefix"
+        );
+        assert!(
+            vars.contains("kube_oidc_groups_claim: \"groups\""),
+            "missing kube_oidc_groups_claim"
+        );
+        assert!(
+            vars.contains("kube_oidc_groups_prefix: \"oidc:\""),
+            "missing kube_oidc_groups_prefix"
+        );
+    }
+
+    #[test]
+    fn test_generate_cluster_vars_no_oidc() {
+        let common = make_common();
+        let cluster = make_cluster_def("tower", "tower");
+        // oidc is None by default
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // Must NOT contain OIDC settings when disabled
+        assert!(
+            !vars.contains("kube_oidc_auth"),
+            "should not have kube_oidc_auth when oidc is None"
+        );
+    }
+
+    #[test]
+    fn test_generate_cluster_vars_oidc_disabled() {
+        let common = make_common();
+        let mut cluster = make_cluster_def("sandbox", "sandbox");
+        cluster.oidc = Some(crate::models::cluster::OidcConfig {
+            enabled: false,
+            client_id: "kubernetes".to_string(),
+            issuer_url: "https://auth.example.com/realms/k8s".to_string(),
+            ..Default::default()
+        });
+
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // OIDC disabled explicitly — must not emit OIDC vars
+        assert!(
+            !vars.contains("kube_oidc_auth"),
+            "should not have kube_oidc_auth when oidc.enabled is false"
+        );
     }
 }

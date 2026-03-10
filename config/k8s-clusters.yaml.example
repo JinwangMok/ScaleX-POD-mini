@@ -63,14 +63,16 @@ config:
       cilium:
         cluster_id: 2
         cluster_name: "sandbox"
+      # OIDC authentication (Keycloak integration) — type-safe config
+      oidc:
+        enabled: true
+        client_id: "kubernetes"
+        issuer_url: "https://auth.jinwang.dev/realms/kubernetes"
+        username_claim: "preferred_username"
+        username_prefix: "oidc:"
+        groups_claim: "groups"
+        groups_prefix: "oidc:"
       kubespray_extra_vars:
-        kube_oidc_auth: true
-        kube_oidc_url: "https://auth.jinwang.dev/realms/kubernetes"
-        kube_oidc_client_id: "kubernetes"
-        kube_oidc_username_claim: "email"
-        kube_oidc_username_prefix: "oidc:"
-        kube_oidc_groups_claim: "groups"
-        kube_oidc_groups_prefix: "oidc:"
         kube_api_anonymous_auth: true
         kubelet_config_extra_args:
           systemReserved:

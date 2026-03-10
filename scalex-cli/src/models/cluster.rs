@@ -128,6 +128,8 @@ pub struct ClusterDef {
     #[serde(default)]
     pub cilium: Option<CiliumConfig>,
     #[serde(default)]
+    pub oidc: Option<OidcConfig>,
+    #[serde(default)]
     pub kubespray_extra_vars: Option<serde_yaml::Value>,
 }
 
@@ -149,6 +151,42 @@ fn default_dns_domain() -> String {
 pub struct CiliumConfig {
     pub cluster_id: u32,
     pub cluster_name: String,
+}
+
+/// OIDC authentication config for kube-apiserver (Keycloak integration)
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OidcConfig {
+    /// Enable OIDC authentication on kube-apiserver
+    #[serde(default)]
+    pub enabled: bool,
+    /// OIDC client ID (e.g., "kubernetes")
+    #[serde(default)]
+    pub client_id: String,
+    /// OIDC issuer URL (e.g., "https://auth.jinwang.dev/realms/kubernetes")
+    #[serde(default)]
+    pub issuer_url: String,
+    /// Token claim for username (default: "preferred_username")
+    #[serde(default = "default_username_claim")]
+    pub username_claim: String,
+    /// Username prefix (default: "oidc:")
+    #[serde(default = "default_oidc_prefix")]
+    pub username_prefix: String,
+    /// Token claim for groups (default: "groups")
+    #[serde(default = "default_groups_claim")]
+    pub groups_claim: String,
+    /// Groups prefix (default: "oidc:")
+    #[serde(default = "default_oidc_prefix")]
+    pub groups_prefix: String,
+}
+
+fn default_username_claim() -> String {
+    "preferred_username".to_string()
+}
+fn default_groups_claim() -> String {
+    "groups".to_string()
+}
+fn default_oidc_prefix() -> String {
+    "oidc:".to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -265,5 +303,56 @@ config:
             "node-0"
         );
         assert_eq!(config.config.clusters[0].baremetal_nodes[1].ip, "10.0.0.2");
+    }
+
+    #[test]
+    fn test_parse_oidc_config() {
+        let yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+  clusters:
+    - cluster_name: "sandbox"
+      cluster_sdi_resource_pool: "sandbox"
+      cluster_role: "workload"
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+      oidc:
+        enabled: true
+        client_id: "kubernetes"
+        issuer_url: "https://auth.jinwang.dev/realms/kubernetes"
+"#;
+        let config: K8sClustersConfig = serde_yaml::from_str(yaml).unwrap();
+        let oidc = config.config.clusters[0].oidc.as_ref().unwrap();
+        assert!(oidc.enabled);
+        assert_eq!(oidc.client_id, "kubernetes");
+        assert_eq!(
+            oidc.issuer_url,
+            "https://auth.jinwang.dev/realms/kubernetes"
+        );
+        // Defaults
+        assert_eq!(oidc.username_claim, "preferred_username");
+        assert_eq!(oidc.groups_claim, "groups");
+        assert_eq!(oidc.username_prefix, "oidc:");
+        assert_eq!(oidc.groups_prefix, "oidc:");
+    }
+
+    #[test]
+    fn test_parse_cluster_without_oidc() {
+        let yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+  clusters:
+    - cluster_name: "tower"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+"#;
+        let config: K8sClustersConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.config.clusters[0].oidc.is_none());
     }
 }
