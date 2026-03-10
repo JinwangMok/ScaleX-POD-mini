@@ -3579,6 +3579,94 @@ spec:
         }
     }
 
+    /// CL-12: GitOps directory structure must be consistent with k8s-clusters.yaml.example.
+    /// For each cluster: generators dir, project YAML, app dir, bootstrap reference must exist.
+    #[test]
+    fn test_gitops_structure_matches_cluster_config() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: crate::models::cluster::K8sClustersConfig =
+            serde_yaml::from_str(k8s_content).expect("example must parse");
+
+        let spread = include_str!("../../../gitops/bootstrap/spread.yaml");
+
+        for cluster in &k8s.config.clusters {
+            let name = &cluster.cluster_name;
+
+            // 1. Generator directory must exist
+            let gen_dir = format!(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../gitops/generators/{}"),
+                name
+            );
+            assert!(
+                std::path::Path::new(&gen_dir).is_dir(),
+                "Missing generator directory for cluster '{}'",
+                name
+            );
+
+            // 2. Project YAML must exist
+            let project_file = format!(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../gitops/projects/{}-project.yaml"
+                ),
+                name
+            );
+            assert!(
+                std::path::Path::new(&project_file).is_file(),
+                "Missing project file for cluster '{}'",
+                name
+            );
+
+            // 3. App directory must exist
+            let app_dir = format!(concat!(env!("CARGO_MANIFEST_DIR"), "/../gitops/{}"), name);
+            assert!(
+                std::path::Path::new(&app_dir).is_dir(),
+                "Missing app directory: gitops/{}",
+                name
+            );
+
+            // 4. Bootstrap spread.yaml must reference this cluster's root
+            let root_ref = format!("{}-root", name);
+            assert!(
+                spread.contains(&root_ref),
+                "spread.yaml must reference '{}' for cluster '{}'",
+                root_ref,
+                name
+            );
+        }
+
+        // 5. Common directory must exist (shared across all clusters)
+        assert!(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../gitops/common")).is_dir(),
+            "gitops/common/ must exist for shared apps"
+        );
+
+        // 6. Each generator dir must have at least one YAML file
+        for cluster in &k8s.config.clusters {
+            let gen_dir = format!(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../gitops/generators/{}"),
+                cluster.cluster_name
+            );
+            let yaml_count = std::fs::read_dir(&gen_dir)
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .map(|e| {
+                            e.path()
+                                .extension()
+                                .map_or(false, |ext| ext == "yaml" || ext == "yml")
+                        })
+                        .unwrap_or(false)
+                })
+                .count();
+            assert!(
+                yaml_count > 0,
+                "Generator dir for '{}' must have at least one YAML",
+                cluster.cluster_name
+            );
+        }
+    }
+
     /// Extensibility test: Adding a 3rd cluster (datax) to tower+sandbox must work
     /// through the entire pipeline: config → unique IDs → inventory → vars → CIDR isolation.
     /// This validates the "무한 확장 가능한 멀티-클러스터 구조" (Principle 2).
