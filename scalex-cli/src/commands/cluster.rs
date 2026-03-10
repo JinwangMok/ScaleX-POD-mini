@@ -281,20 +281,32 @@ fn update_gitops_sandbox_urls(server_url: &str, dry_run: bool) -> anyhow::Result
     Ok(())
 }
 
-fn collect_kubeconfig(
-    cluster_dir: &std::path::Path,
-    cluster_name: &str,
-    sdi_spec: &Option<SdiSpec>,
+/// Determine which clusters require an SDI spec for inventory generation.
+/// Pure function: returns list of cluster names that use SDI mode.
+#[allow(dead_code)]
+pub fn clusters_requiring_sdi(config: &K8sClustersConfig) -> Vec<String> {
+    config
+        .config
+        .clusters
+        .iter()
+        .filter(|c| c.cluster_mode == ClusterMode::Sdi)
+        .map(|c| c.cluster_name.clone())
+        .collect()
+}
+
+/// Find the control-plane node IP for a given cluster.
+/// Pure function: searches SDI spec or baremetal nodes for control-plane role.
+pub fn find_control_plane_ip(
     cluster: &crate::models::cluster::ClusterDef,
-) -> anyhow::Result<()> {
-    // Find the first control-plane node IP based on cluster mode
-    let cp_ip: Option<String> = match cluster.cluster_mode {
+    sdi_spec: Option<&SdiSpec>,
+) -> Option<String> {
+    match cluster.cluster_mode {
         ClusterMode::Baremetal => cluster
             .baremetal_nodes
             .iter()
             .find(|n| n.roles.iter().any(|r| r == "control-plane"))
             .map(|n| n.ip.clone()),
-        ClusterMode::Sdi => sdi_spec.as_ref().and_then(|spec| {
+        ClusterMode::Sdi => sdi_spec.and_then(|spec| {
             spec.spec
                 .sdi_pools
                 .iter()
@@ -306,7 +318,30 @@ fn collect_kubeconfig(
                         .map(|n| n.ip.clone())
                 })
         }),
-    };
+    }
+}
+
+/// Determine which clusters need GitOps sandbox URL updates.
+/// Non-management clusters that have kubeconfigs need their URLs replaced.
+/// Pure function: returns cluster names needing URL updates.
+#[allow(dead_code)]
+pub fn clusters_needing_gitops_update(config: &K8sClustersConfig) -> Vec<String> {
+    config
+        .config
+        .clusters
+        .iter()
+        .filter(|c| c.cluster_role != "management")
+        .map(|c| c.cluster_name.clone())
+        .collect()
+}
+
+fn collect_kubeconfig(
+    cluster_dir: &std::path::Path,
+    cluster_name: &str,
+    sdi_spec: &Option<SdiSpec>,
+    cluster: &crate::models::cluster::ClusterDef,
+) -> anyhow::Result<()> {
+    let cp_ip = find_control_plane_ip(cluster, sdi_spec.as_ref());
 
     let Some(ip) = cp_ip else {
         eprintln!("[cluster] No control-plane node found for {}", cluster_name);
@@ -343,4 +378,222 @@ fn collect_kubeconfig(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::cluster::*;
+    use crate::models::sdi::*;
+
+    fn make_common() -> CommonConfig {
+        serde_yaml::from_str(
+            r#"
+kubernetes_version: "v1.32.0"
+kubespray_version: "v2.30.0"
+"#,
+        )
+        .unwrap()
+    }
+
+    fn make_sdi_cluster(name: &str, pool: &str) -> ClusterDef {
+        ClusterDef {
+            cluster_name: name.to_string(),
+            cluster_mode: ClusterMode::Sdi,
+            cluster_sdi_resource_pool: pool.to_string(),
+            baremetal_nodes: vec![],
+            cluster_role: "management".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.233.0.0/18".to_string(),
+                service_cidr: "10.233.64.0/18".to_string(),
+                dns_domain: "cluster.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+        }
+    }
+
+    fn make_baremetal_cluster(name: &str, role: &str) -> ClusterDef {
+        ClusterDef {
+            cluster_name: name.to_string(),
+            cluster_mode: ClusterMode::Baremetal,
+            cluster_sdi_resource_pool: String::new(),
+            baremetal_nodes: vec![BaremetalNode {
+                node_name: "bm-cp-0".to_string(),
+                ip: "10.0.0.50".to_string(),
+                roles: vec!["control-plane".to_string(), "etcd".to_string()],
+            }],
+            cluster_role: role.to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.234.0.0/18".to_string(),
+                service_cidr: "10.234.64.0/18".to_string(),
+                dns_domain: "cluster.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+        }
+    }
+
+    // --- clusters_requiring_sdi ---
+
+    #[test]
+    fn test_clusters_requiring_sdi_mixed() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: make_common(),
+                clusters: vec![
+                    make_sdi_cluster("tower", "tower-pool"),
+                    make_baremetal_cluster("edge", "workload"),
+                    make_sdi_cluster("sandbox", "sandbox-pool"),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let sdi_clusters = clusters_requiring_sdi(&config);
+        assert_eq!(sdi_clusters, vec!["tower", "sandbox"]);
+    }
+
+    #[test]
+    fn test_clusters_requiring_sdi_all_baremetal() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: make_common(),
+                clusters: vec![make_baremetal_cluster("edge", "workload")],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let sdi_clusters = clusters_requiring_sdi(&config);
+        assert!(sdi_clusters.is_empty());
+    }
+
+    // --- find_control_plane_ip ---
+
+    #[test]
+    fn test_find_cp_ip_baremetal() {
+        let cluster = make_baremetal_cluster("edge", "workload");
+        let ip = find_control_plane_ip(&cluster, None);
+        assert_eq!(ip, Some("10.0.0.50".to_string()));
+    }
+
+    #[test]
+    fn test_find_cp_ip_sdi() {
+        let cluster = make_sdi_cluster("tower", "tower-pool");
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![SdiPool {
+                    pool_name: "tower-pool".to_string(),
+                    purpose: "management".to_string(),
+                    placement: PlacementConfig {
+                        hosts: vec!["playbox-0".to_string()],
+                        spread: false,
+                    },
+                    node_specs: vec![NodeSpec {
+                        node_name: "tower-cp-0".to_string(),
+                        ip: "192.168.88.100".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 50,
+                        host: None,
+                        roles: vec!["control-plane".to_string()],
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+
+        let ip = find_control_plane_ip(&cluster, Some(&spec));
+        assert_eq!(ip, Some("192.168.88.100".to_string()));
+    }
+
+    #[test]
+    fn test_find_cp_ip_sdi_no_matching_pool() {
+        let cluster = make_sdi_cluster("tower", "nonexistent-pool");
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec { sdi_pools: vec![] },
+        };
+
+        let ip = find_control_plane_ip(&cluster, Some(&spec));
+        assert_eq!(ip, None);
+    }
+
+    // --- clusters_needing_gitops_update ---
+
+    #[test]
+    fn test_gitops_update_targets() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: make_common(),
+                clusters: vec![
+                    make_sdi_cluster("tower", "tower-pool"), // role = management
+                    {
+                        let mut c = make_sdi_cluster("sandbox", "sandbox-pool");
+                        c.cluster_role = "workload".to_string();
+                        c
+                    },
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let targets = clusters_needing_gitops_update(&config);
+        assert_eq!(targets, vec!["sandbox"]);
+    }
+
+    #[test]
+    fn test_gitops_update_no_targets_all_management() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: make_common(),
+                clusters: vec![make_sdi_cluster("tower", "tower-pool")],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let targets = clusters_needing_gitops_update(&config);
+        assert!(targets.is_empty());
+    }
 }

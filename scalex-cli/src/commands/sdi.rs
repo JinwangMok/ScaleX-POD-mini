@@ -166,10 +166,22 @@ fn run_init(
                                 .first()
                                 .map(|n| n.name.as_str())
                                 .unwrap_or("eno1");
+                            let net = resolve_network_config(
+                                spec_file
+                                    .as_deref()
+                                    .and_then(|p| load_sdi_spec(p).ok())
+                                    .as_ref(),
+                                None,
+                            )
+                            .unwrap_or(NetworkDefaults {
+                                bridge: "br0".to_string(),
+                                cidr: "192.168.88.0/24".to_string(),
+                                gateway: "192.168.88.1".to_string(),
+                            });
                             let script = host_prepare::generate_bridge_setup_script(
                                 primary_nic,
                                 &node.node_ip,
-                                "192.168.88.1", // TODO: from spec
+                                &net.gateway,
                                 24,
                             );
                             let ssh_cmd =
@@ -298,22 +310,25 @@ fn run_init(
             }
 
             // Generate OpenTofu HCL for host-level libvirt infra (storage pools)
-            let host_inputs: Vec<tofu::HostInfraInput> = bm_config
-                .target_nodes
-                .iter()
-                .map(|n| tofu::HostInfraInput {
-                    name: n.name.clone(),
-                    ip: n.node_ip.clone(),
-                })
-                .collect();
+            let host_inputs = build_host_infra_inputs(&bm_config.target_nodes);
 
-            // Use first node's network info as management network defaults
-            let mgmt_bridge = "br0";
-            let mgmt_cidr = "192.168.88.0/24";
-            let mgmt_gateway = "192.168.88.1";
+            // Resolve network config from available sources (no spec in this path)
+            let bm_net = bm_config
+                .network_defaults
+                .as_ref()
+                .map(|nd| NetworkDefaults {
+                    bridge: nd.management_bridge.clone(),
+                    cidr: nd.management_cidr.clone(),
+                    gateway: nd.gateway.clone(),
+                });
+            let net = resolve_network_config(None, bm_net.as_ref()).unwrap_or(NetworkDefaults {
+                bridge: "br0".to_string(),
+                cidr: "192.168.88.0/24".to_string(),
+                gateway: "192.168.88.1".to_string(),
+            });
 
             let host_hcl =
-                tofu::generate_tofu_host_infra(&host_inputs, mgmt_bridge, mgmt_cidr, mgmt_gateway);
+                tofu::generate_tofu_host_infra(&host_inputs, &net.bridge, &net.cidr, &net.gateway);
 
             let host_infra_dir = output_dir.join("host-infra");
             std::fs::create_dir_all(&host_infra_dir)?;
@@ -567,10 +582,16 @@ fn run_sync(
                                 .first()
                                 .map(|n| n.name.as_str())
                                 .unwrap_or("eno1");
+                            let sync_net =
+                                resolve_network_config(None, None).unwrap_or(NetworkDefaults {
+                                    bridge: "br0".to_string(),
+                                    cidr: "192.168.88.0/24".to_string(),
+                                    gateway: "192.168.88.1".to_string(),
+                                });
                             let script = host_prepare::generate_bridge_setup_script(
                                 primary_nic,
                                 &node.node_ip,
-                                "192.168.88.1",
+                                &sync_net.gateway,
                                 24,
                             );
                             let ssh_cmd =
@@ -730,6 +751,49 @@ fn build_pool_state(spec: &SdiSpec) -> Vec<SdiPoolState> {
         .collect()
 }
 
+/// Network defaults resolved from available config sources.
+/// Used to eliminate hardcoded network values in SDI init.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NetworkDefaults {
+    pub bridge: String,
+    pub cidr: String,
+    pub gateway: String,
+}
+
+/// Resolve network configuration from available sources.
+/// Priority: SdiSpec network_config > BaremetalInitConfig network_defaults > error.
+/// Pure function: no IO, no side effects.
+pub fn resolve_network_config(
+    sdi_spec: Option<&SdiSpec>,
+    baremetal_network: Option<&NetworkDefaults>,
+) -> Result<NetworkDefaults, String> {
+    if let Some(spec) = sdi_spec {
+        return Ok(NetworkDefaults {
+            bridge: spec.resource_pool.network.management_bridge.clone(),
+            cidr: spec.resource_pool.network.management_cidr.clone(),
+            gateway: spec.resource_pool.network.gateway.clone(),
+        });
+    }
+    if let Some(defaults) = baremetal_network {
+        return Ok(defaults.clone());
+    }
+    Err("No network configuration available. Provide sdi-specs.yaml or add network_defaults to baremetal-init.yaml".to_string())
+}
+
+/// Build HostInfraInput list from BaremetalInitConfig.
+/// Pure function: simple data transformation.
+pub fn build_host_infra_inputs(
+    nodes: &[crate::core::config::NodeConnectionConfig],
+) -> Vec<tofu::HostInfraInput> {
+    nodes
+        .iter()
+        .map(|n| tofu::HostInfraInput {
+            name: n.name.clone(),
+            ip: n.node_ip.clone(),
+        })
+        .collect()
+}
+
 fn run_tofu_command(work_dir: &Path, args: &[&str]) -> anyhow::Result<()> {
     let output = std::process::Command::new("tofu")
         .args(args)
@@ -754,5 +818,260 @@ fn run_tofu_command(work_dir: &Path, args: &[&str]) -> anyhow::Result<()> {
                 "OpenTofu ('tofu') not found. Install from https://opentofu.org/docs/intro/install/"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config::NodeConnectionConfig;
+    use crate::models::sdi::*;
+
+    // --- TDD Cycle 1-1: resolve_network_config ---
+
+    #[test]
+    fn test_resolve_network_config_from_sdi_spec() {
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "playbox-pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec!["8.8.8.8".to_string()],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "https://example.com/image.qcow2".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "~/.ssh/authorized_keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec { sdi_pools: vec![] },
+        };
+
+        let result = resolve_network_config(Some(&spec), None).unwrap();
+        assert_eq!(result.bridge, "br0");
+        assert_eq!(result.cidr, "10.0.0.0/24");
+        assert_eq!(result.gateway, "10.0.0.1");
+    }
+
+    #[test]
+    fn test_resolve_network_config_from_baremetal_defaults() {
+        let defaults = NetworkDefaults {
+            bridge: "br1".to_string(),
+            cidr: "192.168.1.0/24".to_string(),
+            gateway: "192.168.1.1".to_string(),
+        };
+
+        let result = resolve_network_config(None, Some(&defaults)).unwrap();
+        assert_eq!(result, defaults);
+    }
+
+    #[test]
+    fn test_resolve_network_config_spec_takes_priority() {
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec { sdi_pools: vec![] },
+        };
+        let defaults = NetworkDefaults {
+            bridge: "br1".to_string(),
+            cidr: "192.168.1.0/24".to_string(),
+            gateway: "192.168.1.1".to_string(),
+        };
+
+        let result = resolve_network_config(Some(&spec), Some(&defaults)).unwrap();
+        // SdiSpec takes priority
+        assert_eq!(result.bridge, "br0");
+        assert_eq!(result.gateway, "10.0.0.1");
+    }
+
+    #[test]
+    fn test_resolve_network_config_none_returns_error() {
+        let result = resolve_network_config(None, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No network configuration"));
+    }
+
+    // --- TDD Cycle 1-2: build_host_infra_inputs ---
+
+    #[test]
+    fn test_build_host_infra_inputs_single_node() {
+        let nodes = vec![NodeConnectionConfig {
+            name: "node-0".to_string(),
+            direct_reachable: true,
+            node_ip: "192.168.88.8".to_string(),
+            reachable_node_ip: None,
+            reachable_via: None,
+            admin_user: "admin".to_string(),
+            ssh_auth_mode: crate::core::config::SshAuthMode::Key,
+            ssh_password: None,
+            ssh_key_path: Some("~/.ssh/id_ed25519".to_string()),
+            ssh_key_path_of_reachable_node: None,
+        }];
+
+        let inputs = build_host_infra_inputs(&nodes);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "node-0");
+        assert_eq!(inputs[0].ip, "192.168.88.8");
+    }
+
+    #[test]
+    fn test_build_host_infra_inputs_multi_node() {
+        let nodes = vec![
+            NodeConnectionConfig {
+                name: "playbox-0".to_string(),
+                direct_reachable: true,
+                node_ip: "192.168.88.8".to_string(),
+                reachable_node_ip: None,
+                reachable_via: None,
+                admin_user: "admin".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Key,
+                ssh_password: None,
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+            NodeConnectionConfig {
+                name: "playbox-1".to_string(),
+                direct_reachable: false,
+                node_ip: "192.168.88.9".to_string(),
+                reachable_node_ip: None,
+                reachable_via: Some(vec!["playbox-0".to_string()]),
+                admin_user: "admin".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Password,
+                ssh_password: Some("pass".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+        ];
+
+        let inputs = build_host_infra_inputs(&nodes);
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].name, "playbox-0");
+        assert_eq!(inputs[1].name, "playbox-1");
+        assert_eq!(inputs[1].ip, "192.168.88.9");
+    }
+
+    // --- TDD Cycle 1-3: build_pool_state (already exists, add tests) ---
+
+    #[test]
+    fn test_build_pool_state_basic() {
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![SdiPool {
+                    pool_name: "tower-pool".to_string(),
+                    purpose: "management".to_string(),
+                    placement: PlacementConfig {
+                        hosts: vec!["playbox-0".to_string()],
+                        spread: false,
+                    },
+                    node_specs: vec![NodeSpec {
+                        node_name: "tower-cp-0".to_string(),
+                        ip: "192.168.88.100".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 50,
+                        host: None,
+                        roles: vec!["control-plane".to_string()],
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+
+        let state = build_pool_state(&spec);
+        assert_eq!(state.len(), 1);
+        assert_eq!(state[0].pool_name, "tower-pool");
+        assert_eq!(state[0].nodes.len(), 1);
+        assert_eq!(state[0].nodes[0].node_name, "tower-cp-0");
+        assert_eq!(state[0].nodes[0].host, "playbox-0"); // from placement.hosts
+        assert_eq!(state[0].nodes[0].cpu, 4);
+        assert_eq!(state[0].nodes[0].status, "planned");
+        assert!(!state[0].nodes[0].gpu_passthrough);
+    }
+
+    #[test]
+    fn test_build_pool_state_with_explicit_host_and_gpu() {
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![SdiPool {
+                    pool_name: "gpu-pool".to_string(),
+                    purpose: "compute".to_string(),
+                    placement: PlacementConfig {
+                        hosts: vec!["host-0".to_string()],
+                        spread: false,
+                    },
+                    node_specs: vec![NodeSpec {
+                        node_name: "gpu-node-0".to_string(),
+                        ip: "10.0.0.50".to_string(),
+                        cpu: 8,
+                        mem_gb: 32,
+                        disk_gb: 100,
+                        host: Some("host-1".to_string()), // explicit host overrides placement
+                        roles: vec!["worker".to_string()],
+                        devices: Some(DeviceConfig {
+                            gpu_passthrough: true,
+                        }),
+                    }],
+                }],
+            },
+        };
+
+        let state = build_pool_state(&spec);
+        assert_eq!(state[0].nodes[0].host, "host-1"); // explicit host wins
+        assert!(state[0].nodes[0].gpu_passthrough);
+        assert_eq!(state[0].nodes[0].mem_gb, 32);
     }
 }

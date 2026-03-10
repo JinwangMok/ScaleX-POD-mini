@@ -327,4 +327,94 @@ spec:
         assert!(result.contains("prune: true"));
         assert!(result.contains("https://192.168.88.110:6443"));
     }
+
+    // ── Sprint 3 (new session): Placeholder replacement completeness ──
+
+    /// Verify gitops_files_needing_replacement() lists exactly the files
+    /// that actually contain the sandbox-api placeholder on disk.
+    #[test]
+    fn test_replacement_list_matches_actual_placeholder_files() {
+        let all_generator_files = [
+            (
+                "generators/tower/common-generator.yaml",
+                include_str!("../../../gitops/generators/tower/common-generator.yaml"),
+            ),
+            (
+                "generators/tower/tower-generator.yaml",
+                include_str!("../../../gitops/generators/tower/tower-generator.yaml"),
+            ),
+            (
+                "generators/sandbox/common-generator.yaml",
+                include_str!("../../../gitops/generators/sandbox/common-generator.yaml"),
+            ),
+            (
+                "generators/sandbox/sandbox-generator.yaml",
+                include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml"),
+            ),
+            (
+                "projects/sandbox-project.yaml",
+                include_str!("../../../gitops/projects/sandbox-project.yaml"),
+            ),
+            (
+                "projects/tower-project.yaml",
+                include_str!("../../../gitops/projects/tower-project.yaml"),
+            ),
+        ];
+
+        let files_with_placeholder: Vec<&str> = all_generator_files
+            .iter()
+            .filter(|(_, content)| has_sandbox_placeholder(content))
+            .map(|(path, _)| *path)
+            .collect();
+
+        let expected = gitops_files_needing_replacement();
+        assert_eq!(
+            files_with_placeholder, expected,
+            "gitops_files_needing_replacement() must match actual files containing placeholder"
+        );
+    }
+
+    /// Verify each placeholder file remains valid YAML after URL replacement.
+    #[test]
+    fn test_replacement_produces_valid_yaml_for_all_files() {
+        let files = [
+            include_str!("../../../gitops/generators/sandbox/common-generator.yaml"),
+            include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml"),
+            include_str!("../../../gitops/projects/sandbox-project.yaml"),
+        ];
+        let replacement_url = "https://10.0.0.100:6443";
+
+        for (i, content) in files.iter().enumerate() {
+            let replaced = replace_sandbox_server_url(content, replacement_url);
+            let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&replaced);
+            assert!(
+                parsed.is_ok(),
+                "File index {} produced invalid YAML after replacement: {:?}",
+                i,
+                parsed.err()
+            );
+            assert!(
+                !has_sandbox_placeholder(&replaced),
+                "File index {} still has placeholder after replacement",
+                i
+            );
+        }
+    }
+
+    /// Verify no placeholder URL remains in tower generator files (they should
+    /// point to the local cluster, not sandbox).
+    #[test]
+    fn test_tower_files_never_contain_sandbox_placeholder() {
+        let tower_files = [
+            include_str!("../../../gitops/generators/tower/common-generator.yaml"),
+            include_str!("../../../gitops/generators/tower/tower-generator.yaml"),
+            include_str!("../../../gitops/projects/tower-project.yaml"),
+        ];
+        for content in &tower_files {
+            assert!(
+                !has_sandbox_placeholder(content),
+                "Tower file unexpectedly contains sandbox placeholder"
+            );
+        }
+    }
 }

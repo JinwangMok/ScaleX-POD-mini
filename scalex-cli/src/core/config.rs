@@ -7,6 +7,20 @@ use std::path::Path;
 pub struct BaremetalInitConfig {
     #[serde(rename = "targetNodes")]
     pub target_nodes: Vec<NodeConnectionConfig>,
+    /// Optional network defaults for SDI host infrastructure.
+    /// When present, used instead of hardcoded values in `sdi init`.
+    #[serde(default, rename = "networkDefaults")]
+    pub network_defaults: Option<BaremetalNetworkDefaults>,
+}
+
+/// Network configuration for bare-metal host infrastructure setup.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BaremetalNetworkDefaults {
+    #[serde(default = "default_bridge", rename = "managementBridge")]
+    pub management_bridge: String,
+    #[serde(rename = "managementCidr")]
+    pub management_cidr: String,
+    pub gateway: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -36,6 +50,10 @@ pub struct NodeConnectionConfig {
 pub enum SshAuthMode {
     Password,
     Key,
+}
+
+fn default_bridge() -> String {
+    "br0".to_string()
 }
 
 /// Load .baremetal-init.yaml and resolve env var references from .env
@@ -170,6 +188,44 @@ targetNodes:
             config.target_nodes[1].reachable_via,
             Some(vec!["node-0".to_string()])
         );
+    }
+
+    #[test]
+    fn test_parse_baremetal_config_with_network_defaults() {
+        let yaml = r#"
+networkDefaults:
+  managementBridge: "br0"
+  managementCidr: "10.0.0.0/24"
+  gateway: "10.0.0.1"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "10.0.0.10"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id_ed25519"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.network_defaults.is_some());
+        let net = config.network_defaults.unwrap();
+        assert_eq!(net.management_bridge, "br0");
+        assert_eq!(net.management_cidr, "10.0.0.0/24");
+        assert_eq!(net.gateway, "10.0.0.1");
+    }
+
+    #[test]
+    fn test_parse_baremetal_config_without_network_defaults_backward_compat() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "10.0.0.10"
+    adminUser: "admin"
+    sshAuthMode: "key"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.network_defaults.is_none());
+        assert_eq!(config.target_nodes.len(), 1);
     }
 
     /// Verify the actual .example file content can be parsed by our code.
