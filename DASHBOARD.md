@@ -6,8 +6,8 @@
 
 ## Current Status
 
-- **Tests**: 250 pass / clippy 0 warnings / fmt clean
-- **Code**: ~12,100 lines Rust, 27 source files
+- **Tests**: 253 pass / clippy 0 warnings / fmt clean
+- **Code**: ~12,300 lines Rust, 27 source files
 - **GitOps**: 33 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
 
@@ -168,6 +168,14 @@
 | 7.4 | E2E dry-run 파이프라인 통합 테스트 (secrets + gitops + 멱등성) | CL-8, CL-10, CL-13 | DONE |
 | 7.5 | baremetal-init.yaml camelCase 스키마 호환성 테스트 (3가지 접근 모드) | CL-8 | DONE |
 
+### Sprint 7b: ssh_user 보안 완성 + 엣지 케이스 강화 — DONE (253 tests)
+
+| # | Task | Checklist | 상태 |
+|---|------|-----------|------|
+| 7b.1 | `ClusterDef`에 `ssh_user` 필드 추가 + `collect_kubeconfig()` 연결 | CL-4 | DONE |
+| 7b.2 | `k8s-clusters.yaml.example`에 `ssh_user` 문서화 | CL-5, CL-6 | DONE |
+| 7b.3 | ssh_user 전파 + 예제 설정 파싱 엣지 케이스 테스트 | CL-8 | DONE |
+
 ### Sprint 8: 실환경 검증 (물리 인프라 필요) — PENDING
 
 | # | Task | Checklist | 상태 |
@@ -181,7 +189,7 @@
 
 ---
 
-## Test Summary (250 tests)
+## Test Summary (253 tests)
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
@@ -194,11 +202,11 @@
 | core/kernel | 14 | kernel-tune recommendations |
 | core/secrets | 12 | K8s secret generation |
 | core/host_prepare | 12 | KVM install, bridge setup, VFIO config |
-| commands/cluster | 9 | cluster init, SDI/baremetal modes, gitops update, kubeconfig SCP security |
+| commands/cluster | 11 | cluster init, SDI/baremetal modes, gitops update, kubeconfig SCP security, ssh_user propagation |
 | core/tofu | 8 | HCL gen, IP-based SSH URI, VFIO, idempotency |
 | commands/sdi | 8 | network resolve, host infra inputs, pool state |
 | core/sync | 7 | compute_sync_diff, detect_vm_conflicts |
-| models/* | 7 | parse/serialize sdi, cluster, baremetal |
+| models/* | 8 | parse/serialize sdi, cluster, baremetal, ssh_user field |
 | core/resource_pool | 5 | aggregation, multi-node, empty, table format, bridge |
 | commands/facts | 4 | facts gathering, script building |
 | core/ssh | 2 | SSH command building |
