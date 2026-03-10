@@ -200,6 +200,18 @@
 | 6.4 | 접근 방법 비교표 추가 | CL-15 | ✅ DONE |
 | 6.5 | DASHBOARD.md 전면 재작성 (정확한 테스트 수, 갭 분석) | — | ✅ DONE |
 
+### Sprint 6.5: README 뉴비 가이드 강화 ✅ DONE
+
+| # | Task | Checklist | 상태 |
+|---|------|-----------|------|
+| 6.5.1 | Step 1.5 Pre-flight 점검 추가 (SSH 접근 확인) | CL-5, CL-7 | ✅ DONE |
+| 6.5.2 | Step 2 설정 파일별 구체적 편집 포인트 + 테이블 추가 | CL-5, CL-6 | ✅ DONE |
+| 6.5.3 | Step 4-5 소요 시간 안내 + 실패 시 재실행 가이드 | CL-5, CL-7 | ✅ DONE |
+| 6.5.4 | Step 6 Cloudflare 필수 사전 작업 경고 강화 | CL-3, CL-14 | ✅ DONE |
+| 6.5.5 | Step 7 KUBECONFIG 경고 + 배포 진행 모니터링 방법 | CL-7 | ✅ DONE |
+| 6.5.6 | 트러블슈팅 테이블 (증상→원인→해결) 추가 | CL-5 | ✅ DONE |
+| 6.5.7 | .gitignore에 작업 문서 (DIRECTION/PROMPT/REQUEST-TO-USER) 추가 | CL-12 | ✅ DONE |
+
 ### Sprint 7: 실환경 검증 (물리 인프라 필요) — PENDING
 
 | # | Task | Checklist | 상태 |

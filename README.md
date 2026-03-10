@@ -95,6 +95,10 @@ pip install jinja2 pyyaml
 # OpenTofu (libvirt 가상화 엔진)
 curl -fsSL https://get.opentofu.org/install-opentofu.sh | sudo bash -s -- --install-method standalone
 
+# kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
 # 설치 확인
 cargo --version          # Rust 도구 체인
 ansible --version        # Ansible 자동화
@@ -109,96 +113,191 @@ cd scalex-cli && cargo build --release
 # 바이너리 위치: target/release/scalex
 export PATH="$PWD/target/release:$PATH"
 scalex --help  # CLI 동작 확인
+cd ..
 ```
+
+### Step 1.5: Pre-flight 점검
+
+CLI 빌드 후, 베어메탈 노드에 SSH 접근이 가능한지 먼저 확인합니다.
+
+```bash
+# 1) bastion 노드(playbox-0)에 직접 SSH 접근 테스트
+#    LAN에 있다면 LAN IP, 외부라면 Tailscale IP 사용
+ssh jinwang@100.64.0.1 'hostname && uname -r'
+# 출력 예: playbox-0 / 6.x.x-generic
+
+# 2) bastion 경유 다른 노드 접근 테스트
+ssh -J jinwang@100.64.0.1 jinwang@192.168.88.9 'hostname'
+# 출력 예: playbox-1
+
+# 3) libvirt 설치 확인 (SDI에 필요 — 각 노드에서)
+ssh jinwang@100.64.0.1 'virsh version 2>/dev/null && echo "libvirt OK" || echo "libvirt NOT installed"'
+# libvirt가 없으면 Step 4에서 scalex sdi init이 자동 설치를 시도합니다.
+```
+
+> **실패 시**: SSH 접근이 안 되면 이후 모든 단계가 실패합니다.
+> - 비밀번호 인증: `sshpass`가 설치되어 있는지 확인 (`apt install sshpass`)
+> - 키 인증: `~/.ssh/id_ed25519` (또는 지정 키)가 존재하고 원격 노드의 `authorized_keys`에 등록되었는지 확인
+> - Tailscale 경유: `tailscale status`로 연결 상태 확인
 
 ### Step 2: 사용자 설정 파일 준비
 
+4개의 설정 파일을 example에서 복사한 뒤 실제 값을 입력합니다.
+
+**2-1. 베어메탈 노드 접근 정보** (`credentials/.baremetal-init.yaml`)
+
 ```bash
-# 2-1. 베어메탈 노드 접근 정보
 cp credentials/.baremetal-init.yaml.example credentials/.baremetal-init.yaml
-# → 편집: 실제 노드 IP, SSH 접근 방식(password/key), 사용자명 입력
+```
 
-# 2-2. SSH 비밀번호/키 경로
+이 파일은 3가지 SSH 접근 방식을 지원합니다:
+
+| 접근 방식 | 설정 | 사용 시나리오 |
+|-----------|------|-------------|
+| **직접** | `direct_reachable: true` + `node_ip` | 동일 LAN에서 bastion 없이 접근 |
+| **외부 IP 경유** | `direct_reachable: false` + `reachable_node_ip` | Tailscale IP 등으로 외부에서 접근 |
+| **ProxyJump** | `direct_reachable: false` + `reachable_via: [노드명]` | bastion 경유 내부 노드 접근 |
+
+편집 포인트:
+- `node_ip`: 각 노드의 LAN IP (예: `192.168.88.8`, `192.168.88.9`, ...)
+- `reachable_node_ip`: Tailscale IP 등 외부에서 접근 가능한 IP (bastion만 필요)
+- `adminUser`: SSH 사용자명 (모든 노드 동일하면 하나만 변경)
+- `sshPassword`: `.env`에서 정의할 환경변수 이름 (값이 아님!)
+
+**2-2. SSH 비밀번호/키 경로** (`credentials/.env`)
+
+```bash
 cp credentials/.env.example credentials/.env
-# → 편집: PLAYBOX_0_PASSWORD 등 실제 비밀번호 설정
+```
 
-# 2-3. SDI 가상화 스펙 (VM 풀 정의)
+```dotenv
+# 실제 비밀번호로 변경 (따옴표 필수)
+PLAYBOX_0_PASSWORD="실제비밀번호"
+PLAYBOX_1_PASSWORD="실제비밀번호"
+PLAYBOX_2_PASSWORD="실제비밀번호"
+PLAYBOX_3_PASSWORD="실제비밀번호"
+
+# 키 인증 시 실제 경로로 변경
+SSH_KEY_PATH="~/.ssh/id_ed25519"
+```
+
+**2-3. SDI 가상화 스펙** (`config/sdi-specs.yaml`)
+
+```bash
 cp config/sdi-specs.yaml.example config/sdi-specs.yaml
-# → 편집: 노드별 CPU/RAM/Disk 스펙, IP 주소 설정
+```
 
-# 2-4. K8s 클러스터 설정
+편집 포인트:
+- `spec.sdi_pools[].node_specs[].cpu/mem_gb/disk_gb`: VM당 리소스 (물리 노드 리소스를 초과하지 않게 설정)
+- `spec.sdi_pools[].node_specs[].ip`: VM에 할당할 IP (LAN 대역 내, 물리 IP와 겹치지 않게)
+- `spec.sdi_pools[].node_specs[].host`: VM이 실행될 물리 노드 이름
+
+**2-4. K8s 클러스터 설정** (`config/k8s-clusters.yaml`)
+
+```bash
 cp config/k8s-clusters.yaml.example config/k8s-clusters.yaml
-# → 편집: 클러스터 이름, CIDR, OIDC, ArgoCD repo URL 설정
+```
 
-# 설정 파일 유효성 검증
+편집 포인트:
+- `config.clusters[].cluster_sdi_resource_pool`: sdi-specs.yaml의 `pool_name`과 일치시킬 것
+- `config.clusters[].network.pod_cidr`: 클러스터 간 겹치지 않게 (예: tower=`10.233.0.0/16`, sandbox=`10.234.0.0/16`)
+- `config.common.kubernetes_version`: 모든 클러스터에 동일 적용 (ClusterMesh 호환성)
+- `config.clusters[].argocd.repo_url`: 본인의 GitHub repo URL
+
+**검증**
+
+```bash
+# 4개 파일의 존재 여부 + YAML 유효성 검증
 scalex get config-files
+# 모든 항목이 OK 또는 Present이면 통과
 ```
 
 ### Step 3: 하드웨어 정보 수집
 
 ```bash
 scalex facts --all
-# 결과: _generated/facts/{node-name}.json (CPU, mem, GPU, disk, NIC, kernel)
+# 각 노드에 SSH 접속하여 CPU, memory, GPU, disk, NIC, kernel 정보 수집
+# 결과: _generated/facts/{node-name}.json
 
-# 단일 노드만 수집
+# 단일 노드만 수집 (디버깅용)
 scalex facts --host playbox-0
 
 # 수집 결과 확인
 scalex get baremetals
 ```
 
+> **실패 시**: `SSH connection failed` → Step 1.5의 SSH 접근 테스트를 다시 확인하세요.
+> `Permission denied` → `.env`의 비밀번호 또는 SSH 키가 올바른지 확인하세요.
+
 ### Step 4: SDI 가상화 (OpenTofu)
 
 ```bash
 # 베어메탈 → VM 풀 생성 (tower + sandbox)
 scalex sdi init config/sdi-specs.yaml
-# 결과: _generated/sdi/ (HCL 파일 + tofu apply 실행)
+# 결과: _generated/sdi/ (HCL 파일 생성 + tofu apply 실행)
+# 소요 시간: 노드당 ~5분 (libvirt 설치 + VM 생성)
 
 # VM 풀 상태 확인
 scalex get sdi-pools
 ```
+
+> **사전 요구**: 각 노드에 libvirt가 설치되어 있어야 합니다. 미설치 시 `scalex sdi init`이 ansible을 통해 자동 설치를 시도합니다.
+> **실패 시**: `libvirt connection failed` → 각 노드에서 `sudo systemctl status libvirtd` 확인
 
 ### Step 5: K8s 클러스터 프로비저닝 (Kubespray)
 
 ```bash
 # SDI VM 풀 → K8s 클러스터 생성
 scalex cluster init config/k8s-clusters.yaml
-# 결과: _generated/clusters/{name}/ (inventory.ini + group_vars)
-# Kubespray 실행 → kubeconfig 생성
+# Kubespray 실행으로 K8s 클러스터 구축
+# 소요 시간: 클러스터당 ~15-30분 (Kubespray 풀 프로비저닝)
+# 결과: _generated/clusters/{name}/ (inventory.ini + group_vars + kubeconfig.yaml)
 
-# 클러스터 접근 확인
+# Tower 클러스터 접근 확인
 export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
 kubectl get nodes
 
+# Sandbox 클러스터 접근 확인
 export KUBECONFIG=_generated/clusters/sandbox/kubeconfig.yaml
 kubectl get nodes
 
-# 클러스터 목록 확인
+# 멀티-클러스터 목록 확인
 scalex get clusters
 ```
+
+> **소요 시간 참고**: Kubespray는 노드 OS 패키지 설치 → containerd → etcd → K8s 순서로 진행되며, 네트워크 환경에 따라 15~30분 소요됩니다.
+> **중간 실패 시**: `scalex cluster init`은 멱등성을 보장하므로 동일 명령을 재실행하면 실패 지점부터 이어서 진행합니다.
 
 ### Step 6: 사전 시크릿 배포
 
 ```bash
-# Cloudflare tunnel, Keycloak 등 사전 시크릿 생성
+# Tower 클러스터에 Cloudflare tunnel, Keycloak 등 시크릿 생성
+export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
 scalex secrets apply
 ```
 
-> **참고**: Cloudflare Tunnel은 사전에 [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/)에서 터널을 생성하고 credentials를 `credentials/cloudflare-tunnel.json`에 저장해야 합니다. 상세: [docs/ops-guide.md](docs/ops-guide.md)
+> **중요**: Cloudflare Tunnel 사용 시, 이 단계 **이전에** [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/)에서 터널을 생성하고 credentials를 `credentials/cloudflare-tunnel.json`에 저장해야 합니다. 이 파일이 없으면 Step 7에서 cloudflared Pod가 기동 실패합니다. 상세: [docs/ops-guide.md](docs/ops-guide.md)
 
 ### Step 7: GitOps 부트스트랩 (ArgoCD)
 
 ```bash
+# 반드시 Tower 클러스터의 kubeconfig를 사용
 export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
 kubectl apply -f gitops/bootstrap/spread.yaml
 
 # ArgoCD가 모든 앱을 자동 배포 (sync wave 순서)
 # Wave 0: ArgoCD, cluster-config
-# Wave 1: Cilium, cert-manager, Kyverno
+# Wave 1: Cilium, cert-manager, Kyverno, local-path-provisioner
 # Wave 2: cilium-resources, cert-issuers, kyverno-policies
 # Wave 3: cloudflared-tunnel, keycloak
 # Wave 4: RBAC
+
+# 배포 진행 상황 확인 (수 분 소요)
+kubectl -n argocd get applications -w
+# 모든 앱이 Synced/Healthy가 될 때까지 대기
 ```
+
+> **주의**: `KUBECONFIG`가 Tower를 가리키는지 반드시 확인하세요. Sandbox kubeconfig로 실행하면 ArgoCD가 잘못된 클러스터에 배포됩니다.
 
 ### Step 8: 최종 검증
 
@@ -220,10 +319,16 @@ kubectl -n argocd get applications
 
 ### 트러블슈팅
 
-문제 발생 시 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) 참조. 주요 확인 포인트:
-- `scalex get config-files` — 설정 파일 유효성
-- `scalex status` — 각 레이어별 상태
-- `kubectl -n argocd get applications` — ArgoCD sync 상태
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `scalex get config-files`에서 Missing | 설정 파일 미복사 | Step 2에서 `cp` 명령 재확인 |
+| `scalex facts`에서 SSH 실패 | SSH 접근 불가 | Step 1.5 pre-flight 점검 |
+| `scalex sdi init`에서 libvirt 오류 | libvirt 미설치/미실행 | 각 노드에서 `sudo apt install -y libvirt-daemon-system` |
+| `scalex cluster init` 중간 실패 | 네트워크/패키지 문제 | 동일 명령 재실행 (멱등성 보장) |
+| ArgoCD 앱 OutOfSync | Git repo URL 불일치 | `k8s-clusters.yaml`의 `argocd.repo_url` 확인 |
+| cloudflared Pod CrashLoop | tunnel credentials 미설정 | Step 6 참고 + `credentials/cloudflare-tunnel.json` 확인 |
+
+상세: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
 ---
 
