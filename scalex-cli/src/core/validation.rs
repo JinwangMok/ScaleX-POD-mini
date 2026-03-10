@@ -670,6 +670,25 @@ mod tests {
         );
     }
 
+    /// ArgoCD must have persistence enabled for production use.
+    #[test]
+    fn test_argocd_persistence_enabled() {
+        let values = include_str!("../../../gitops/tower/argocd/values.yaml");
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(values).expect("ArgoCD values.yaml must be valid YAML");
+
+        let persistence_enabled = parsed
+            .get("persistence")
+            .and_then(|p| p.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false);
+
+        assert!(
+            persistence_enabled,
+            "ArgoCD persistence.enabled must be true for production"
+        );
+    }
+
     #[test]
     fn test_no_legacy_toplevel_artifacts() {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

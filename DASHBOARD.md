@@ -4,7 +4,7 @@
 
 ---
 
-## 현재 상태: 170 tests pass / clippy 0 warnings / fmt clean
+## 현재 상태: 191 tests pass / clippy 0 warnings / fmt clean
 
 **코드 규모**: ~9,000 lines Rust, 23 source files, ~185 pure functions
 **GitOps**: 33 YAML files (bootstrap + generators + common/tower/sandbox apps)
@@ -106,11 +106,21 @@
 | S4-3 | GitOps generators 업데이트 (kyverno-policies, cert-issuers 추가) | **완료** |
 | S4-4 | 6개 TDD 테스트 (Checklist A-1~A-5, DASHBOARD 구조 검증) | **완료** |
 
-### Sprint 5: 향후 개선
+### Sprint 5: scalex status 서브커맨드 — **완료** (TDD, 170→191 tests)
+
+| ID | 작업 | 상태 |
+|----|------|------|
+| S5-1 | 5-layer 플랫폼 상태 순수함수 (Facts/SDI/Clusters/Config/GitOps) | **완료** |
+| S5-2 | 상태 포맷팅 순수함수 (format_layer_line, format_platform_report) | **완료** |
+| S5-3 | I/O run() 함수 (실제 파일시스템 스캔) | **완료** |
+| S5-4 | CLI 서브커맨드 등록 (main.rs + mod.rs) | **완료** |
+| S5-5 | 21개 TDD 테스트 | **완료** |
+
+### Sprint 6: 향후 개선
 
 | ID | 작업 | 설명 | 우선순위 |
 |----|------|------|----------|
-| S5-1 | ArgoCD persistence 활성화 | `persistence.enabled: true` + PVC 설정 | LOW |
+| S6-1 | ArgoCD persistence 활성화 | `persistence.enabled: true` + PVC 설정 | LOW |
 
 ### 카테고리 B: 사용자 수동 작업 (코드로 해결 불가)
 
@@ -128,7 +138,7 @@
 |----|------|------|
 | C-1 | `scalex kernel-tune` 서브커맨드 | 원격 커널 파라미터 일괄 적용 |
 | C-2 | Cilium ClusterMesh 자동화 | tower ↔ sandbox 연결 |
-| C-3 | `scalex status` 서브커맨드 | 전체 플랫폼 상태 대시보드 |
+| ~~C-3~~ | ~~`scalex status` 서브커맨드~~ | **Sprint 5에서 완료** |
 
 ---
 

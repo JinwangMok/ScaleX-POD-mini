@@ -10,7 +10,7 @@ redis:
   ha:
     enabled: false
 persistence:
-  enabled: false
+  enabled: true
 global:
   domain: cd.jinwang.dev
 configs:
