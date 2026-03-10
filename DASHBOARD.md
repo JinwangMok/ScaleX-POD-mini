@@ -6,8 +6,8 @@
 
 ## Current Status
 
-- **Tests**: 244 pass / clippy 0 warnings / fmt clean
-- **Code**: ~11,700 lines Rust, 27 source files
+- **Tests**: 250 pass / clippy 0 warnings / fmt clean
+- **Code**: ~12,100 lines Rust, 27 source files
 - **GitOps**: 33 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
 
@@ -30,7 +30,7 @@
 | SDI 모델 (SdiSpec, NodeSpec) | PASS | 파싱/직렬화 7 tests |
 | OpenTofu HCL 생성 (순수 함수) | PASS | `tofu.rs` 8 tests — IP 기반 SSH URI |
 | sdi-specs.yaml 예제 (4노드, 2풀) | PASS | tower + sandbox 풀 정의 |
-| baremetal-init.yaml 스키마 | PASS | direct/external IP/ProxyJump 3가지 지원 |
+| baremetal-init.yaml 스키마 | PASS | direct/external IP/ProxyJump 3가지 지원, camelCase 호환 테스트 |
 | SDI spec 시맨틱 검증 | PASS | `validate_sdi_spec()` 5 tests |
 | 단일 노드 SDI 검증 | PASS | `test_single_node_sdi_tower_and_sandbox_on_one_host` |
 | `sdi init` (no flag) 리소스 풀 뷰 | PASS | JSON 생성 + 테이블 출력 |
@@ -55,17 +55,17 @@
 
 ### CL-4: Rust CLI + FP 스타일
 
-**상태: PARTIAL — 레거시 참조 및 보안 결함 존재**
+**상태: PASS — Sprint 7에서 결함 수정 완료**
 
 | 항목 | 상태 | 비고 |
 |------|------|------|
-| Rust 구현 | PASS | 244 tests, 0 clippy warnings |
+| Rust 구현 | PASS | 250 tests, 0 clippy warnings |
 | 순수 함수 패턴 | PASS | HCL/inventory/validation 모두 side-effect 없음 |
 | `#[allow(dead_code)]` 제거 | PASS | 전량 제거됨 |
-| **레거시 참조** | **FAIL** | `find_kubespray_dir()`에 `.legacy-datax-kubespray` 참조 |
-| **kubespray 경로 탐색** | **FAIL** | 서브모듈 `kubespray/` 우선 탐색 안함 |
-| **kubeconfig 수집 보안** | **FAIL** | `root@` SCP — admin_user 사용해야 함 |
-| **레거시 주석** | **FAIL** | `kubespray.rs`에 `.legacy-datax-kubespray` 주석 참조 |
+| 레거시 참조 제거 | ~~FAIL~~ → **PASS** | Sprint 7.1: 코드/주석 모두 제거, 탐지 테스트 추가 |
+| kubespray 경로 탐색 | ~~FAIL~~ → **PASS** | Sprint 7.2: `kubespray/` 서브모듈 우선 탐색 |
+| kubeconfig 수집 보안 | ~~FAIL~~ → **PASS** | Sprint 7.3: `build_kubeconfig_scp_args(admin_user)` 순수 함수 |
+| 레거시 주석 제거 | ~~FAIL~~ → **PASS** | Sprint 7.1: `kubespray.rs` 주석 수정 완료 |
 
 ### CL-5: 사용자 친절 가이드 — **PASS**
 
@@ -84,7 +84,7 @@
 
 ### CL-8: CLI 기능 완전성
 
-**상태: PARTIAL — 코드 결함 수정 필요**
+**상태: PASS (순수 함수) — Sprint 7에서 결함 수정 완료**
 
 | 명령어 | 순수 함수 테스트 | I/O 코드 | 결함 |
 |--------|-----------------|----------|------|
@@ -93,7 +93,7 @@
 | `scalex sdi init <spec>` | PASS | 존재 | — |
 | `scalex sdi clean --hard` | CODE-ONLY | 존재 | — |
 | `scalex sdi sync` | PASS (7 tests) | 존재 | — |
-| `scalex cluster init` | PASS (7 tests) | 존재 | 레거시 kubespray 경로, root SCP |
+| `scalex cluster init` | PASS (9 tests) | 존재 | ~~레거시 kubespray, root SCP~~ → 수정 완료 |
 | `scalex get *` | PASS (18 tests) | 존재 | — |
 | `scalex secrets apply` | PASS (12 tests) | 존재 | — |
 | `scalex status` | PASS (21 tests) | 존재 | — |
@@ -108,23 +108,25 @@
 
 - `.baremetal-init.yaml.example`, `.env.example`, `secrets.yaml.example`
 - `.gitignore` 보호
+- E2E 테스트에서 management/workload 시크릿 분리 검증
 
 ### CL-11: 커널 파라미터 튜닝 — **PASS**
 
 - `scalex kernel-tune` 14 tests
 - `docs/ops-guide.md` 가이드
 
-### CL-12: 디렉토리 구조 — **PARTIAL**
+### CL-12: 디렉토리 구조 — **PASS**
 
 | 항목 | 상태 | 비고 |
 |------|------|------|
 | 필수 디렉토리 존재 | PASS | scalex-cli/, gitops/, credentials/, config/, docs/ |
 | 레거시 파일 삭제 | PASS | .legacy-* 파일 삭제됨 |
-| **레거시 코드 참조** | **FAIL** | `cluster.rs:303`에 `.legacy-datax-kubespray` |
+| 레거시 코드 참조 | ~~FAIL~~ → **PASS** | Sprint 7.1: 자동 탐지 테스트 추가 |
 
-### CL-13: 멱등성 — **PASS (순수 함수)**
+### CL-13: 멱등성 — **PASS**
 
 - HCL/inventory/cluster-vars 멱등성 테스트 (동일 입력 → 동일 출력)
+- E2E 파이프라인에서 전 클러스터 멱등성 검증 추가 (Sprint 7.4)
 
 ### CL-14: Cloudflare Tunnel 가이드 + 외부 kubectl — **PASS (문서)**
 
@@ -154,19 +156,17 @@
 
 ---
 
-## Sprint Plan (현재)
+## Sprint History
 
-> TDD: RED → GREEN → REFACTOR → COMMIT
-
-### Sprint 7: 코드 결함 수정 + 테스트 강화 — IN PROGRESS
+### Sprint 7: 코드 결함 수정 + 테스트 강화 — DONE (250 tests)
 
 | # | Task | Checklist | 상태 |
 |---|------|-----------|------|
-| 7.1 | 레거시 참조 제거 (`.legacy-datax-kubespray`) | CL-4, CL-12 | TODO |
-| 7.2 | `find_kubespray_dir()` kubespray 서브모듈 경로 우선 사용 | CL-4 | TODO |
-| 7.3 | `collect_kubeconfig()` 보안 개선 (root → admin_user) | CL-4 | TODO |
-| 7.4 | E2E dry-run 파이프라인 통합 테스트 | CL-8, CL-13 | TODO |
-| 7.5 | baremetal-init.yaml camelCase 스키마 호환성 테스트 | CL-8 | TODO |
+| 7.1 | 레거시 참조 제거 (`.legacy-datax-kubespray`) + 탐지 테스트 | CL-4, CL-12 | DONE |
+| 7.2 | `find_kubespray_dir()` kubespray 서브모듈 경로 우선 사용 | CL-4 | DONE |
+| 7.3 | `build_kubeconfig_scp_args()` 순수 함수 + 보안 개선 | CL-4 | DONE |
+| 7.4 | E2E dry-run 파이프라인 통합 테스트 (secrets + gitops + 멱등성) | CL-8, CL-10, CL-13 | DONE |
+| 7.5 | baremetal-init.yaml camelCase 스키마 호환성 테스트 (3가지 접근 모드) | CL-8 | DONE |
 
 ### Sprint 8: 실환경 검증 (물리 인프라 필요) — PENDING
 
@@ -181,23 +181,23 @@
 
 ---
 
-## Test Summary (244 tests)
+## Test Summary (250 tests)
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| core/validation | 39 | pool mapping, cluster IDs, CIDR, legacy, single-node, baremetal, idempotency, E2E, extensibility, sync, SDI spec, baremetal config |
+| core/validation | 41 | pool mapping, cluster IDs, CIDR, legacy detection, single-node, baremetal, idempotency, E2E (basic + full pipeline), extensibility, sync, SDI spec, baremetal config |
 | core/gitops | 36 | ApplicationSet, kustomization, sync waves, Cilium values, ClusterMesh, generator consistency, repo URL |
 | core/kubespray | 30 | inventory (SDI + baremetal), cluster vars, OIDC, Cilium, extra vars |
 | commands/status | 21 | platform status |
 | commands/get | 18 | facts row, config status, SDI pools, clusters, resource pool rows |
+| core/config | 15 | baremetal config loading, semantic validation, camelCase 3-mode schema |
 | core/kernel | 14 | kernel-tune recommendations |
-| core/config | 14 | baremetal config loading, semantic validation |
 | core/secrets | 12 | K8s secret generation |
 | core/host_prepare | 12 | KVM install, bridge setup, VFIO config |
+| commands/cluster | 9 | cluster init, SDI/baremetal modes, gitops update, kubeconfig SCP security |
 | core/tofu | 8 | HCL gen, IP-based SSH URI, VFIO, idempotency |
 | commands/sdi | 8 | network resolve, host infra inputs, pool state |
 | core/sync | 7 | compute_sync_diff, detect_vm_conflicts |
-| commands/cluster | 7 | cluster init, SDI/baremetal modes, gitops update |
 | models/* | 7 | parse/serialize sdi, cluster, baremetal |
 | core/resource_pool | 5 | aggregation, multi-node, empty, table format, bridge |
 | commands/facts | 4 | facts gathering, script building |
