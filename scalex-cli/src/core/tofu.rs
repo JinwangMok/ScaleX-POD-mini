@@ -42,6 +42,7 @@ pub fn generate_tofu_main(spec: &SdiSpec) -> String {
                 node,
                 &host,
                 &spec.resource_pool.network.management_bridge,
+                &spec.resource_pool.network.gateway,
             ));
             hcl.push('\n');
         }
@@ -157,7 +158,7 @@ EOF
     )
 }
 
-fn generate_vm_resource(node: &NodeSpec, host: &str, bridge: &str) -> String {
+fn generate_vm_resource(node: &NodeSpec, host: &str, bridge: &str, gateway: &str) -> String {
     let provider = if host == "localhost" {
         String::new()
     } else {
@@ -229,7 +230,7 @@ resource "libvirt_domain" "{name}" {{
 }}
 "#,
         ip = node.ip,
-        gateway = "192.168.88.1", // TODO: extract from spec
+        gateway = gateway,
     )
 }
 
@@ -343,6 +344,15 @@ mod tests {
         let spec = make_test_spec();
         let hosts = collect_unique_hosts(&spec);
         assert_eq!(hosts, vec!["playbox-0"]);
+    }
+
+    #[test]
+    fn test_generate_tofu_uses_spec_gateway() {
+        let mut spec = make_test_spec();
+        spec.resource_pool.network.gateway = "10.0.0.1".to_string();
+        let hcl = generate_tofu_main(&spec);
+        // Gateway must come from spec, not hardcoded
+        assert!(hcl.contains("gateway4: 10.0.0.1"));
     }
 
     #[test]

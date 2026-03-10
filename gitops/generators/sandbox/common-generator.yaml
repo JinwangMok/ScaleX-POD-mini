@@ -22,6 +22,9 @@ spec:
           - appName: cluster-config
             namespace: kube-system
             syncWave: "0"
+          - appName: kyverno
+            namespace: kyverno
+            syncWave: "1"
   template:
     metadata:
       name: "sandbox-{{.appName}}"

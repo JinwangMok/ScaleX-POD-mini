@@ -100,6 +100,41 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
         vars.push_str("helm_enabled: true\n");
     }
 
+    // Firewall / kube-vip
+    vars.push_str(&format!(
+        "firewalld_enabled: {}\n",
+        common.firewalld_enabled
+    ));
+    vars.push_str(&format!("kube_vip_enabled: {}\n", common.kube_vip_enabled));
+
+    // Gateway API
+    if common.gateway_api_enabled {
+        vars.push_str("gateway_api_enabled: true\n");
+        if !common.gateway_api_version.is_empty() {
+            vars.push_str(&format!(
+                "gateway_api_version: \"{}\"\n",
+                common.gateway_api_version
+            ));
+        }
+    }
+
+    // Graceful node shutdown
+    if common.graceful_node_shutdown {
+        vars.push_str("graceful_node_shutdown: true\n");
+        vars.push_str(&format!(
+            "graceful_node_shutdown_sec: {}\n",
+            common.graceful_node_shutdown_sec
+        ));
+    }
+
+    // Custom kubelet flags
+    if !common.kubelet_custom_flags.is_empty() {
+        vars.push_str("kubelet_custom_flags:\n");
+        for flag in &common.kubelet_custom_flags {
+            vars.push_str(&format!("  - \"{flag}\"\n"));
+        }
+    }
+
     // API server admission plugins
     if !common.kube_apiserver_admission_plugins.is_empty() {
         vars.push_str("kube_apiserver_enable_admission_plugins:\n");
@@ -320,6 +355,13 @@ mod tests {
             cgroup_driver: "systemd".to_string(),
             helm_enabled: true,
             kube_apiserver_admission_plugins: vec!["NodeRestriction".to_string()],
+            firewalld_enabled: false,
+            kube_vip_enabled: false,
+            gateway_api_enabled: false,
+            gateway_api_version: String::new(),
+            graceful_node_shutdown: false,
+            graceful_node_shutdown_sec: 120,
+            kubelet_custom_flags: vec![],
         }
     }
 
@@ -448,5 +490,30 @@ mod tests {
         assert!(vars.contains("cilium_cluster_id: 1"));
         assert!(vars.contains("helm_enabled: true"));
         assert!(vars.contains("NodeRestriction"));
+    }
+
+    #[test]
+    fn test_generate_cluster_vars_datax_settings() {
+        let mut common = make_common();
+        common.firewalld_enabled = false;
+        common.kube_vip_enabled = false;
+        common.gateway_api_enabled = true;
+        common.gateway_api_version = "1.3.0".to_string();
+        common.graceful_node_shutdown = true;
+        common.graceful_node_shutdown_sec = 120;
+        common.kubelet_custom_flags = vec!["--node-ip={{ ip }}".to_string()];
+
+        let cluster = make_cluster_def("tower", "tower");
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // DataX-required settings
+        assert!(vars.contains("firewalld_enabled: false"));
+        assert!(vars.contains("kube_vip_enabled: false"));
+        assert!(vars.contains("gateway_api_enabled: true"));
+        assert!(vars.contains("gateway_api_version: \"1.3.0\""));
+        assert!(vars.contains("graceful_node_shutdown: true"));
+        assert!(vars.contains("graceful_node_shutdown_sec: 120"));
+        assert!(vars.contains("kubelet_custom_flags:"));
+        assert!(vars.contains("--node-ip={{ ip }}"));
     }
 }

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# playbox — Single CLI for k8s-playbox provisioning
+# playbox — DEPRECATED: Use `scalex` (Rust CLI in scalex-cli/) instead.
+# This script is retained for reference. Tower k3s provisioning is replaced
+# by full Kubespray via `scalex sdi init` + `scalex cluster init`.
 set -euo pipefail
 
 PLAYBOX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

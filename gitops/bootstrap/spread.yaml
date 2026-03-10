@@ -1,3 +1,6 @@
+# Multi-cluster bootstrap: Tower (management) + Sandbox (workload)
+# Applied via: kubectl apply -f gitops/bootstrap/spread.yaml
+---
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -20,17 +23,18 @@ spec:
     - group: "argoproj.io"
       kind: "ApplicationSet"
 ---
+# Tower cluster root: deploys tower generators (common + tower-specific)
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: playbox-root
+  name: tower-root
   namespace: argocd
 spec:
   project: playbox-root
   source:
     repoURL: https://github.com/JinwangMok/k8s-playbox.git
     targetRevision: main
-    path: gitops/clusters/playbox/generators
+    path: gitops/generators/tower
     directory:
       recurse: false
   destination:
@@ -41,6 +45,29 @@ spec:
       prune: true
       selfHeal: true
 ---
+# Sandbox cluster root: deploys sandbox generators (common + sandbox-specific)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sandbox-root
+  namespace: argocd
+spec:
+  project: playbox-root
+  source:
+    repoURL: https://github.com/JinwangMok/k8s-playbox.git
+    targetRevision: main
+    path: gitops/generators/sandbox
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+# Lock down default project
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:

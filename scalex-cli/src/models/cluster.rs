@@ -35,6 +35,31 @@ pub struct CommonConfig {
     pub helm_enabled: bool,
     #[serde(default)]
     pub kube_apiserver_admission_plugins: Vec<String>,
+    /// Disable firewalld on all nodes (default: false = disabled)
+    #[serde(default)]
+    pub firewalld_enabled: bool,
+    /// Disable kube-vip (default: false = disabled)
+    #[serde(default)]
+    pub kube_vip_enabled: bool,
+    /// Enable Gateway API CRDs
+    #[serde(default)]
+    pub gateway_api_enabled: bool,
+    /// Gateway API version (e.g. "1.3.0")
+    #[serde(default)]
+    pub gateway_api_version: String,
+    /// Enable kubelet graceful node shutdown
+    #[serde(default)]
+    pub graceful_node_shutdown: bool,
+    /// Graceful shutdown timeout in seconds
+    #[serde(default = "default_graceful_shutdown_sec")]
+    pub graceful_node_shutdown_sec: u32,
+    /// Custom kubelet flags
+    #[serde(default)]
+    pub kubelet_custom_flags: Vec<String>,
+}
+
+fn default_graceful_shutdown_sec() -> u32 {
+    120
 }
 
 fn default_container_runtime() -> String {
