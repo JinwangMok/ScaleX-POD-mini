@@ -2736,4 +2736,38 @@ spec:
             cilium_wave
         );
     }
+
+    /// Every .example file in config/ must be referenced in README.md.
+    /// Orphaned example files confuse users about which files to use.
+    #[test]
+    fn test_no_orphaned_config_example_files() {
+        let readme = include_str!("../../../README.md");
+
+        // Known config example files
+        let config_examples = vec!["sdi-specs.yaml.example", "k8s-clusters.yaml.example"];
+
+        for example in &config_examples {
+            assert!(
+                readme.contains(example),
+                "config/{} must be referenced in README.md",
+                example
+            );
+        }
+
+        // Ensure no orphaned example files exist that aren't in the known set
+        // baremetal.yaml.example was identified as orphaned — it should NOT exist
+        let orphan_candidates = vec!["baremetal.yaml.example"];
+        for orphan in &orphan_candidates {
+            let path = format!("config/{}", orphan);
+            let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join(&path);
+            assert!(
+                !full_path.exists(),
+                "Orphaned file {} must be deleted — use credentials/.baremetal-init.yaml.example instead",
+                path
+            );
+        }
+    }
 }
