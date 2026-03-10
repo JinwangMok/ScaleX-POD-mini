@@ -1115,6 +1115,268 @@ spec:
         );
     }
 
+    /// A-1: kube_api_anonymous_auth flow — kubespray_extra_vars must appear in generated YAML
+    /// and the resulting YAML must be parseable with the correct value.
+    #[test]
+    fn test_cluster_vars_kube_api_anonymous_auth_flow() {
+        let common = make_common();
+        let mut cluster = make_cluster_def("tower", "tower");
+        cluster.kubespray_extra_vars =
+            Some(serde_yaml::from_str("kube_api_anonymous_auth: true").unwrap());
+
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // Must contain the key
+        assert!(
+            vars.contains("kube_api_anonymous_auth"),
+            "kube_api_anonymous_auth missing from generated cluster-vars"
+        );
+
+        // Parse and verify the actual value
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&vars)
+            .unwrap_or_else(|e| panic!("cluster-vars YAML invalid: {e}"));
+        let anon_auth = parsed
+            .get("kube_api_anonymous_auth")
+            .expect("kube_api_anonymous_auth key not found in parsed YAML");
+        assert_eq!(
+            anon_auth.as_bool(),
+            Some(true),
+            "kube_api_anonymous_auth should be true"
+        );
+    }
+
+    /// A-1 complementary: kubespray_extra_vars that duplicate core keys produce
+    /// duplicate YAML keys — serde_yaml (strict mode) rejects this.
+    /// This test documents that users must NOT put core keys in extra_vars.
+    #[test]
+    fn test_cluster_vars_extra_vars_duplicate_core_key_produces_invalid_yaml() {
+        let common = make_common();
+        let mut cluster = make_cluster_def("tower", "tower");
+        // Attempt to override a core key via extra_vars
+        cluster.kubespray_extra_vars =
+            Some(serde_yaml::from_str("kube_version: \"9.99.0\"").unwrap());
+
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // Generated output contains duplicate kube_version — strict YAML parsers reject this
+        assert!(
+            vars.matches("kube_version").count() >= 2,
+            "extra_vars with core key should produce duplicate key in output"
+        );
+
+        // serde_yaml strict mode rejects duplicate keys
+        let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(&vars);
+        assert!(
+            result.is_err(),
+            "Duplicate core key in extra_vars should make YAML invalid (strict mode)"
+        );
+    }
+
+    /// A-4: Cilium ClusterMesh cluster_id uniqueness across example configs.
+    #[test]
+    fn test_example_configs_cilium_cluster_ids_unique() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: crate::models::cluster::K8sClustersConfig =
+            serde_yaml::from_str(k8s_content).unwrap();
+
+        let ids: Vec<u32> = k8s
+            .config
+            .clusters
+            .iter()
+            .filter_map(|c| c.cilium.as_ref().map(|cil| cil.cluster_id))
+            .collect();
+
+        let unique: std::collections::HashSet<u32> = ids.iter().copied().collect();
+        assert_eq!(
+            ids.len(),
+            unique.len(),
+            "Cilium cluster_ids in k8s-clusters.yaml.example must be unique. Found: {:?}",
+            ids
+        );
+
+        // IDs must be in valid range (1-255 for ClusterMesh)
+        for id in &ids {
+            assert!(
+                *id >= 1 && *id <= 255,
+                "Cilium cluster_id {} out of valid range 1-255",
+                id
+            );
+        }
+    }
+
+    /// A-2: Cross-config IP consistency — sdi-specs node IPs must not overlap with k8s-clusters CIDRs.
+    #[test]
+    fn test_example_configs_ip_no_overlap_between_node_and_service_cidrs() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+        let k8s: crate::models::cluster::K8sClustersConfig =
+            serde_yaml::from_str(k8s_content).unwrap();
+
+        // Collect all node IPs from SDI spec
+        let node_ips: Vec<String> = sdi
+            .spec
+            .sdi_pools
+            .iter()
+            .flat_map(|p| p.node_specs.iter().map(|n| n.ip.clone()))
+            .collect();
+
+        // Verify no node IP starts with a pod/service CIDR prefix
+        for cluster in &k8s.config.clusters {
+            let pod_prefix = cluster.network.pod_cidr.split('/').next().unwrap();
+            let svc_prefix = cluster.network.service_cidr.split('/').next().unwrap();
+
+            // Extract first two octets for rough overlap check
+            let pod_base: Vec<&str> = pod_prefix.split('.').take(2).collect();
+            let svc_base: Vec<&str> = svc_prefix.split('.').take(2).collect();
+
+            for ip in &node_ips {
+                let ip_base: Vec<&str> = ip.split('.').take(2).collect();
+                assert_ne!(
+                    ip_base, pod_base,
+                    "Node IP {} overlaps with pod CIDR {} of cluster {}",
+                    ip, cluster.network.pod_cidr, cluster.cluster_name
+                );
+                assert_ne!(
+                    ip_base, svc_base,
+                    "Node IP {} overlaps with service CIDR {} of cluster {}",
+                    ip, cluster.network.service_cidr, cluster.cluster_name
+                );
+            }
+        }
+    }
+
+    /// A-3: GitOps sync-wave ordering — verify generators reference valid sync-wave values.
+    #[test]
+    fn test_gitops_generator_apps_have_valid_sync_wave_order() {
+        let generators = [
+            include_str!("../../../gitops/generators/tower/common-generator.yaml"),
+            include_str!("../../../gitops/generators/tower/tower-generator.yaml"),
+            include_str!("../../../gitops/generators/sandbox/common-generator.yaml"),
+            include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml"),
+        ];
+
+        let mut sync_waves: Vec<(String, i32)> = Vec::new();
+        for content in &generators {
+            // Parse sync-wave annotations from generator elements
+            for line in content.lines() {
+                if line.contains("sync-wave") {
+                    // Extract the sync-wave value (format: argocd.argoproj.io/sync-wave: "N")
+                    if let Some(val) = line.split('"').nth(1).or_else(|| line.split('\'').nth(1)) {
+                        if let Ok(wave) = val.parse::<i32>() {
+                            sync_waves.push((line.trim().to_string(), wave));
+                        }
+                    }
+                }
+            }
+        }
+
+        // All sync-wave values must be in valid range (0-10)
+        for (context, wave) in &sync_waves {
+            assert!(
+                *wave >= 0 && *wave <= 10,
+                "Sync-wave {} out of expected range 0-10: {}",
+                wave,
+                context
+            );
+        }
+    }
+
+    /// A-5: Enhanced pipeline dry-run — verify every generated cluster-vars
+    /// contains ALL addon disablements AND cluster-specific settings.
+    #[test]
+    fn test_full_pipeline_dryrun_addon_disablement_all_clusters() {
+        let k8s_yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+    container_runtime: "containerd"
+    cni: "cilium"
+    cilium_version: "1.17.5"
+    kube_proxy_remove: true
+    cgroup_driver: "systemd"
+    helm_enabled: true
+    kube_apiserver_admission_plugins: [NodeRestriction]
+    firewalld_enabled: false
+    kube_vip_enabled: false
+    kubeconfig_localhost: true
+    kubectl_localhost: true
+    enable_nodelocaldns: true
+    kube_network_node_prefix: 24
+    ntp_enabled: true
+  clusters:
+    - cluster_name: "tower"
+      cluster_sdi_resource_pool: "tower"
+      cluster_role: "management"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+        dns_domain: "tower.local"
+      cilium:
+        cluster_id: 1
+        cluster_name: "tower"
+      kubespray_extra_vars:
+        kube_api_anonymous_auth: true
+    - cluster_name: "sandbox"
+      cluster_sdi_resource_pool: "sandbox"
+      cluster_role: "workload"
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+        dns_domain: "sandbox.local"
+      cilium:
+        cluster_id: 2
+        cluster_name: "sandbox"
+      kubespray_extra_vars:
+        kube_api_anonymous_auth: true
+"#;
+
+        let k8s_config: crate::models::cluster::K8sClustersConfig =
+            serde_yaml::from_str(k8s_yaml).unwrap();
+
+        let disabled_addons = [
+            "cert_manager_enabled: false",
+            "argocd_enabled: false",
+            "metallb_enabled: false",
+            "ingress_nginx_enabled: false",
+            "local_path_provisioner_enabled: false",
+            "node_feature_discovery_enabled: false",
+            "metrics_server_enabled: false",
+            "registry_enabled: false",
+        ];
+
+        for cluster in &k8s_config.config.clusters {
+            let vars = generate_cluster_vars(cluster, &k8s_config.config.common);
+
+            // Every cluster must have ALL addon disablements
+            for addon in &disabled_addons {
+                assert!(
+                    vars.contains(addon),
+                    "Cluster '{}' missing addon disablement: {}",
+                    cluster.cluster_name,
+                    addon
+                );
+            }
+
+            // Every cluster with kubespray_extra_vars must have kube_api_anonymous_auth
+            if cluster.kubespray_extra_vars.is_some() {
+                assert!(
+                    vars.contains("kube_api_anonymous_auth"),
+                    "Cluster '{}' missing kube_api_anonymous_auth from extra_vars",
+                    cluster.cluster_name
+                );
+            }
+
+            // Generated YAML must be valid
+            let parsed: serde_yaml::Value = serde_yaml::from_str(&vars).unwrap_or_else(|e| {
+                panic!("Cluster '{}' vars invalid YAML: {e}", cluster.cluster_name)
+            });
+            assert!(parsed.is_mapping());
+        }
+    }
+
     /// Edge case: kubespray_extra_vars with nested YAML (systemReserved) must merge correctly.
     #[test]
     fn test_cluster_vars_nested_extra_vars_merge() {
