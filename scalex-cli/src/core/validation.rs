@@ -2629,4 +2629,40 @@ spec:
             mapping_errors
         );
     }
+
+    /// Sandbox generator sync waves must ensure test-resources deploys AFTER Cilium networking.
+    /// test-resources at wave 0 would fail because pods can't communicate without CNI.
+    #[test]
+    fn test_sandbox_generator_test_resources_deploys_after_cilium() {
+        let content = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(content).unwrap();
+
+        let elements = parsed["spec"]["generators"][0]["list"]["elements"]
+            .as_sequence()
+            .expect("generators must have list elements");
+
+        let get_wave = |app_name: &str| -> i32 {
+            elements
+                .iter()
+                .find(|e| e["appName"].as_str() == Some(app_name))
+                .and_then(|e| e["syncWave"].as_str())
+                .and_then(|w| w.parse().ok())
+                .unwrap_or(-1)
+        };
+
+        let cilium_wave = get_wave("cilium");
+        let test_wave = get_wave("test-resources");
+        let cluster_config_wave = get_wave("cluster-config");
+
+        assert!(
+            cilium_wave > cluster_config_wave,
+            "cilium (wave {}) must deploy after cluster-config (wave {})",
+            cilium_wave, cluster_config_wave
+        );
+        assert!(
+            test_wave > cilium_wave,
+            "test-resources (wave {}) must deploy AFTER cilium (wave {}) — pods need CNI",
+            test_wave, cilium_wave
+        );
+    }
 }

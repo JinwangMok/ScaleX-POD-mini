@@ -24,7 +24,7 @@ spec:
             syncWave: "4"
           - appName: test-resources
             namespace: test
-            syncWave: "0"
+            syncWave: "2"
   template:
     metadata:
       name: "sandbox-{{.appName}}"
