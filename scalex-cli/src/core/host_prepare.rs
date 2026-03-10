@@ -442,6 +442,44 @@ mod tests {
         assert!(script.contains("[scalex]"));
     }
 
+    /// Edge case: GPU passthrough requested but node has no GPUs → VFIO must be skipped.
+    #[test]
+    fn test_plan_host_gpu_passthrough_requested_but_no_gpus() {
+        let facts = make_test_facts(true, false); // has bridge, NO GPU
+        let node = crate::core::config::NodeConnectionConfig {
+            name: "n0".to_string(),
+            direct_reachable: true,
+            node_ip: "10.0.0.1".to_string(),
+            reachable_node_ip: None,
+            reachable_via: None,
+            admin_user: "admin".to_string(),
+            ssh_auth_mode: crate::core::config::SshAuthMode::Key,
+            ssh_password: None,
+            ssh_key_path: None,
+            ssh_key_path_of_reachable_node: None,
+        };
+        // GPU passthrough requested but no GPUs detected
+        let steps = plan_host_preparation(&node, &facts, true);
+        assert!(
+            !steps.contains(&PrepStep::ConfigureVfio),
+            "VFIO should be skipped when no GPUs detected"
+        );
+    }
+
+    /// Edge case: VFIO script with empty GPU list should produce a skip message.
+    #[test]
+    fn test_generate_vfio_script_empty_gpus() {
+        let script = generate_vfio_setup_script(&[]);
+        assert!(
+            script.contains("skipping VFIO"),
+            "empty GPU list should skip VFIO setup"
+        );
+        assert!(
+            !script.contains("intel_iommu"),
+            "should not configure IOMMU when no GPUs"
+        );
+    }
+
     #[test]
     fn test_generate_node_cleanup_script_ordering() {
         let script = generate_node_cleanup_script();

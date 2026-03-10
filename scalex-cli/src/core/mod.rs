@@ -4,6 +4,7 @@ pub mod gitops;
 pub mod host_prepare;
 pub mod kubespray;
 pub mod resource_pool;
+pub mod secrets;
 pub mod ssh;
 pub mod sync;
 pub mod tofu;

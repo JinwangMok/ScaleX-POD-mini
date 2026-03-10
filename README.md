@@ -30,8 +30,8 @@ Unified CLI tool for automated provisioning of a two-cluster Kubernetes architec
 
 | 클러스터 | 유형 | 위치 | 역할 |
 |---------|------|------|------|
-| **Tower** | k3s VM (libvirt) | playbox-0 위 | ArgoCD 실행, 양쪽 클러스터 관리. Sandbox 리셋 시에도 유지 |
-| **Sandbox** | kubespray K8s | playbox-0~3 전체 | 워크로드 실행. Cilium CNI, Keycloak OIDC, CF Tunnel |
+| **Tower** | Kubespray K8s (SDI VM) | playbox-0 위 SDI VM | ArgoCD 실행, 양쪽 클러스터 관리. Sandbox 리셋 시에도 유지 |
+| **Sandbox** | Kubespray K8s (SDI VMs) | playbox-0~3 전체 | 워크로드 실행. Cilium CNI, Keycloak OIDC, CF Tunnel |
 
 ### 노드 구성
 
@@ -41,7 +41,7 @@ Unified CLI tool for automated provisioning of a two-cluster Kubernetes architec
 | playbox-1 | 192.168.88.9 | Worker | bond0 (eno1) |
 | playbox-2 | 192.168.88.10 | Worker | bond0 (eno1) |
 | playbox-3 | 192.168.88.11 | Worker + GPU | bond0 (eno1 1G + ens2f0np0 10G) |
-| tower-vm | 192.168.88.100 | Management | k3s, ArgoCD |
+| tower-vm | 192.168.88.100 | Management | Kubespray K8s, ArgoCD |
 
 ### 외부 접근 경로
 
@@ -211,7 +211,7 @@ kubectl -n argocd get secret argocd-initial-admin-secret \
 | `up` | 전체 프로비저닝 (7단계 순차 실행) |
 | `preflight` | 도구, values.yaml 검증, SSH 연결 테스트 |
 | `prepare-nodes` | Ansible로 노드 준비 (사용자 생성, netplan, 커널) |
-| `create-tower` | OpenTofu로 Tower VM + k3s 생성 |
+| `create-tower` | OpenTofu로 Tower VM 생성 (legacy, k3s→Kubespray 전환됨) |
 | `create-sandbox` | Kubespray로 Sandbox K8s 클러스터 생성 |
 | `bootstrap` | ArgoCD 설치, 시크릿 생성, spread.yaml 적용 |
 | `configure-oidc` | Keycloak OIDC realm/client/user 설정 |

@@ -143,6 +143,15 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
         }
     }
 
+    // Addon disablement — prevent Kubespray/ArgoCD conflicts (DataX pattern).
+    // These are managed by ArgoCD GitOps; Kubespray must not deploy them.
+    vars.push_str("\n# Addon disablement (managed by ArgoCD)\n");
+    vars.push_str("cert_manager_enabled: false\n");
+    vars.push_str("argocd_enabled: false\n");
+    vars.push_str("metallb_enabled: false\n");
+    vars.push_str("ingress_nginx_enabled: false\n");
+    vars.push_str("local_path_provisioner_enabled: false\n");
+
     // Cluster network
     vars.push_str(&format!(
         "kube_pods_subnet: \"{}\"\n",
@@ -736,12 +745,43 @@ mod tests {
             "firewalld_enabled",
             "kube_vip_enabled",
             "kube_network_node_prefix",
+            // Addon disablement — prevent Kubespray/ArgoCD conflicts (DataX pattern)
+            "cert_manager_enabled",
+            "argocd_enabled",
+            "metallb_enabled",
+            "ingress_nginx_enabled",
+            "local_path_provisioner_enabled",
         ];
 
         for key in &required_keys {
             assert!(
                 parsed.contains_key(serde_yaml::Value::String(key.to_string())),
                 "missing required kubespray key: {key}"
+            );
+        }
+    }
+
+    /// DataX pattern: Kubespray addons that are managed by ArgoCD must be explicitly disabled
+    /// in cluster-vars to prevent Kubespray from deploying them (causing conflicts).
+    #[test]
+    fn test_cluster_vars_addon_disablement_prevents_argocd_conflicts() {
+        let common = make_common();
+        let cluster = make_cluster_def("tower", "tower");
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // These addons are deployed via ArgoCD GitOps — Kubespray must NOT deploy them
+        let disabled_addons = [
+            ("cert_manager_enabled", "false"),
+            ("argocd_enabled", "false"),
+            ("metallb_enabled", "false"),
+            ("ingress_nginx_enabled", "false"),
+            ("local_path_provisioner_enabled", "false"),
+        ];
+
+        for (key, expected) in &disabled_addons {
+            assert!(
+                vars.contains(&format!("{key}: {expected}")),
+                "missing addon disablement: {key}: {expected}\n--- generated vars ---\n{vars}"
             );
         }
     }
@@ -1018,5 +1058,72 @@ spec:
         assert!(sandbox_vars.contains("kube_oidc_auth: true"));
         let tower_vars = generate_cluster_vars(tower, &k8s_config.config.common);
         assert!(!tower_vars.contains("kube_oidc_auth"));
+    }
+
+    /// Edge case: A node with both control-plane AND worker roles must appear in both sections.
+    #[test]
+    fn test_inventory_dual_role_node_appears_in_both_sections() {
+        let sdi = make_sdi_spec();
+        // tower pool has tower-cp-0 with roles: [control-plane, worker]
+        let cluster = make_cluster_def("tower", "tower");
+        let ini = generate_inventory(&cluster, &sdi).unwrap();
+
+        // tower-cp-0 must be in BOTH kube_control_plane AND kube_node
+        let cp_section = ini.split("[kube_control_plane]").nth(1).unwrap();
+        let cp_end = cp_section.find('[').unwrap_or(cp_section.len());
+        let cp_content = &cp_section[..cp_end];
+        assert!(
+            cp_content.contains("tower-cp-0"),
+            "dual-role node missing from kube_control_plane"
+        );
+
+        let node_section = ini.split("[kube_node]").nth(1).unwrap();
+        let node_end = node_section.find('[').unwrap_or(node_section.len());
+        let node_content = &node_section[..node_end];
+        assert!(
+            node_content.contains("tower-cp-0"),
+            "dual-role node missing from kube_node"
+        );
+    }
+
+    /// Edge case: kubespray_extra_vars with nested YAML (systemReserved) must merge correctly.
+    #[test]
+    fn test_cluster_vars_nested_extra_vars_merge() {
+        let common = make_common();
+        let mut cluster = make_cluster_def("sandbox", "sandbox");
+        cluster.kubespray_extra_vars = Some(
+            serde_yaml::from_str(
+                r#"
+kube_api_anonymous_auth: true
+kubelet_config_extra_args:
+  systemReserved:
+    cpu: "200m"
+    memory: "512Mi"
+  kubeReserved:
+    cpu: "200m"
+    memory: "512Mi"
+supplementary_addresses_in_ssl_keys:
+  - "100.64.0.1"
+"#,
+            )
+            .unwrap(),
+        );
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // Must be valid YAML
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&vars)
+            .unwrap_or_else(|e| panic!("nested extra_vars broke YAML: {e}\n---\n{vars}"));
+        assert!(parsed.is_mapping());
+
+        // Nested values must be present (serde_yaml may omit quotes for simple strings)
+        assert!(vars.contains("systemReserved:"), "missing systemReserved");
+        assert!(
+            vars.contains("cpu:") && vars.contains("200m"),
+            "missing cpu reservation"
+        );
+        assert!(
+            vars.contains("100.64.0.1"),
+            "missing supplementary SSL address"
+        );
     }
 }

@@ -6,8 +6,8 @@
 
 ## 2-클러스터 설계
 
-**Tower 클러스터** (playbox-0 위 k3s VM):
-- 경량 관리 플레인
+**Tower 클러스터** (playbox-0 위 SDI VM, Kubespray K8s):
+- 관리 플레인
 - 양쪽 클러스터를 관리하는 ArgoCD 실행
 - Sandbox 클러스터 리셋 시에도 유지됨
 - OpenTofu + libvirt로 생성
@@ -75,8 +75,8 @@ spread.yaml (루트 Application)
 
 ## Two-Cluster Design
 
-**Tower cluster** (k3s VM on playbox-0):
-- Lightweight management plane
+**Tower cluster** (SDI VM on playbox-0, Kubespray K8s):
+- Management plane
 - Runs ArgoCD that manages both clusters
 - Survives sandbox cluster resets
 - Created via OpenTofu + libvirt
