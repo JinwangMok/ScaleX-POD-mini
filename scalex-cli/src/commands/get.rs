@@ -400,10 +400,58 @@ fn facts_to_row(facts: &NodeFacts) -> BaremetalRow {
     }
 }
 
+/// Convert SdiPoolState list to flat row list for display. Pure function.
+fn sdi_pools_to_rows(pools: &[SdiPoolState]) -> Vec<SdiPoolRow> {
+    pools
+        .iter()
+        .flat_map(|pool| {
+            pool.nodes.iter().map(move |node| SdiPoolRow {
+                pool: pool.pool_name.clone(),
+                node: node.node_name.clone(),
+                ip: node.ip.clone(),
+                host: node.host.clone(),
+                cpu: node.cpu,
+                mem_gb: node.mem_gb,
+                disk_gb: node.disk_gb,
+                gpu: if node.gpu_passthrough {
+                    "VFIO".to_string()
+                } else {
+                    "-".to_string()
+                },
+                status: node.status.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Count nodes from inventory.ini content. Pure function.
+fn count_nodes_from_inventory(content: &str) -> u32 {
+    content
+        .lines()
+        .filter(|l| l.contains("ansible_host="))
+        .count() as u32
+}
+
+/// Extract cluster name from cluster-vars.yml content. Pure function.
+fn extract_cluster_name_from_vars(content: &str) -> Option<String> {
+    content
+        .lines()
+        .find(|l| l.starts_with("cluster_name:"))
+        .map(|l| {
+            l.split(':')
+                .nth(1)
+                .unwrap_or("")
+                .trim()
+                .trim_matches('"')
+                .to_string()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::baremetal::*;
+    use crate::models::sdi::{SdiNodeState, SdiPoolState};
 
     fn make_test_facts() -> NodeFacts {
         NodeFacts {
@@ -559,5 +607,126 @@ mod tests {
             classify_config_status("tunnel.json", true, false, 0, None),
             "OK"
         );
+    }
+
+    // ── Unit 4: SDI pools and clusters pure function tests ──
+
+    #[test]
+    fn test_sdi_pools_to_rows_basic() {
+        let pools = vec![SdiPoolState {
+            pool_name: "tower".to_string(),
+            purpose: "management".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "tower-cp-0".to_string(),
+                ip: "192.168.88.100".to_string(),
+                host: "playbox-0".to_string(),
+                cpu: 2,
+                mem_gb: 3,
+                disk_gb: 30,
+                gpu_passthrough: false,
+                status: "running".to_string(),
+            }],
+        }];
+        let rows = sdi_pools_to_rows(&pools);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pool, "tower");
+        assert_eq!(rows[0].node, "tower-cp-0");
+        assert_eq!(rows[0].gpu, "-");
+        assert_eq!(rows[0].status, "running");
+    }
+
+    #[test]
+    fn test_sdi_pools_to_rows_multi_pool_multi_node() {
+        let pools = vec![
+            SdiPoolState {
+                pool_name: "tower".to_string(),
+                purpose: "management".to_string(),
+                nodes: vec![SdiNodeState {
+                    node_name: "tower-cp-0".to_string(),
+                    ip: "192.168.88.100".to_string(),
+                    host: "playbox-0".to_string(),
+                    cpu: 2,
+                    mem_gb: 3,
+                    disk_gb: 30,
+                    gpu_passthrough: false,
+                    status: "running".to_string(),
+                }],
+            },
+            SdiPoolState {
+                pool_name: "sandbox".to_string(),
+                purpose: "workload".to_string(),
+                nodes: vec![
+                    SdiNodeState {
+                        node_name: "sandbox-cp-0".to_string(),
+                        ip: "192.168.88.110".to_string(),
+                        host: "playbox-0".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 60,
+                        gpu_passthrough: false,
+                        status: "running".to_string(),
+                    },
+                    SdiNodeState {
+                        node_name: "sandbox-w-0".to_string(),
+                        ip: "192.168.88.120".to_string(),
+                        host: "playbox-1".to_string(),
+                        cpu: 8,
+                        mem_gb: 16,
+                        disk_gb: 100,
+                        gpu_passthrough: true,
+                        status: "running".to_string(),
+                    },
+                ],
+            },
+        ];
+        let rows = sdi_pools_to_rows(&pools);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].pool, "tower");
+        assert_eq!(rows[1].pool, "sandbox");
+        assert_eq!(rows[2].pool, "sandbox");
+        assert_eq!(rows[2].gpu, "VFIO");
+    }
+
+    #[test]
+    fn test_sdi_pools_to_rows_empty() {
+        let rows = sdi_pools_to_rows(&[]);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_count_nodes_from_inventory() {
+        let content = r#"[all]
+tower-cp-0 ansible_host=192.168.88.100 ip=192.168.88.100
+sandbox-cp-0 ansible_host=192.168.88.110 ip=192.168.88.110
+sandbox-w-0 ansible_host=192.168.88.120 ip=192.168.88.120
+
+[kube_control_plane]
+tower-cp-0
+"#;
+        assert_eq!(count_nodes_from_inventory(content), 3);
+    }
+
+    #[test]
+    fn test_count_nodes_from_inventory_empty() {
+        assert_eq!(count_nodes_from_inventory(""), 0);
+        assert_eq!(count_nodes_from_inventory("[all]\n[kube_node]\n"), 0);
+    }
+
+    #[test]
+    fn test_extract_cluster_name_from_vars() {
+        let content = r#"kube_version: "1.33.1"
+cluster_name: "tower"
+dns_domain: "tower.local"
+"#;
+        assert_eq!(
+            extract_cluster_name_from_vars(content),
+            Some("tower".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_cluster_name_from_vars_missing() {
+        let content = "kube_version: \"1.33.1\"\n";
+        assert_eq!(extract_cluster_name_from_vars(content), None);
     }
 }

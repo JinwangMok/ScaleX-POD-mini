@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# lib/cluster.sh — Tower (k3s via OpenTofu) and Sandbox (kubespray) cluster operations
+# DEPRECATED — Part of legacy ./playbox CLI. Use scalex CLI instead.
+# lib/cluster.sh — Tower and Sandbox cluster operations (legacy)
 
 # --- Tower ---
 

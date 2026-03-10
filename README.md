@@ -211,7 +211,7 @@ kubectl -n argocd get secret argocd-initial-admin-secret \
 | `up` | 전체 프로비저닝 (7단계 순차 실행) |
 | `preflight` | 도구, values.yaml 검증, SSH 연결 테스트 |
 | `prepare-nodes` | Ansible로 노드 준비 (사용자 생성, netplan, 커널) |
-| `create-tower` | OpenTofu로 Tower VM 생성 (legacy, k3s→Kubespray 전환됨) |
+| `create-tower` | OpenTofu로 Tower VM 생성 (deprecated — use `scalex` CLI instead) |
 | `create-sandbox` | Kubespray로 Sandbox K8s 클러스터 생성 |
 | `bootstrap` | ArgoCD 설치, 시크릿 생성, spread.yaml 적용 |
 | `configure-oidc` | Keycloak OIDC realm/client/user 설정 |

@@ -1,5 +1,4 @@
-# ==================================================================
-# k8s-playbox/values.yaml — Single source of truth
+# DEPRECATED — Test fixture for legacy ./playbox CLI.
 # ==================================================================
 
 cluster:

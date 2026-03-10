@@ -9,7 +9,7 @@ Physical (4 bare-metal) → SDI (OpenTofu virtualization) → Node Pools → Clu
 
 **Primary CLI**: `scalex` (Rust, in `scalex-cli/`) — handles facts gathering, SDI provisioning, multi-cluster Kubespray, and resource queries.
 
-**Legacy CLI**: `./playbox` (bash) — deprecated, retained for reference. Uses k3s for tower which is being replaced by full Kubespray.
+**Legacy CLI**: `./playbox` (bash) — fully deprecated. Retained in `lib/` for historical reference only. Do NOT use.
 
 **Legacy sub-projects**: `.legacy-datax-kubespray/`, `.legacy-tofu/` — archived reference implementations.
 
@@ -17,7 +17,7 @@ Physical (4 bare-metal) → SDI (OpenTofu virtualization) → Node Pools → Clu
 
 - **Tower cluster**: Management cluster (ArgoCD, Keycloak, Cloudflare Tunnel). Provisioned via Kubespray on SDI VMs.
 - **Sandbox cluster**: Workload cluster. Provisioned via Kubespray on SDI VMs or bare-metal nodes.
-- **All clusters use Kubespray** (production-grade). k3s is deprecated.
+- **All clusters use Kubespray** (production-grade). No k3s.
 - **External access**: Cloudflare Tunnel + Tailscale. LAN access via switch.
 
 ## CLI (`scalex`)
@@ -133,6 +133,6 @@ shellcheck playbox lib/*.sh              # Shell lint
 ├── tests/                     # BATS + pytest + YAML validation
 ├── docs/                      # Operations guide (Cloudflare, Keycloak, kernel, access)
 ├── _generated/                # Gitignored output (SDI HCL, inventories, kubeconfigs)
-├── .legacy-tofu/              # Archived: old k3s-based tower VM (OpenTofu)
+├── .legacy-tofu/              # Archived: old tower VM config (OpenTofu, deprecated)
 └── .legacy-datax-kubespray/   # Archived: previous DataX kubespray reference
 ```

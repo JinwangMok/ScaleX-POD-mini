@@ -1,3 +1,4 @@
+# DEPRECATED — Test fixture for legacy ./playbox CLI.
 # Minimal valid config — 1 node, no tower
 cluster:
   name: playbox

@@ -1,5 +1,6 @@
 # ==================================================================
-# k8s-playbox/values.yaml — Single source of truth
+# DEPRECATED — This file is part of the legacy ./playbox CLI.
+# Use scalex CLI with config/k8s-clusters.yaml and config/sdi-specs.yaml instead.
 # ==================================================================
 
 cluster:

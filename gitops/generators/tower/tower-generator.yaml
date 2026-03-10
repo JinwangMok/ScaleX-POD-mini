@@ -9,6 +9,9 @@ spec:
   generators:
     - list:
         elements:
+          - appName: cilium
+            namespace: kube-system
+            syncWave: "1"
           - appName: argocd
             namespace: argocd
             syncWave: "0"

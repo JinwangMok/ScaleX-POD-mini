@@ -61,9 +61,109 @@ pub fn gitops_files_needing_replacement() -> Vec<&'static str> {
     ]
 }
 
+/// Base Cilium Helm values that are common across all clusters.
+/// k8sServiceHost is intentionally absent — it must be set per-cluster.
+const CILIUM_BASE_VALUES: &str = r#"kubeProxyReplacement: true
+operator:
+  replicas: 1
+ipam:
+  mode: kubernetes
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: false
+l2announcements:
+  enabled: true
+gatewayAPI:
+  enabled: true
+"#;
+
+/// Generate Cilium Helm values.yaml for a specific cluster.
+/// Pure function: merges base config with cluster-specific k8sServiceHost.
+pub fn generate_cilium_values(control_plane_ip: &str, service_port: u16) -> String {
+    format!(
+        "k8sServiceHost: \"{control_plane_ip}\"\nk8sServicePort: {service_port}\n{CILIUM_BASE_VALUES}"
+    )
+}
+
+/// Generate a Kustomize kustomization.yaml for a Cilium Helm chart deployment.
+/// Pure function.
+pub fn generate_cilium_kustomization(cilium_version: &str) -> String {
+    format!(
+        r#"apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+helmCharts:
+  - name: cilium
+    repo: https://helm.cilium.io/
+    version: {cilium_version}
+    releaseName: cilium
+    namespace: kube-system
+    valuesFile: values.yaml
+"#
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Unit 1: Cilium multi-cluster values generation ──
+
+    #[test]
+    fn test_generate_cilium_values_tower() {
+        let values = generate_cilium_values("192.168.88.100", 6443);
+        assert!(
+            values.contains("k8sServiceHost: \"192.168.88.100\""),
+            "tower cilium must have tower CP IP"
+        );
+        assert!(values.contains("k8sServicePort: 6443"));
+        assert!(values.contains("kubeProxyReplacement: true"));
+        assert!(values.contains("hubble:"));
+        assert!(values.contains("l2announcements:"));
+        assert!(values.contains("gatewayAPI:"));
+
+        // Must be valid YAML
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&values)
+            .unwrap_or_else(|e| panic!("cilium values not valid YAML: {e}\n{values}"));
+        assert!(parsed.is_mapping());
+    }
+
+    #[test]
+    fn test_generate_cilium_values_sandbox() {
+        let values = generate_cilium_values("192.168.88.110", 6443);
+        assert!(
+            values.contains("k8sServiceHost: \"192.168.88.110\""),
+            "sandbox cilium must have sandbox CP IP"
+        );
+        assert!(!values.contains("192.168.88.100"), "must not contain tower IP");
+    }
+
+    #[test]
+    fn test_generate_cilium_values_different_clusters_differ() {
+        let tower = generate_cilium_values("192.168.88.100", 6443);
+        let sandbox = generate_cilium_values("192.168.88.110", 6443);
+        assert_ne!(tower, sandbox, "different clusters must produce different values");
+        // But both share the same base structure
+        assert!(tower.contains("kubeProxyReplacement: true"));
+        assert!(sandbox.contains("kubeProxyReplacement: true"));
+    }
+
+    #[test]
+    fn test_generate_cilium_kustomization() {
+        let kust = generate_cilium_kustomization("1.17.5");
+        assert!(kust.contains("version: 1.17.5"));
+        assert!(kust.contains("name: cilium"));
+        assert!(kust.contains("repo: https://helm.cilium.io/"));
+        assert!(kust.contains("valuesFile: values.yaml"));
+
+        // Must be valid YAML
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&kust)
+            .unwrap_or_else(|e| panic!("kustomization not valid YAML: {e}"));
+        assert!(parsed.is_mapping());
+    }
 
     // ── Sprint 5: Disk-based generator YAML correctness tests ──
 

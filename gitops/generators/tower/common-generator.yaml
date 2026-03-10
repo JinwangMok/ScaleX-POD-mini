@@ -9,9 +9,6 @@ spec:
   generators:
     - list:
         elements:
-          - appName: cilium
-            namespace: kube-system
-            syncWave: "1"
           - appName: cilium-resources
             namespace: kube-system
             syncWave: "2"

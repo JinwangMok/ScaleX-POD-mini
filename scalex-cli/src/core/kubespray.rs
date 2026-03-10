@@ -151,6 +151,7 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
     vars.push_str("metallb_enabled: false\n");
     vars.push_str("ingress_nginx_enabled: false\n");
     vars.push_str("local_path_provisioner_enabled: false\n");
+    vars.push_str("node_feature_discovery_enabled: false\n");
 
     // Cluster network
     vars.push_str(&format!(
@@ -751,6 +752,7 @@ mod tests {
             "metallb_enabled",
             "ingress_nginx_enabled",
             "local_path_provisioner_enabled",
+            "node_feature_discovery_enabled",
         ];
 
         for key in &required_keys {
@@ -776,6 +778,7 @@ mod tests {
             ("metallb_enabled", "false"),
             ("ingress_nginx_enabled", "false"),
             ("local_path_provisioner_enabled", "false"),
+            ("node_feature_discovery_enabled", "false"),
         ];
 
         for (key, expected) in &disabled_addons {

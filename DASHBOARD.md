@@ -6,171 +6,185 @@
 
 ## 현재 상태: 130 tests pass / clippy clean / fmt clean
 
-**코드 규모**: ~7,500 lines Rust, 22 source files, 55+ pure functions
+**코드 규모**: ~7,600 lines Rust, 22 source files, 55+ pure functions
 **GitOps**: 31 YAML files (bootstrap + generators + common/tower/sandbox apps)
 
 ---
 
-## 비판적 Gap 분석 — Checklist 대비 정직한 현황
+## 이전 DASHBOARD.md 비판적 분석
 
-### 이전 DASHBOARD.md의 한계
+이전 DASHBOARD.md는 대부분 항목을 "완료"로 표기하고 Sprint로 나눈 향후 계획을 제시했으나, 다음과 같은 **근본적 문제**를 가지고 있었다:
 
-이전 DASHBOARD.md는 대부분 항목을 "완료"로 표기했으나, 다음 구조적 문제를 간과하거나 축소 보고했다:
+### 1. "코드 완료"와 "검증 완료"의 혼동
+- 대부분의 항목에 "코드 완료" 또는 "완료"로 표기했으나, **실제 동작을 검증한 테스트가 없는 영역**이 다수 존재
+- `scalex get sdi-pools`: 0개 테스트, `scalex get clusters`: 0개 테스트, `scalex sdi clean`: 0개 테스트
+- 순수 함수가 존재한다는 것과, 해당 함수가 요구사항을 만족한다는 것은 별개
 
-1. **Kubespray addon 비활성화 누락**: DataX는 `cert_manager_enabled: false`, `argocd_enabled: false` 등 Kubespray 내장 addon을 명시적으로 비활성화. 우리 `generate_cluster_vars()`는 이를 생략 → Kubespray가 기본값으로 addon을 배포하면 ArgoCD 배포와 충돌 가능.
-2. **Secrets 생성 자동화 부재**: GitOps 앱들이 `keycloak-admin`, `keycloak-db`, `cloudflared-tunnel-credentials` 시크릿을 참조하지만, `scalex` CLI에 시크릿 생성 명령/함수가 없음. Checklist #10 "배포 장애 없게 보장" 미달성.
-3. **k3s 잔존 참조**: `README.md`, `CLAUDE.md`, `values.yaml`, `lib/cluster.sh` 등 14개 파일에 k3s 참조 잔존. Checklist #9 "k3s 배제" 불완전.
-4. **`scalex get clusters` 출력 빈약**: kubeconfig 경로만 표시하고 실제 클러스터 상태(node count, version) 미표시.
-5. **Cilium k8sServiceHost 하드코딩**: `gitops/common/cilium/values.yaml`에 `192.168.88.8` 하드코딩. 다른 환경 재사용 불가.
+### 2. 아키텍처적 결함 미발견
+- **Cilium `k8sServiceHost` 하드코딩 (`192.168.88.8`)**: `gitops/common/cilium/values.yaml`에 tower control-plane IP가 하드코딩되어 있어 **sandbox 클러스터에서는 Cilium이 정상 동작하지 않음**. common/ 디렉토리가 양쪽 클러스터에 배포되므로 치명적 오류.
+- 이 문제는 "Cilium k8sServiceHost 하드코딩" 항목으로 언급만 되고 해결되지 않음
+
+### 3. Sprint 계획의 비현실성
+- Sprint 1~4로 분류했으나 실제 구현 우선순위와 의존관계가 불명확
+- "예상 결과: +N tests"로 정량화했으나, 실제 미해결 문제의 심각도를 반영하지 못함
+- `node_feature_discovery_enabled: false` 누락을 표로 보여주면서도 Sprint에 반영하지 않음
+
+### 4. k3s 잔존 참조 과소평가
+- 8개 파일에 k3s 참조가 있음에도 Sprint 4(마지막)로 미룸
+- Checklist #9에서 "k3s 배제"가 핵심 요구사항인데 우선순위 불일치
 
 ---
 
-## Checklist 재검증 — 정직한 상태
+## Checklist 재검증 — 정직한 상태 (2026-03-10)
 
-| # | 질문 | 상태 | 근거 | 미해결 |
-|---|------|------|------|--------|
-| 1 | OpenTofu 전체 가상화 + 리소스 풀 | **코드 완료** | core/tofu.rs HCL 생성 + resolve_network_config() + sdi-state.json | 실제 HW 검증 불가 (코드 수준 완료) |
-| 2 | DataX kubespray 반영 | **완료** | 핵심 설정 + addon 비활성화 반영 | Sprint 1에서 해결 |
-| 3 | Keycloak 설정 | **가이드 완료** | Helm chart + docs/ops-guide.md | 사용자 수동 작업 필요 (Realm/Client) |
-| 4 | CF tunnel GitOps | **완료** | gitops/tower/cloudflared-tunnel/ | - |
-| 5 | CF tunnel 완성 | **가이드 완료** | docs/ops-guide.md Section 1 | 사용자 WebUI 설정 필요 |
-| 6 | CLI 이름 scalex | **완료** | Cargo.toml name = "scalex" | - |
-| 7 | Rust CLI + FP | **완료** | 50+ pure functions, 116 tests | - |
-| 8 | CLI 기능 | **완료** | 전 명령어 구현 + secrets 순수 함수 | Sprint 2에서 해결 |
-| 9 | 베어메탈 확장성 | **완료** | ClusterMode::Baremetal + k3s 참조 정리 | Sprint 4에서 해결 |
-| 10 | credentials 구조화 | **완료** | .example 템플릿 + secrets 생성 함수 | Sprint 2에서 해결 |
-| 11 | 커널 튜닝 | **완료** | docs/ops-guide.md + host_prepare.rs | - |
-| 12a | 디렉토리 구조 | **완료** | Kyverno는 common/ (정책 일관성) | - |
-| 12b | 멱등성 | **완료** | 순수 함수 멱등 + resolve_network_config() | - |
-| 13 | CF tunnel 가이드 | **완료** | docs/ops-guide.md Section 1 | - |
-| 14 | 외부 접근 | **완료** | CF Tunnel + Tailscale + LAN 가이드 | - |
+| # | 질문 | 상태 | 미해결 사항 |
+|---|------|------|------------|
+| 1 | OpenTofu 전체 가상화 + 리소스 풀 | **코드 완료** | `sdi init` (no flag) vs `sdi init <spec>` 차별화 검증 필요 |
+| 2 | DataX kubespray 반영 | **90%** | `node_feature_discovery_enabled: false` 누락 |
+| 3 | Keycloak 설정 | **가이드 완료** | 사용자 수동 작업 필요 (Realm/Client/Group) |
+| 4 | CF tunnel GitOps 배포 | **완료** | — |
+| 5 | CF tunnel 완성 | **가이드 완료** | 사용자 WebUI 설정 필요 |
+| 6 | CLI 이름 scalex | **완료** | — |
+| 7 | Rust + FP 스타일 | **완료** | 130 tests, 55+ pure functions |
+| 8 | CLI 기능 완성도 | **90%** | `get sdi-pools`/`get clusters` 테스트 0개, secrets apply 명령 없음 |
+| 9 | 베어메탈 확장성 / k3s 배제 | **미완성** | **8개 파일에 k3s 참조 잔존** |
+| 10 | Secrets 구조화 | **코드 완료** | secrets.rs 순수 함수 완료, CLI apply 미구현 |
+| 11 | 커널 튜닝 가이드 | **완료** | docs/ops-guide.md Section 3 |
+| 12a | 디렉토리 구조 | **완료** | Kyverno → common/ 결정 |
+| 12b | 멱등성 | **완료** | 순수 함수 기반 |
+| 13 | CF tunnel 가이드 | **완료** | docs/ops-guide.md Section 1 |
+| 14 | 외부 접근 가이드 | **완료** | docs/ops-guide.md Section 4 |
 
-### Checklist #2 상세 — DataX Kubespray 설정 비교
+---
 
-| DataX 설정 | 값 | 현재 반영 | 비고 |
-|-----------|-----|----------|------|
-| kube_proxy_mode | ipvs | **개선됨** → `kube_proxy_remove: true` | Cilium이 kube-proxy 완전 대체 (더 우수) |
-| kube_network_plugin | cni | ✅ 반영 | Cilium용 generic CNI |
-| container_manager | containerd | ✅ 반영 | |
-| enable_nodelocaldns | true | ✅ 반영 | 169.254.25.10 |
-| helm_enabled | true | ✅ 반영 | |
-| gateway_api_enabled | true | ✅ 반영 | |
-| kube_network_node_prefix | 24 | ✅ 반영 | |
-| ntp_enabled | true | ✅ 반영 | |
-| cert_manager_enabled | false | **누락** | Kubespray 기본값=false이나 명시 필요 |
-| argocd_enabled | false | **누락** | 동일 |
-| metallb_enabled | false | **누락** | 동일 |
-| ingress_nginx_enabled | false | **누락** | 동일 |
-| local_path_provisioner_enabled | false | **누락** | 동일 |
-| node_feature_discovery_enabled | false | **누락** | 동일 |
+## 치명적 결함 (Critical Defects)
 
-### Checklist #8 CLI 기능 상세
+### CRITICAL-1: Cilium k8sServiceHost 하드코딩
 
-| 기능 | 구현 | 테스트 | 미해결 |
-|------|------|--------|--------|
-| `scalex facts` | ✅ | 2 | - |
-| `scalex sdi init` (no flag) | ✅ | 11 | - |
-| `scalex sdi init <spec>` | ✅ | 5 | - |
-| `scalex sdi clean --hard` | ✅ | 0 (IO 전용) | - |
-| `scalex sdi sync` | ✅ | 7 | - |
-| `scalex cluster init` | ✅ | 25 | - |
-| `scalex get baremetals` | ✅ | 3 | - |
-| `scalex get sdi-pools` | ✅ | 0 (tabled) | - |
-| `scalex get clusters` | ✅ | 0 (tabled) | - |
-| `scalex get config-files` | ✅ | 6 | - |
-| **`scalex secrets create`** | **미구현** | 0 | **Sprint 2에서 추가** |
+**파일**: `gitops/common/cilium/values.yaml`
+```yaml
+k8sServiceHost: "192.168.88.8"  # ← tower CP IP 하드코딩
+k8sServicePort: 6443
+```
 
-### Checklist #10 상세 — Secrets 관리 현황
+**문제**: `common/cilium/`은 ApplicationSet으로 tower와 sandbox 모두에 배포됨. sandbox의 control-plane IP는 다르므로 **sandbox Cilium이 API 서버에 연결 실패**.
 
-| Secret | GitOps 참조 위치 | 생성 방법 | 상태 |
-|--------|-----------------|----------|------|
-| `keycloak-admin` | tower/keycloak/values.yaml | 수동 kubectl | **자동화 필요** |
-| `keycloak-db` | tower/keycloak/values.yaml | 수동 kubectl | **자동화 필요** |
-| `cloudflared-tunnel-credentials` | tower/cloudflared-tunnel/values.yaml | 수동 kubectl | **자동화 필요** |
-| ArgoCD admin | tower/argocd/values.yaml | ArgoCD 자동 생성 | ✅ |
+**해결 방안**:
+- Cilium을 common/에서 분리하여 `tower/cilium/`, `sandbox/cilium/` 각각으로 이동
+- 또는 Kustomize overlay로 클러스터별 k8sServiceHost 오버라이드
+- `scalex cluster init`이 클러스터별 Cilium values를 업데이트하는 순수 함수 추가
+
+### CRITICAL-2: k3s 잔존 참조 (8개 파일)
+
+Checklist #9 "k3s 배제"에 직접 위배:
+- `README.md` — k3s tower 설명
+- `CLAUDE.md` — "k3s for tower which is being replaced"
+- `values.yaml` — k3s 설정
+- `lib/cluster.sh` — k3s 설치/제거 함수
+- `tests/fixtures/values-full.yaml`, `tests/fixtures/values-minimal.yaml` — k3s 참조
+- `PROMPT.md` — k3s 참조
+
+---
+
+## 미달성 항목 근본 원인 분석
+
+| 미달성 항목 | 근본 원인 |
+|------------|----------|
+| Cilium 하드코딩 | multi-cluster에서 common/ 앱의 클러스터별 값 차이를 고려하지 않은 초기 설계 |
+| k3s 잔존 | 레거시 코드와 신규 코드가 공존하며 정리 시점을 놓침 |
+| `node_feature_discovery_enabled` 누락 | DataX 설정 비교 시 addon 목록이 불완전 |
+| get 명령 테스트 부재 | IO 의존 명령의 순수 함수 분리가 불완전 |
+| secrets apply 미구현 | 순수 함수(generate)는 완료, CLI 서브커맨드(apply)는 미연결 |
 
 ---
 
 ## 실행 계획 — TDD 방식, 최소 핵심 단위
 
-### Sprint 1: Kubespray addon 비활성화 설정 추가
+### Unit 1: Cilium 멀티클러스터 분리 (CRITICAL-1 해결)
+> Cilium values를 클러스터별로 분리하고 `scalex cluster init`이 k8sServiceHost를 자동 설정
 
-**목표**: ArgoCD로 배포되는 addon이 Kubespray에서도 중복 배포되지 않도록 명시적 비활성화
+**1-1**: `generate_cilium_values()` 순수 함수 추가 (TDD)
+- 입력: cluster control-plane IP, 기본 Cilium config
+- 출력: 클러스터별 Cilium values.yaml 문자열
+- 테스트: tower IP → values에 tower IP, sandbox IP → values에 sandbox IP
 
-**TDD Cycle 1-1**: `generate_cluster_vars()`에 addon 비활성화 추가
-- RED: 테스트 — `cert_manager_enabled: false` 등 6개 키가 출력에 포함되는지 확인
-- GREEN: `generate_cluster_vars()`에 addon disable 섹션 추가
-- REFACTOR: CommonConfig에 addon disable 필드 추가 vs 하드코딩 결정
+**1-2**: GitOps 구조 변경
+- `gitops/common/cilium/` → 기본 values 유지 (k8sServiceHost 제거)
+- `gitops/tower/cilium/`, `gitops/sandbox/cilium/` 각각에 Kustomize overlay 추가
+- 또는 각 generator에서 직접 참조
 
-**예상 결과**: +2 tests, addon 충돌 방지 보장
+**1-3**: generator YAML 업데이트 및 테스트
+- tower/sandbox 각각의 generator에서 클러스터별 cilium 참조
+- 기존 gitops YAML 파싱 테스트 업데이트
 
-### Sprint 2: Secrets 생성 순수 함수 추가
+### Unit 2: Kubespray addon 완전 비활성화 (Checklist #2 해결)
+> `node_feature_discovery_enabled: false` 추가
 
-**목표**: `credentials/secrets.yaml` → K8s Secret YAML 생성 순수 함수
+**2-1**: `generate_cluster_vars()`에 누락 addon 추가 (TDD)
+- RED: `node_feature_discovery_enabled: false` 포함 여부 테스트
+- GREEN: 코드에 추가
+- REFACTOR: 기존 addon 비활성화 섹션과 통합
 
-**TDD Cycle 2-1**: `generate_k8s_secret_yaml()` 순수 함수
-- 입력: secret name, namespace, key-value pairs
-- 출력: K8s Secret YAML string (base64 encoded)
-- 테스트: 3개 (keycloak-admin, keycloak-db, cloudflared-tunnel)
+### Unit 3: k3s 잔존 참조 정리 (CRITICAL-2 해결)
+> 비-레거시 파일에서 k3s 참조 완전 제거
 
-**TDD Cycle 2-2**: `parse_secrets_config()` 순수 함수
-- `credentials/secrets.yaml` 파싱 → 구조화된 시크릿 목록
-- 테스트: 2개 (정상 파싱, 빈 파일)
+**3-1**: README.md, CLAUDE.md 업데이트
+**3-2**: values.yaml → deprecated 파일 제거 또는 이동
+**3-3**: lib/cluster.sh k3s 함수 제거 (레거시 → .legacy-* 이동 검토)
+**3-4**: 테스트 fixture 정리 (values-full/minimal.yaml k3s 참조 제거)
 
-**TDD Cycle 2-3**: `generate_all_cluster_secrets()` 순수 함수
-- 클러스터별 필요 시크릿 결정 + YAML 생성
-- 테스트: 2개 (tower 시크릿 3개, sandbox 시크릿 0개)
+### Unit 4: `get` 명령 테스트 보강
+> sdi-pools, clusters 포맷팅 순수 함수에 테스트 추가
 
-**예상 결과**: +7 tests, secrets.yaml → K8s Secret YAML 파이프라인 완성
+**4-1**: `get sdi-pools` 출력 포맷팅 테스트 (TDD)
+- pool state → table 문자열 변환 순수 함수 검증
+**4-2**: `get clusters` 출력 포맷팅 테스트 (TDD)
+- cluster inventory → table 문자열 변환 순수 함수 검증
 
-### Sprint 3: 추가 엣지케이스 테스트 및 검증
+### Unit 5: Secrets CLI apply 연결
+> `scalex secrets apply` 서브커맨드 추가
 
-**TDD Cycle 3-1**: Inventory 생성 — dual-role 노드 검증
-- control-plane + worker 역할을 가진 노드가 두 섹션 모두에 포함되는지
-- 테스트: 1개
-
-**TDD Cycle 3-2**: Cluster vars — extra_vars 병합 YAML 정합성
-- kubespray_extra_vars에 중첩된 YAML (systemReserved 등)이 올바르게 병합되는지
-- 테스트: 1개
-
-**TDD Cycle 3-3**: SDI spec — GPU passthrough 노드의 VFIO 스크립트 생성 검증
-- devices.gpu_passthrough: true인 노드에 대해 VFIO 설정 스크립트 생성 확인
-- 테스트: 1개
-
-**예상 결과**: +3 tests, 엣지케이스 커버리지 강화
-
-### Sprint 4: k3s 레거시 참조 정리 및 문서 업데이트
-
-**목표**: 프로덕션 수준이 아닌 k3s 참조 제거 (Checklist #9)
-
-- `README.md`: k3s → Kubespray 업데이트
-- `CLAUDE.md`: k3s 참조 제거
-- `values.yaml`: deprecated 표기 강화 또는 파일 제거 검토
-- 레거시 파일(.legacy-tofu/, lib/cluster.sh 등): 이미 deprecated이므로 유지 (참고용)
-
-**예상 결과**: 비-레거시 파일에서 k3s 참조 0건
+**5-1**: `secrets apply` 명령 구현 — secrets.rs 순수 함수를 CLI에 연결
+- `credentials/secrets.yaml` 파싱 → K8s Secret YAML 생성 → kubectl apply
 
 ---
 
-## 테스트 분포 현황 (116 tests)
+## Checklist #2 상세 — DataX Kubespray 설정 비교
 
-| 모듈 | 파일 | 테스트 수 | 비고 |
-|------|------|-----------|------|
-| core | tofu.rs | 8 | HCL 생성 순수 함수 |
-| core | kubespray.rs | 17 | inventory + cluster-vars 생성 |
-| core | gitops.rs | 18 | URL 교체 + YAML 정합성 + placeholder 완전성 |
-| core | host_prepare.rs | 10 | 스크립트 생성 + VFIO |
-| core | validation.rs | 9 | .example 파싱 + cross-config |
-| core | sync.rs | 7 | diff 계산 + 충돌 감지 |
-| core | resource_pool.rs | 5 | 리소스 요약 |
-| core | config.rs | 7 | baremetal config 로드 + network defaults |
-| core | ssh.rs | 2 | SSH 명령 생성 |
-| commands | get.rs | 9 | facts_to_row + classify_config_status |
-| commands | facts.rs | 2 | 스크립트 생성 + 파싱 |
-| commands | sdi.rs | 8 | resolve_network_config, build_host_infra_inputs, build_pool_state |
-| commands | cluster.rs | 7 | clusters_requiring_sdi, find_control_plane_ip, gitops_update |
-| models | cluster.rs | 5 | 역직렬화 |
-| models | sdi.rs | 2 | 역직렬화 |
+| DataX 설정 | 값 | 현재 반영 | 비고 |
+|-----------|-----|----------|------|
+| kube_proxy_mode | ipvs | **개선됨** → `kube_proxy_remove: true` | Cilium 대체 |
+| kube_network_plugin | cni | ✅ | Cilium용 |
+| container_manager | containerd | ✅ | |
+| enable_nodelocaldns | true | ✅ | |
+| helm_enabled | true | ✅ | |
+| gateway_api_enabled | true | ✅ | |
+| kube_network_node_prefix | 24 | ✅ | |
+| ntp_enabled | true | ✅ | |
+| cert_manager_enabled | false | ✅ | |
+| argocd_enabled | false | ✅ | |
+| metallb_enabled | false | ✅ | |
+| ingress_nginx_enabled | false | ✅ | |
+| local_path_provisioner_enabled | false | ✅ | |
+| node_feature_discovery_enabled | false | **누락** | Unit 2에서 해결 |
+
+---
+
+## Checklist #8 CLI 기능 상세
+
+| 기능 | 구현 | 테스트 | 미해결 |
+|------|------|--------|--------|
+| `scalex facts` | ✅ | 2 | — |
+| `scalex sdi init` (no flag) | ✅ | 11 | — |
+| `scalex sdi init <spec>` | ✅ | 5 | — |
+| `scalex sdi clean --hard` | ✅ | 0 | IO 전용 (테스트 불필요) |
+| `scalex sdi sync` | ✅ | 7 | — |
+| `scalex cluster init` | ✅ | 25 | — |
+| `scalex get baremetals` | ✅ | 3 | — |
+| `scalex get sdi-pools` | ✅ | **0** | Unit 4에서 추가 |
+| `scalex get clusters` | ✅ | **0** | Unit 4에서 추가 |
+| `scalex get config-files` | ✅ | 6 | — |
+| `scalex secrets apply` | **미구현** | 0 | Unit 5에서 추가 |
 
 ---
 
@@ -181,7 +195,7 @@
 |-----|-----------|------|------|
 | cluster-config | 0 | ✅ | ConfigMap |
 | argocd | 0 | ✅ | Helm 8.1.1 |
-| cilium | 1 | ✅ | Helm 1.17.5 |
+| cilium | 1 | **CRITICAL** | k8sServiceHost 하드코딩 → Unit 1 |
 | cert-manager | 1 | ✅ | Helm v1.18.2 |
 | kyverno | 1 | ✅ | Helm 3.3.7 |
 | cilium-resources | 2 | ✅ | L2 + LB Pool |
@@ -194,25 +208,12 @@
 |-----|-----------|------|------|
 | cluster-config | 0 | ✅ | |
 | test-resources | 0 | ✅ | |
-| cilium | 1 | ✅ | |
+| cilium | 1 | **CRITICAL** | 잘못된 k8sServiceHost → Unit 1 |
 | cert-manager | 1 | ✅ | |
 | kyverno | 1 | ✅ | |
 | local-path-provisioner | 1 | ✅ | |
 | cilium-resources | 2 | ✅ | |
 | rbac | 4 | ✅ | OIDC ClusterRoleBindings |
-
-**알려진 이슈**: Sandbox 서버 URL 3곳이 placeholder (`https://sandbox-api:6443`). `scalex cluster init`이 실제 URL로 교체하도록 설계됨 (gitops.rs 테스트 완료).
-
----
-
-## Kyverno 배치 결정
-
-**결정: `common/` (모든 클러스터에 배포)**
-
-근거:
-- 보안 정책 일관성 (pod security, image registry 제한)
-- Tower에서도 ArgoCD 자체 보호 정책 필요
-- 클러스터별 예외는 Kustomize overlay로 처리
 
 ---
 
@@ -227,3 +228,27 @@
 4. **config/ 파일 작성**
    - `sdi-specs.yaml` (VM 풀 정의)
    - `k8s-clusters.yaml` (클러스터 정의)
+
+---
+
+## 테스트 분포 현황 (130 tests)
+
+| 모듈 | 파일 | 테스트 수 |
+|------|------|-----------|
+| core | kubespray.rs | 17 |
+| core | gitops.rs | 18 |
+| core | tofu.rs | 8 |
+| core | host_prepare.rs | 10 |
+| core | validation.rs | 9 |
+| core | sync.rs | 7 |
+| core | config.rs | 7 |
+| core | resource_pool.rs | 5 |
+| core | secrets.rs | 9 |
+| core | ssh.rs | 2 |
+| commands | get.rs | 9 |
+| commands | cluster.rs | 7 |
+| commands | sdi.rs | 8 |
+| commands | facts.rs | 2 |
+| models | cluster.rs | 5 |
+| models | sdi.rs | 2 |
+| **합계** | | **130** |

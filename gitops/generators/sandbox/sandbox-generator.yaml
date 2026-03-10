@@ -10,6 +10,9 @@ spec:
   generators:
     - list:
         elements:
+          - appName: cilium
+            namespace: kube-system
+            syncWave: "1"
           - appName: local-path-provisioner
             namespace: local-path-storage
             syncWave: "1"
