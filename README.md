@@ -414,7 +414,7 @@ kubectl apply -f gitops/bootstrap/spread.yaml
 ## Project Structure
 
 ```
-scalex-cli/                # Rust CLI — 283 tests, 0 clippy warnings
+scalex-cli/                # Rust CLI — 300 tests, 0 clippy warnings
   src/commands/            #   facts, sdi, cluster, get, status, kernel-tune, secrets
   src/core/                #   config, kubespray, tofu, gitops, kernel, validation, ...
   src/models/              #   baremetal, cluster, sdi data models
