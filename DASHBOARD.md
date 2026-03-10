@@ -48,13 +48,13 @@
 
 ## Phase 5-6: Advanced
 
-- [ ] **5-1** `scalex sdi sync`
+- [x] **5-1** `scalex sdi sync` (베어메탈 추가/삭제 정합: diff 계산, VM 사이드이펙트 감지, 자동 facts 수집 + 호스트 준비)
 - [x] **5-2** `scalex get config-files` (YAML 유효성 검증 + 파일 존재 확인)
 - [x] **5-3** 커널 파라미터 튜닝 가이드 (`docs/ops-guide.md` Section 3)
 - [x] **5-4** Cloudflare Tunnel 상세 가이드 (`docs/ops-guide.md` Section 1)
 - [x] **5-5** LAN 내부 접근 가이드 (`docs/ops-guide.md` Section 4)
 - [x] **5-6** Keycloak 완성 가이드 — redirect URI, 그룹 할당 (`docs/ops-guide.md` Section 2)
-- [ ] **6-1** 베어메탈 직접 사용 모드
+- [x] **6-1** 베어메탈 직접 사용 모드 (cluster_mode: baremetal, baremetal_nodes 직접 지정, SDI 없이 kubespray 적용)
 
 ---
 
@@ -68,9 +68,9 @@
 | 4 | CF tunnel GitOps | **Yes** (Helm chart via ArgoCD) | Done |
 | 5 | CF tunnel 완성 | **가이드 완료** (사용자 WebUI 설정 필요) | docs |
 | 6 | CLI 이름 scalex | **scalex** (Rust) | Done |
-| 7 | Rust CLI | **Yes** (26 tests, clippy clean, FP style) | Done |
-| 8 | CLI 기능 | **facts/get/sdi/cluster 완료** | Done |
-| 9 | 베어메탈 확장성 | 설계 완료 (mode: baremetal 향후 추가) | 6 |
+| 7 | Rust CLI | **Yes** (29 tests, clippy clean, FP style) | Done |
+| 8 | CLI 기능 | **facts/get/sdi(+sync)/cluster 완료** | Done |
+| 9 | 베어메탈 확장성 | **완료** (cluster_mode: baremetal 지원, SDI 없이 kubespray 직접 적용) | Done |
 | 10 | credentials 구조화 | **완료** (secrets.yaml fallback) | Done |
 | 11 | 커널 튜닝 | **가이드 완료** (storage/network/IOMMU) | docs |
 | 12 | 디렉토리 구조 | **완료** (common/tower/sandbox + scalex-cli + config + credentials) | Done |
@@ -81,7 +81,7 @@
 
 ## 남은 작업 우선순위
 
-1. **Phase 4: GitOps 재구조화** — `gitops/common/tower/sandbox` 분리, multi-cluster ApplicationSet
-2. **3-7: ArgoCD 원격 클러스터 등록** — Phase 4와 함께
-3. **5-1: scalex sdi sync** — 베어메탈 추가/삭제 정합
-4. **6-1: 베어메탈 직접 사용 모드** — SDI 없이 kubespray 직접 적용
+모든 Phase 완료. 사용자 수동 작업만 남음:
+- Cloudflare Tunnel WebUI 설정 (`docs/ops-guide.md` Section 1)
+- Keycloak Realm/Client 설정 (`docs/ops-guide.md` Section 2)
+- Sandbox 클러스터 실제 server URL 교체 (`gitops/projects/sandbox-project.yaml`)

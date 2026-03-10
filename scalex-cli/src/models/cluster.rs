@@ -47,10 +47,33 @@ fn default_cgroup_driver() -> String {
     "systemd".to_string()
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClusterMode {
+    #[default]
+    Sdi,
+    Baremetal,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BaremetalNode {
+    pub node_name: String,
+    pub ip: String,
+    pub roles: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClusterDef {
     pub cluster_name: String,
+    /// "sdi" (default) or "baremetal"
+    #[serde(default)]
+    pub cluster_mode: ClusterMode,
+    /// SDI pool name (required when mode=sdi)
+    #[serde(default)]
     pub cluster_sdi_resource_pool: String,
+    /// Direct baremetal nodes (required when mode=baremetal)
+    #[serde(default)]
+    pub baremetal_nodes: Vec<BaremetalNode>,
     #[serde(default)]
     pub cluster_role: String,
     pub network: ClusterNetwork,
@@ -157,5 +180,42 @@ config:
             config.config.argocd.as_ref().unwrap().tower_manages,
             vec!["sandbox"]
         );
+        // Default mode should be Sdi
+        assert_eq!(config.config.clusters[0].cluster_mode, ClusterMode::Sdi);
+    }
+
+    #[test]
+    fn test_parse_baremetal_cluster() {
+        let yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+  clusters:
+    - cluster_name: "prod"
+      cluster_mode: "baremetal"
+      cluster_role: "workload"
+      baremetal_nodes:
+        - node_name: "node-0"
+          ip: "10.0.0.1"
+          roles: [control-plane, etcd]
+        - node_name: "node-1"
+          ip: "10.0.0.2"
+          roles: [worker]
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+"#;
+        let config: K8sClustersConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.config.clusters[0].cluster_mode,
+            ClusterMode::Baremetal
+        );
+        assert_eq!(config.config.clusters[0].baremetal_nodes.len(), 2);
+        assert_eq!(
+            config.config.clusters[0].baremetal_nodes[0].node_name,
+            "node-0"
+        );
+        assert_eq!(config.config.clusters[0].baremetal_nodes[1].ip, "10.0.0.2");
     }
 }

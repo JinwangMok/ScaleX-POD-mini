@@ -148,6 +148,66 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
     vars
 }
 
+/// Generate kubespray inventory.ini for a baremetal cluster (no SDI layer).
+/// Pure function.
+pub fn generate_inventory_baremetal(cluster: &ClusterDef) -> Result<String, String> {
+    if cluster.baremetal_nodes.is_empty() {
+        return Err(format!(
+            "Cluster '{}' has mode=baremetal but no baremetal_nodes defined",
+            cluster.cluster_name
+        ));
+    }
+
+    let mut ini = String::new();
+
+    // [all] section
+    ini.push_str("[all]\n");
+    for node in &cluster.baremetal_nodes {
+        ini.push_str(&format!(
+            "{name} ansible_host={ip} ip={ip} etcd_member_name={name}\n",
+            name = node.node_name,
+            ip = node.ip,
+        ));
+    }
+    ini.push('\n');
+
+    // [kube_control_plane]
+    ini.push_str("[kube_control_plane]\n");
+    for node in &cluster.baremetal_nodes {
+        if node.roles.iter().any(|r| r == "control-plane") {
+            ini.push_str(&format!("{}\n", node.node_name));
+        }
+    }
+    ini.push('\n');
+
+    // [etcd]
+    ini.push_str("[etcd]\n");
+    for node in &cluster.baremetal_nodes {
+        if node
+            .roles
+            .iter()
+            .any(|r| r == "etcd" || r == "control-plane")
+        {
+            ini.push_str(&format!("{}\n", node.node_name));
+        }
+    }
+    ini.push('\n');
+
+    // [kube_node]
+    ini.push_str("[kube_node]\n");
+    for node in &cluster.baremetal_nodes {
+        if node.roles.iter().any(|r| r == "worker") {
+            ini.push_str(&format!("{}\n", node.node_name));
+        }
+    }
+    ini.push('\n');
+
+    // [k8s_cluster:children]
+    ini.push_str("[k8s_cluster:children]\nkube_control_plane\nkube_node\n");
+
+    Ok(ini)
+}
+
 /// Find the SDI pool matching a cluster's resource pool name.
 fn find_pool<'a>(sdi_spec: &'a SdiSpec, pool_name: &str) -> Result<&'a SdiPool, String> {
     sdi_spec
@@ -266,7 +326,9 @@ mod tests {
     fn make_cluster_def(name: &str, pool: &str) -> ClusterDef {
         ClusterDef {
             cluster_name: name.to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Sdi,
             cluster_sdi_resource_pool: pool.to_string(),
+            baremetal_nodes: vec![],
             cluster_role: "management".to_string(),
             network: ClusterNetwork {
                 pod_cidr: "10.244.0.0/20".to_string(),
@@ -313,6 +375,63 @@ mod tests {
         let result = generate_inventory(&cluster, &sdi);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does-not-exist"));
+    }
+
+    #[test]
+    fn test_generate_inventory_baremetal() {
+        let cluster = ClusterDef {
+            cluster_name: "prod".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Baremetal,
+            cluster_sdi_resource_pool: String::new(),
+            baremetal_nodes: vec![
+                crate::models::cluster::BaremetalNode {
+                    node_name: "bm-cp-0".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                },
+                crate::models::cluster::BaremetalNode {
+                    node_name: "bm-w-0".to_string(),
+                    ip: "10.0.0.2".to_string(),
+                    roles: vec!["worker".to_string()],
+                },
+            ],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.233.0.0/17".to_string(),
+                service_cidr: "10.233.128.0/18".to_string(),
+                dns_domain: "prod.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            kubespray_extra_vars: None,
+        };
+        let ini = generate_inventory_baremetal(&cluster).unwrap();
+        assert!(ini.contains("bm-cp-0 ansible_host=10.0.0.1"));
+        assert!(ini.contains("bm-w-0 ansible_host=10.0.0.2"));
+        assert!(ini.contains("[kube_control_plane]\nbm-cp-0"));
+        assert!(ini.contains("[kube_node]\nbm-w-0"));
+    }
+
+    #[test]
+    fn test_generate_inventory_baremetal_empty() {
+        let cluster = ClusterDef {
+            cluster_name: "empty".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Baremetal,
+            cluster_sdi_resource_pool: String::new(),
+            baremetal_nodes: vec![],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.233.0.0/17".to_string(),
+                service_cidr: "10.233.128.0/18".to_string(),
+                dns_domain: "empty.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            kubespray_extra_vars: None,
+        };
+        let result = generate_inventory_baremetal(&cluster);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no baremetal_nodes"));
     }
 
     #[test]

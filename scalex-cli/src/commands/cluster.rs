@@ -1,5 +1,5 @@
 use crate::core::kubespray;
-use crate::models::cluster::K8sClustersConfig;
+use crate::models::cluster::{ClusterMode, K8sClustersConfig};
 use crate::models::sdi::SdiSpec;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
@@ -59,22 +59,44 @@ fn run_init(
     let raw = std::fs::read_to_string(&config_file)?;
     let k8s_config: K8sClustersConfig = serde_yaml::from_str(&raw)?;
 
-    // Step 2: Load SDI spec (for inventory generation)
-    let sdi_spec = load_sdi_spec_from_options(sdi_spec_path, &sdi_dir)?;
+    // Step 2: Load SDI spec (only needed if any cluster uses SDI mode)
+    let has_sdi_clusters = k8s_config
+        .config
+        .clusters
+        .iter()
+        .any(|c| c.cluster_mode == ClusterMode::Sdi);
+    let sdi_spec = if has_sdi_clusters {
+        Some(load_sdi_spec_from_options(sdi_spec_path, &sdi_dir)?)
+    } else {
+        None
+    };
 
     // Step 3: For each cluster, generate inventory + vars + run kubespray
     for cluster in &k8s_config.config.clusters {
+        let mode_label = match cluster.cluster_mode {
+            ClusterMode::Sdi => format!("sdi:{}", cluster.cluster_sdi_resource_pool),
+            ClusterMode::Baremetal => "baremetal".to_string(),
+        };
         println!(
-            "\n[cluster] === {} (pool: {}, role: {}) ===",
-            cluster.cluster_name, cluster.cluster_sdi_resource_pool, cluster.cluster_role
+            "\n[cluster] === {} (mode: {}, role: {}) ===",
+            cluster.cluster_name, mode_label, cluster.cluster_role
         );
 
         let cluster_dir = output_dir.join(&cluster.cluster_name);
         std::fs::create_dir_all(&cluster_dir)?;
 
-        // Generate inventory
-        let inventory =
-            kubespray::generate_inventory(cluster, &sdi_spec).map_err(|e| anyhow::anyhow!(e))?;
+        // Generate inventory based on mode
+        let inventory = match cluster.cluster_mode {
+            ClusterMode::Sdi => {
+                let spec = sdi_spec
+                    .as_ref()
+                    .expect("SDI spec must be loaded for SDI-mode clusters");
+                kubespray::generate_inventory(cluster, spec).map_err(|e| anyhow::anyhow!(e))?
+            }
+            ClusterMode::Baremetal => {
+                kubespray::generate_inventory_baremetal(cluster).map_err(|e| anyhow::anyhow!(e))?
+            }
+        };
         let inventory_path = cluster_dir.join("inventory.ini");
         if dry_run {
             println!("[dry-run] inventory.ini:\n{}", inventory);
@@ -219,22 +241,29 @@ fn find_kubespray_dir() -> anyhow::Result<String> {
 fn collect_kubeconfig(
     cluster_dir: &std::path::Path,
     cluster_name: &str,
-    sdi_spec: &SdiSpec,
+    sdi_spec: &Option<SdiSpec>,
     cluster: &crate::models::cluster::ClusterDef,
 ) -> anyhow::Result<()> {
-    // Find the first control-plane node IP
-    let pool = sdi_spec
-        .spec
-        .sdi_pools
-        .iter()
-        .find(|p| p.pool_name == cluster.cluster_sdi_resource_pool);
-
-    let cp_ip = pool.and_then(|p| {
-        p.node_specs
+    // Find the first control-plane node IP based on cluster mode
+    let cp_ip: Option<String> = match cluster.cluster_mode {
+        ClusterMode::Baremetal => cluster
+            .baremetal_nodes
             .iter()
             .find(|n| n.roles.iter().any(|r| r == "control-plane"))
-            .map(|n| n.ip.as_str())
-    });
+            .map(|n| n.ip.clone()),
+        ClusterMode::Sdi => sdi_spec.as_ref().and_then(|spec| {
+            spec.spec
+                .sdi_pools
+                .iter()
+                .find(|p| p.pool_name == cluster.cluster_sdi_resource_pool)
+                .and_then(|p| {
+                    p.node_specs
+                        .iter()
+                        .find(|n| n.roles.iter().any(|r| r == "control-plane"))
+                        .map(|n| n.ip.clone())
+                })
+        }),
+    };
 
     let Some(ip) = cp_ip else {
         eprintln!("[cluster] No control-plane node found for {}", cluster_name);
@@ -249,7 +278,7 @@ fn collect_kubeconfig(
         .args([
             "-o",
             "StrictHostKeyChecking=no",
-            &format!("root@{}:{}", ip, remote_path),
+            &format!("root@{ip}:{remote_path}"),
             &local_path.display().to_string(),
         ])
         .output();

@@ -27,7 +27,9 @@ config:
     gateway_api_enabled: true
 
   clusters:
+    # Mode: "sdi" (default) uses SDI VM pools, "baremetal" uses physical nodes directly
     - cluster_name: "tower"
+      # cluster_mode: "sdi"  # default — omit for SDI mode
       cluster_sdi_resource_pool: "tower"  # Maps to sdi-specs.yaml spec.sdi_pools[].pool_name
       cluster_role: "management"  # Runs ArgoCD, manages other clusters
       network:
@@ -69,6 +71,22 @@ config:
             memory: "512Mi"
         supplementary_addresses_in_ssl_keys:
           - "100.64.0.1"  # Tailscale bastion IP
+
+    # Example: baremetal mode (no SDI virtualization layer)
+    # - cluster_name: "prod"
+    #   cluster_mode: "baremetal"
+    #   cluster_role: "workload"
+    #   baremetal_nodes:
+    #     - node_name: "node-0"
+    #       ip: "10.0.0.1"
+    #       roles: [control-plane, etcd]
+    #     - node_name: "node-1"
+    #       ip: "10.0.0.2"
+    #       roles: [worker]
+    #   network:
+    #     pod_cidr: "10.234.0.0/17"
+    #     service_cidr: "10.234.128.0/18"
+    #     dns_domain: "prod.local"
 
   argocd:
     namespace: "argocd"
