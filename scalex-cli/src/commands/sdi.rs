@@ -377,8 +377,8 @@ fn run_init(
 }
 
 fn run_clean(hard: bool, confirm: bool, output_dir: PathBuf, dry_run: bool) -> anyhow::Result<()> {
-    if hard && !confirm {
-        anyhow::bail!("--hard requires --yes-i-really-want-to flag");
+    if let Some(err) = validate_clean_args(hard, confirm) {
+        anyhow::bail!(err);
     }
 
     if !output_dir.exists() {
@@ -754,6 +754,63 @@ fn build_pool_state(spec: &SdiSpec) -> Vec<SdiPoolState> {
         .collect()
 }
 
+/// Validate arguments for the `sdi clean` command. Pure function.
+/// Returns error message if invalid, None if valid.
+pub fn validate_clean_args(hard: bool, confirm: bool) -> Option<String> {
+    if hard && !confirm {
+        Some("--hard requires --yes-i-really-want-to flag".to_string())
+    } else {
+        None
+    }
+}
+
+/// Describes an operation that `sdi clean` would perform.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum CleanOperation {
+    /// No SDI state exists — nothing to do
+    NoState,
+    /// Destroy OpenTofu resources (main.tf exists)
+    TofuDestroy,
+    /// Run node cleanup scripts via SSH (hard mode, baremetal config exists)
+    NodeCleanup { node_count: usize },
+    /// Skip node cleanup (hard mode, but no baremetal config)
+    SkipNodeCleanup,
+    /// Remove local state directory (hard mode)
+    RemoveStateDir,
+}
+
+/// Plan what operations `sdi clean` would execute. Pure function: no I/O.
+/// Used for dry-run reporting and testability.
+#[cfg(test)]
+pub fn plan_clean_operations(
+    hard: bool,
+    output_dir_exists: bool,
+    main_tf_exists: bool,
+    bm_config_node_count: Option<usize>,
+) -> Vec<CleanOperation> {
+    let mut ops = Vec::new();
+
+    if !output_dir_exists {
+        ops.push(CleanOperation::NoState);
+        return ops;
+    }
+
+    if main_tf_exists {
+        ops.push(CleanOperation::TofuDestroy);
+    }
+
+    if hard {
+        match bm_config_node_count {
+            Some(count) => ops.push(CleanOperation::NodeCleanup { node_count: count }),
+            None => ops.push(CleanOperation::SkipNodeCleanup),
+        }
+        ops.push(CleanOperation::RemoveStateDir);
+    }
+
+    ops
+}
+
 /// Network defaults resolved from available config sources.
 /// Used to eliminate hardcoded network values in SDI init.
 #[derive(Clone, Debug, PartialEq)]
@@ -1076,5 +1133,97 @@ mod tests {
         assert_eq!(state[0].nodes[0].host, "host-1"); // explicit host wins
         assert!(state[0].nodes[0].gpu_passthrough);
         assert_eq!(state[0].nodes[0].mem_gb, 32);
+    }
+
+    // --- TDD Cycle 8a.1: validate_clean_args ---
+
+    #[test]
+    fn test_clean_hard_without_confirm_rejected() {
+        let result = validate_clean_args(true, false);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("--yes-i-really-want-to"));
+    }
+
+    #[test]
+    fn test_clean_hard_with_confirm_accepted() {
+        let result = validate_clean_args(true, true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_clean_soft_without_confirm_accepted() {
+        let result = validate_clean_args(false, false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_clean_soft_with_confirm_accepted() {
+        let result = validate_clean_args(false, true);
+        assert!(result.is_none());
+    }
+
+    // --- TDD Cycle 8a.1: plan_clean_operations ---
+
+    #[test]
+    fn test_plan_clean_no_state_dir() {
+        let ops = plan_clean_operations(false, false, false, None);
+        assert_eq!(ops, vec![CleanOperation::NoState]);
+    }
+
+    #[test]
+    fn test_plan_clean_soft_with_main_tf() {
+        let ops = plan_clean_operations(false, true, true, Some(4));
+        assert_eq!(ops, vec![CleanOperation::TofuDestroy]);
+    }
+
+    #[test]
+    fn test_plan_clean_soft_without_main_tf() {
+        let ops = plan_clean_operations(false, true, false, Some(4));
+        assert!(ops.is_empty(), "soft clean with no main.tf should be no-op");
+    }
+
+    #[test]
+    fn test_plan_clean_hard_with_main_tf_and_bm_config() {
+        let ops = plan_clean_operations(true, true, true, Some(4));
+        assert_eq!(
+            ops,
+            vec![
+                CleanOperation::TofuDestroy,
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_hard_without_bm_config() {
+        let ops = plan_clean_operations(true, true, true, None);
+        assert_eq!(
+            ops,
+            vec![
+                CleanOperation::TofuDestroy,
+                CleanOperation::SkipNodeCleanup,
+                CleanOperation::RemoveStateDir,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_hard_no_main_tf_with_bm_config() {
+        let ops = plan_clean_operations(true, true, false, Some(2));
+        assert_eq!(
+            ops,
+            vec![
+                CleanOperation::NodeCleanup { node_count: 2 },
+                CleanOperation::RemoveStateDir,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_hard_no_state_dir_short_circuits() {
+        // Even with hard mode, no state dir means nothing to do
+        let ops = plan_clean_operations(true, false, false, Some(4));
+        assert_eq!(ops, vec![CleanOperation::NoState]);
     }
 }

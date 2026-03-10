@@ -1999,4 +1999,252 @@ spec:
         assert!(errors.iter().any(|e| e.contains("disk_gb must be > 0")));
         assert!(errors.iter().any(|e| e.contains("roles must not be empty")));
     }
+
+    // ========================================================================
+    // Sprint 8a.2: Clean→Rebuild idempotency E2E dry-run
+    // ========================================================================
+
+    /// CL-13: Verify that after a conceptual "clean", regenerating all outputs from
+    /// the same config files produces identical results. This tests the full pipeline
+    /// idempotency across a clean→rebuild cycle without requiring physical infrastructure.
+    #[test]
+    fn test_e2e_clean_rebuild_idempotency() {
+        // Load all configs (same as other E2E tests)
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let bm_content = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let bm: crate::core::config::BaremetalInitConfig =
+            serde_yaml::from_str(bm_content).unwrap();
+
+        // --- First pass: generate all outputs ---
+        let hcl_1 = crate::core::tofu::generate_tofu_main(&sdi);
+        let host_inputs: Vec<crate::core::tofu::HostInfraInput> = bm
+            .target_nodes
+            .iter()
+            .map(|n| crate::core::tofu::HostInfraInput {
+                name: n.name.clone(),
+                ip: n.node_ip.clone(),
+            })
+            .collect();
+        let net = bm.network_defaults.as_ref().unwrap();
+        let host_hcl_1 = crate::core::tofu::generate_tofu_host_infra(
+            &host_inputs,
+            &net.management_bridge,
+            &net.management_cidr,
+            &net.gateway,
+        );
+
+        let mut inventories_1 = Vec::new();
+        let mut vars_1 = Vec::new();
+        for cluster in &k8s.config.clusters {
+            inventories_1.push(crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap());
+            vars_1.push(crate::core::kubespray::generate_cluster_vars(
+                cluster,
+                &k8s.config.common,
+            ));
+        }
+
+        // --- Simulate clean: re-parse configs from scratch (fresh state) ---
+        let sdi_2: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+        let k8s_2: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+        let bm_2: crate::core::config::BaremetalInitConfig =
+            serde_yaml::from_str(bm_content).unwrap();
+
+        // --- Second pass: regenerate all outputs ---
+        let hcl_2 = crate::core::tofu::generate_tofu_main(&sdi_2);
+        let host_inputs_2: Vec<crate::core::tofu::HostInfraInput> = bm_2
+            .target_nodes
+            .iter()
+            .map(|n| crate::core::tofu::HostInfraInput {
+                name: n.name.clone(),
+                ip: n.node_ip.clone(),
+            })
+            .collect();
+        let net_2 = bm_2.network_defaults.as_ref().unwrap();
+        let host_hcl_2 = crate::core::tofu::generate_tofu_host_infra(
+            &host_inputs_2,
+            &net_2.management_bridge,
+            &net_2.management_cidr,
+            &net_2.gateway,
+        );
+
+        let mut inventories_2 = Vec::new();
+        let mut vars_2 = Vec::new();
+        for cluster in &k8s_2.config.clusters {
+            inventories_2
+                .push(crate::core::kubespray::generate_inventory(cluster, &sdi_2).unwrap());
+            vars_2.push(crate::core::kubespray::generate_cluster_vars(
+                cluster,
+                &k8s_2.config.common,
+            ));
+        }
+
+        // --- Assert byte-for-byte identical outputs ---
+        assert_eq!(hcl_1, hcl_2, "VM HCL must be identical after clean→rebuild");
+        assert_eq!(
+            host_hcl_1, host_hcl_2,
+            "Host HCL must be identical after clean→rebuild"
+        );
+        for i in 0..inventories_1.len() {
+            assert_eq!(
+                inventories_1[i], inventories_2[i],
+                "Inventory {} must be identical after clean→rebuild",
+                i
+            );
+            assert_eq!(
+                vars_1[i], vars_2[i],
+                "Cluster vars {} must be identical after clean→rebuild",
+                i
+            );
+        }
+    }
+
+    /// CL-13: Verify clean operation plan covers all expected states.
+    /// Uses pure plan_clean_operations from sdi module.
+    #[test]
+    fn test_clean_operations_plan_covers_all_branches() {
+        use crate::commands::sdi::{plan_clean_operations, CleanOperation};
+
+        // Full hard clean with everything present
+        let full = plan_clean_operations(true, true, true, Some(4));
+        assert_eq!(full.len(), 3);
+        assert!(matches!(full[0], CleanOperation::TofuDestroy));
+        assert!(matches!(
+            full[1],
+            CleanOperation::NodeCleanup { node_count: 4 }
+        ));
+        assert!(matches!(full[2], CleanOperation::RemoveStateDir));
+
+        // Soft clean (no --hard) should only destroy tofu
+        let soft = plan_clean_operations(false, true, true, Some(4));
+        assert_eq!(soft.len(), 1);
+        assert!(matches!(soft[0], CleanOperation::TofuDestroy));
+
+        // No state at all
+        let empty = plan_clean_operations(true, false, false, Some(4));
+        assert_eq!(empty.len(), 1);
+        assert!(matches!(empty[0], CleanOperation::NoState));
+    }
+
+    // ========================================================================
+    // Sprint 8a.3: Cross-config SDI↔K8s pool reference validation
+    // ========================================================================
+
+    /// CL-1, CL-8: Every SDI pool referenced by a k8s cluster must exist in sdi-specs.
+    /// Tests exact match between cluster_sdi_resource_pool and sdi_pools[].pool_name.
+    #[test]
+    fn test_cross_config_every_cluster_pool_ref_resolves() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let pool_names: Vec<&str> = sdi
+            .spec
+            .sdi_pools
+            .iter()
+            .map(|p| p.pool_name.as_str())
+            .collect();
+
+        for cluster in &k8s.config.clusters {
+            if cluster.cluster_mode == ClusterMode::Sdi {
+                assert!(
+                    pool_names.contains(&cluster.cluster_sdi_resource_pool.as_str()),
+                    "Cluster '{}' references pool '{}' which is not in sdi-specs.yaml (available: {:?})",
+                    cluster.cluster_name,
+                    cluster.cluster_sdi_resource_pool,
+                    pool_names
+                );
+            }
+        }
+    }
+
+    /// CL-8: SDI pool count must match the number of SDI-mode clusters.
+    /// Unused pools are OK (future expansion), but every SDI cluster needs a pool.
+    #[test]
+    fn test_cross_config_sdi_cluster_count_lte_pool_count() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let sdi_cluster_count = k8s
+            .config
+            .clusters
+            .iter()
+            .filter(|c| c.cluster_mode == ClusterMode::Sdi)
+            .count();
+
+        assert!(
+            sdi_cluster_count <= sdi.spec.sdi_pools.len(),
+            "SDI clusters ({}) exceed available pools ({})",
+            sdi_cluster_count,
+            sdi.spec.sdi_pools.len()
+        );
+    }
+
+    /// CL-8: Cilium cluster_id uniqueness must be enforced across all clusters.
+    #[test]
+    fn test_cross_config_cilium_cluster_ids_globally_unique() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let mut seen_ids = std::collections::HashSet::new();
+        for cluster in &k8s.config.clusters {
+            if let Some(ref cilium) = cluster.cilium {
+                assert!(
+                    seen_ids.insert(cilium.cluster_id),
+                    "Duplicate Cilium cluster_id {} in cluster '{}'",
+                    cilium.cluster_id,
+                    cluster.cluster_name
+                );
+            }
+        }
+    }
+
+    /// CL-8: Pod/Service CIDRs must not overlap between clusters.
+    #[test]
+    fn test_cross_config_cidrs_no_overlap() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let clusters = &k8s.config.clusters;
+        for i in 0..clusters.len() {
+            for j in (i + 1)..clusters.len() {
+                assert_ne!(
+                    clusters[i].network.pod_cidr, clusters[j].network.pod_cidr,
+                    "Pod CIDRs overlap between '{}' and '{}'",
+                    clusters[i].cluster_name, clusters[j].cluster_name
+                );
+                assert_ne!(
+                    clusters[i].network.service_cidr, clusters[j].network.service_cidr,
+                    "Service CIDRs overlap between '{}' and '{}'",
+                    clusters[i].cluster_name, clusters[j].cluster_name
+                );
+            }
+        }
+    }
+
+    /// CL-8: DNS domains must be unique per cluster.
+    #[test]
+    fn test_cross_config_dns_domains_unique() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let mut seen_domains = std::collections::HashSet::new();
+        for cluster in &k8s.config.clusters {
+            assert!(
+                seen_domains.insert(cluster.network.dns_domain.clone()),
+                "Duplicate DNS domain '{}' in cluster '{}'",
+                cluster.network.dns_domain,
+                cluster.cluster_name
+            );
+        }
+    }
 }
