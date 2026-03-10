@@ -5,4 +5,6 @@ pub mod host_prepare;
 pub mod kubespray;
 pub mod resource_pool;
 pub mod ssh;
+pub mod sync;
 pub mod tofu;
+pub mod validation;

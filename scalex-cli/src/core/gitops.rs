@@ -65,6 +65,173 @@ pub fn gitops_files_needing_replacement() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    // ── Sprint 5: Disk-based generator YAML correctness tests ──
+
+    #[test]
+    fn test_tower_common_generator_parses_as_valid_yaml() {
+        let content = include_str!("../../../gitops/generators/tower/common-generator.yaml");
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(content).expect("tower common-generator.yaml is invalid YAML");
+        assert_eq!(
+            value["kind"].as_str().unwrap(),
+            "ApplicationSet",
+            "tower common-generator must be an ApplicationSet"
+        );
+        assert_eq!(value["metadata"]["name"].as_str().unwrap(), "tower-common");
+    }
+
+    #[test]
+    fn test_tower_generator_parses_as_valid_yaml() {
+        let content = include_str!("../../../gitops/generators/tower/tower-generator.yaml");
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(content).expect("tower-generator.yaml is invalid YAML");
+        assert_eq!(value["kind"].as_str().unwrap(), "ApplicationSet");
+        assert_eq!(value["metadata"]["name"].as_str().unwrap(), "tower-apps");
+    }
+
+    #[test]
+    fn test_sandbox_common_generator_parses_as_valid_yaml() {
+        let content = include_str!("../../../gitops/generators/sandbox/common-generator.yaml");
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(content).expect("sandbox common-generator.yaml is invalid YAML");
+        assert_eq!(value["kind"].as_str().unwrap(), "ApplicationSet");
+        assert_eq!(
+            value["metadata"]["name"].as_str().unwrap(),
+            "sandbox-common"
+        );
+    }
+
+    #[test]
+    fn test_sandbox_generator_parses_as_valid_yaml() {
+        let content = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(content).expect("sandbox-generator.yaml is invalid YAML");
+        assert_eq!(value["kind"].as_str().unwrap(), "ApplicationSet");
+        assert_eq!(value["metadata"]["name"].as_str().unwrap(), "sandbox-apps");
+    }
+
+    #[test]
+    fn test_sandbox_generators_contain_placeholder_url() {
+        let common = include_str!("../../../gitops/generators/sandbox/common-generator.yaml");
+        let specific = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
+        assert!(
+            has_sandbox_placeholder(common),
+            "sandbox common-generator must contain placeholder URL"
+        );
+        assert!(
+            has_sandbox_placeholder(specific),
+            "sandbox-generator must contain placeholder URL"
+        );
+    }
+
+    #[test]
+    fn test_tower_generators_do_not_contain_placeholder_url() {
+        let common = include_str!("../../../gitops/generators/tower/common-generator.yaml");
+        let specific = include_str!("../../../gitops/generators/tower/tower-generator.yaml");
+        assert!(
+            !has_sandbox_placeholder(common),
+            "tower common-generator must NOT contain sandbox placeholder"
+        );
+        assert!(
+            !has_sandbox_placeholder(specific),
+            "tower-generator must NOT contain sandbox placeholder"
+        );
+    }
+
+    #[test]
+    fn test_replace_sandbox_url_on_actual_generator_files() {
+        let common = include_str!("../../../gitops/generators/sandbox/common-generator.yaml");
+        let specific = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
+        let actual_url = "https://192.168.88.110:6443";
+
+        let replaced_common = replace_sandbox_server_url(common, actual_url);
+        let replaced_specific = replace_sandbox_server_url(specific, actual_url);
+
+        // Placeholder gone
+        assert!(!has_sandbox_placeholder(&replaced_common));
+        assert!(!has_sandbox_placeholder(&replaced_specific));
+        // Actual URL present
+        assert!(replaced_common.contains(actual_url));
+        assert!(replaced_specific.contains(actual_url));
+        // Structure preserved
+        let v: serde_yaml::Value = serde_yaml::from_str(&replaced_common)
+            .expect("replaced common-generator must still be valid YAML");
+        assert_eq!(v["kind"].as_str().unwrap(), "ApplicationSet");
+    }
+
+    #[test]
+    fn test_tower_and_sandbox_common_generators_have_same_app_list() {
+        let tower = include_str!("../../../gitops/generators/tower/common-generator.yaml");
+        let sandbox = include_str!("../../../gitops/generators/sandbox/common-generator.yaml");
+
+        let tv: serde_yaml::Value = serde_yaml::from_str(tower).unwrap();
+        let sv: serde_yaml::Value = serde_yaml::from_str(sandbox).unwrap();
+
+        let t_elements = tv["spec"]["generators"][0]["list"]["elements"]
+            .as_sequence()
+            .expect("tower common-generator must have elements");
+        let s_elements = sv["spec"]["generators"][0]["list"]["elements"]
+            .as_sequence()
+            .expect("sandbox common-generator must have elements");
+
+        let t_apps: Vec<&str> = t_elements
+            .iter()
+            .map(|e| e["appName"].as_str().unwrap())
+            .collect();
+        let s_apps: Vec<&str> = s_elements
+            .iter()
+            .map(|e| e["appName"].as_str().unwrap())
+            .collect();
+
+        assert_eq!(
+            t_apps, s_apps,
+            "Tower and Sandbox common-generators must deploy the same app list"
+        );
+    }
+
+    #[test]
+    fn test_all_generators_use_consistent_repo_url() {
+        let files = vec![
+            (
+                "tower/common-generator",
+                include_str!("../../../gitops/generators/tower/common-generator.yaml"),
+            ),
+            (
+                "tower/tower-generator",
+                include_str!("../../../gitops/generators/tower/tower-generator.yaml"),
+            ),
+            (
+                "sandbox/common-generator",
+                include_str!("../../../gitops/generators/sandbox/common-generator.yaml"),
+            ),
+            (
+                "sandbox/sandbox-generator",
+                include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml"),
+            ),
+        ];
+
+        let mut repo_urls: Vec<(&str, String)> = Vec::new();
+        for (name, content) in &files {
+            let v: serde_yaml::Value = serde_yaml::from_str(content).unwrap();
+            let url = v["spec"]["template"]["spec"]["source"]["repoURL"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{} must have repoURL", name))
+                .to_string();
+            repo_urls.push((name, url));
+        }
+
+        let first_url = &repo_urls[0].1;
+        for (name, url) in &repo_urls[1..] {
+            assert_eq!(
+                url, first_url,
+                "repoURL mismatch: {} has '{}' but {} has '{}'",
+                name, url, repo_urls[0].0, first_url
+            );
+        }
+    }
+
+    // ── Original unit tests ──
+
     #[test]
     fn test_replace_sandbox_server_url() {
         let yaml = r#"

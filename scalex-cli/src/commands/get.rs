@@ -337,6 +337,34 @@ fn get_config_files() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Validate config file presence and type. Pure function.
+fn classify_config_status(
+    path: &str,
+    exists: bool,
+    is_dir: bool,
+    dir_count: usize,
+    yaml_valid: Option<bool>,
+) -> String {
+    if !exists {
+        return "MISSING".to_string();
+    }
+    if is_dir {
+        if dir_count > 0 {
+            format!("OK ({} items)", dir_count)
+        } else {
+            "EMPTY".to_string()
+        }
+    } else if path.ends_with(".yaml") || path.ends_with(".yml") {
+        match yaml_valid {
+            Some(true) => "OK (valid YAML)".to_string(),
+            Some(false) => "INVALID YAML".to_string(),
+            None => "READ ERROR".to_string(),
+        }
+    } else {
+        "OK".to_string()
+    }
+}
+
 /// Convert NodeFacts to a table row. Pure function.
 fn facts_to_row(facts: &NodeFacts) -> BaremetalRow {
     let disk_summary: String = facts
@@ -369,5 +397,167 @@ fn facts_to_row(facts: &NodeFacts) -> BaremetalRow {
         gpus: facts.gpus.len() as u32,
         iommu: iommu_str,
         kernel: facts.kernel.version.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::baremetal::*;
+
+    fn make_test_facts() -> NodeFacts {
+        NodeFacts {
+            node_name: "playbox-0".to_string(),
+            timestamp: "2026-03-10T00:00:00Z".to_string(),
+            cpu: CpuInfo {
+                model: "Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz".to_string(),
+                cores: 6,
+                threads: 12,
+                architecture: "x86_64".to_string(),
+            },
+            memory: MemoryInfo {
+                total_mb: 32000,
+                available_mb: 28000,
+            },
+            disks: vec![
+                DiskInfo {
+                    name: "sda".to_string(),
+                    size_gb: 465,
+                    disk_type: "disk".to_string(),
+                    model: "Samsung_SSD_870".to_string(),
+                },
+                DiskInfo {
+                    name: "nvme0n1".to_string(),
+                    size_gb: 931,
+                    disk_type: "disk".to_string(),
+                    model: "WD_BLACK_SN770".to_string(),
+                },
+            ],
+            nics: vec![
+                NicInfo {
+                    name: "eno1".to_string(),
+                    mac: String::new(),
+                    speed: "1G".to_string(),
+                    driver: "e1000e".to_string(),
+                    state: "up".to_string(),
+                },
+                NicInfo {
+                    name: "ens2f0".to_string(),
+                    mac: String::new(),
+                    speed: "10G".to_string(),
+                    driver: "mlx5_core".to_string(),
+                    state: "up".to_string(),
+                },
+            ],
+            gpus: vec![GpuInfo {
+                pci_id: "01:00.0".to_string(),
+                model: "NVIDIA GeForce RTX 3060".to_string(),
+                vendor: "nvidia".to_string(),
+                driver: String::new(),
+            }],
+            iommu_groups: vec![
+                IommuGroup {
+                    id: 1,
+                    devices: vec!["0000:01:00.0".to_string()],
+                },
+                IommuGroup {
+                    id: 2,
+                    devices: vec!["0000:00:1f.0".to_string()],
+                },
+            ],
+            kernel: KernelInfo {
+                version: "6.8.0-45-generic".to_string(),
+                params: std::collections::HashMap::new(),
+            },
+            bridges: vec!["br0".to_string()],
+            bonds: vec![],
+            pcie: vec![],
+        }
+    }
+
+    #[test]
+    fn test_facts_to_row() {
+        let facts = make_test_facts();
+        let row = facts_to_row(&facts);
+
+        assert_eq!(row.name, "playbox-0");
+        assert_eq!(row.cores, 6);
+        assert_eq!(row.ram_gb, 31); // 32000 / 1024 = 31
+        assert_eq!(row.gpus, 1);
+        assert_eq!(row.iommu, "2 groups");
+        assert_eq!(row.kernel, "6.8.0-45-generic");
+        assert!(row.disks.contains("sda(465G)"));
+        assert!(row.disks.contains("nvme0n1(931G)"));
+        assert!(row.nics.contains("eno1(1G)"));
+        assert!(row.nics.contains("ens2f0(10G)"));
+    }
+
+    #[test]
+    fn test_facts_to_row_no_gpu() {
+        let mut facts = make_test_facts();
+        facts.gpus.clear();
+        facts.iommu_groups.clear();
+
+        let row = facts_to_row(&facts);
+        assert_eq!(row.gpus, 0);
+        assert_eq!(row.iommu, "none");
+    }
+
+    #[test]
+    fn test_facts_to_row_long_cpu_model_truncated() {
+        let mut facts = make_test_facts();
+        facts.cpu.model =
+            "A very long CPU model name that exceeds thirty characters limit".to_string();
+
+        let row = facts_to_row(&facts);
+        assert_eq!(row.cpu.len(), 30);
+    }
+
+    #[test]
+    fn test_classify_config_status_missing() {
+        assert_eq!(
+            classify_config_status("test.yaml", false, false, 0, None),
+            "MISSING"
+        );
+    }
+
+    #[test]
+    fn test_classify_config_status_valid_yaml() {
+        assert_eq!(
+            classify_config_status("test.yaml", true, false, 0, Some(true)),
+            "OK (valid YAML)"
+        );
+    }
+
+    #[test]
+    fn test_classify_config_status_invalid_yaml() {
+        assert_eq!(
+            classify_config_status("test.yml", true, false, 0, Some(false)),
+            "INVALID YAML"
+        );
+    }
+
+    #[test]
+    fn test_classify_config_status_dir_with_items() {
+        assert_eq!(
+            classify_config_status("facts/", true, true, 3, None),
+            "OK (3 items)"
+        );
+    }
+
+    #[test]
+    fn test_classify_config_status_empty_dir() {
+        assert_eq!(
+            classify_config_status("facts/", true, true, 0, None),
+            "EMPTY"
+        );
+    }
+
+    #[test]
+    fn test_classify_config_status_non_yaml_file() {
+        assert_eq!(
+            classify_config_status("tunnel.json", true, false, 0, None),
+            "OK"
+        );
     }
 }
