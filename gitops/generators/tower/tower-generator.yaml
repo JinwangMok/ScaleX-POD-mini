@@ -18,6 +18,9 @@ spec:
           - appName: argocd
             namespace: argocd
             syncWave: "0"
+          - appName: cert-issuers
+            namespace: cert-manager
+            syncWave: "2"
           - appName: keycloak
             namespace: keycloak
             syncWave: "3"

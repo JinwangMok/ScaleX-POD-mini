@@ -19,6 +19,9 @@ spec:
           - appName: kyverno
             namespace: kyverno
             syncWave: "1"
+          - appName: kyverno-policies
+            namespace: kyverno
+            syncWave: "2"
   template:
     metadata:
       name: "sandbox-{{.appName}}"

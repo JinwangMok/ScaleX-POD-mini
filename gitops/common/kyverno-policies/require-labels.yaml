@@ -1,0 +1,26 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-app-labels
+  annotations:
+    policies.kyverno.io/title: Require app.kubernetes.io/name Label
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: low
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-app-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+                - DaemonSet
+      validate:
+        message: "The label 'app.kubernetes.io/name' is required."
+        pattern:
+          metadata:
+            labels:
+              app.kubernetes.io/name: "?*"

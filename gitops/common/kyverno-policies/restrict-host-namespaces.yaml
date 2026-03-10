@@ -1,0 +1,25 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-host-namespaces
+  annotations:
+    policies.kyverno.io/title: Restrict Host Namespaces
+    policies.kyverno.io/category: Pod Security Standards (Baseline)
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: host-namespaces
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Sharing host namespaces (hostNetwork, hostIPC, hostPID) is not allowed."
+        pattern:
+          spec:
+            =(hostNetwork): "false"
+            =(hostIPC): "false"
+            =(hostPID): "false"
