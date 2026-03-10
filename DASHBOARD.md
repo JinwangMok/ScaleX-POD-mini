@@ -6,7 +6,7 @@
 
 ## Current Status (Sprint 10a COMPLETE — 2026-03-11)
 
-- **Tests**: 309 pass / clippy 0 warnings / fmt clean
+- **Tests**: 310 pass / clippy 0 warnings / fmt clean
 - **Code**: ~13,800 lines Rust, 27 source files
 - **GitOps**: 42 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
@@ -285,4 +285,4 @@ _generated/
 | core/resource_pool | 5 | aggregation, table |
 | commands/facts | 4 | facts gathering |
 | core/ssh | 5 | SSH command building, ProxyJump key, reachable_node_ip key |
-| **TOTAL** | **309** | |
+| **TOTAL** | **310** | |

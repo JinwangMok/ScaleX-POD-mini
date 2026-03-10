@@ -2737,6 +2737,21 @@ spec:
         );
     }
 
+    /// The .baremetal-init.yaml.example must document sshKeyPathOfReachableNode
+    /// for key-based ProxyJump authentication (user's checklist Case 3b).
+    #[test]
+    fn test_baremetal_example_documents_key_proxy_auth() {
+        let content = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        assert!(
+            content.contains("sshKeyPathOfReachableNode"),
+            ".baremetal-init.yaml.example must document sshKeyPathOfReachableNode field"
+        );
+        assert!(
+            content.contains("sshKeyPath"),
+            ".baremetal-init.yaml.example must document sshKeyPath field"
+        );
+    }
+
     /// Every .example file in config/ must be referenced in README.md.
     /// Orphaned example files confuse users about which files to use.
     #[test]
