@@ -427,8 +427,7 @@ fn sdi_pools_to_rows(pools: &[SdiPoolState]) -> Vec<SdiPoolRow> {
 }
 
 /// Count nodes from inventory.ini content. Pure function.
-#[allow(dead_code)]
-fn count_nodes_from_inventory(content: &str) -> u32 {
+pub fn count_nodes_from_inventory(content: &str) -> u32 {
     content
         .lines()
         .filter(|l| l.contains("ansible_host="))

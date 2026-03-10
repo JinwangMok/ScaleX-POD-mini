@@ -23,6 +23,8 @@ enum Commands {
     Cluster(commands::cluster::ClusterArgs),
     /// Manage pre-bootstrap K8s secrets
     Secrets(commands::secrets::SecretsArgs),
+    /// Show platform status across all layers
+    Status(commands::status::StatusArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -34,5 +36,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Sdi(args) => commands::sdi::run(args),
         Commands::Cluster(args) => commands::cluster::run(args),
         Commands::Secrets(args) => commands::secrets::run(args),
+        Commands::Status(args) => commands::status::run(args),
     }
 }
