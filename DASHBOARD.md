@@ -49,7 +49,7 @@
 ## Phase 5-6: Advanced
 
 - [ ] **5-1** `scalex sdi sync`
-- [ ] **5-2** `scalex get config-files`
+- [x] **5-2** `scalex get config-files` (YAML 유효성 검증 + 파일 존재 확인)
 - [ ] **5-3** 커널 파라미터 튜닝 인터페이스
 - [ ] **5-4** Cloudflare Tunnel 상세 가이드
 - [ ] **5-5** LAN 내부 접근 가이드
@@ -63,7 +63,7 @@
 | # | 질문 | 상태 | Phase |
 |---|------|------|-------|
 | 1 | OpenTofu 전체 가상화 | Tower VM 1개만 | 2 |
-| 2 | DataX kubespray 반영 | 대부분, kubelet reservation 누락 | 3 |
+| 2 | DataX kubespray 반영 | **완료** (보안, graceful shutdown, gateway API 추가) | Done |
 | 3 | Keycloak 완성 | 부분 | 5 |
 | 4 | CF tunnel GitOps | Yes | Done |
 | 5 | CF tunnel 완성 | WebUI 미설정 | 5 |

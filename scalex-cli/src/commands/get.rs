@@ -61,10 +61,7 @@ pub fn run(args: GetArgs) -> anyhow::Result<()> {
         GetResource::Baremetals { facts_dir } => get_baremetals(&facts_dir),
         GetResource::SdiPools { sdi_dir } => get_sdi_pools(&sdi_dir),
         GetResource::Clusters { clusters_dir } => get_clusters(&clusters_dir),
-        GetResource::ConfigFiles => {
-            println!("Config files: not yet implemented (Phase 5)");
-            Ok(())
-        }
+        GetResource::ConfigFiles => get_config_files(),
     }
 }
 
@@ -248,6 +245,91 @@ fn get_sdi_pools(sdi_dir: &std::path::Path) -> anyhow::Result<()> {
     if rows.is_empty() {
         println!("No SDI pools found.");
         return Ok(());
+    }
+
+    let table = Table::new(&rows).to_string();
+    println!("{}", table);
+    Ok(())
+}
+
+#[derive(Tabled)]
+struct ConfigFileRow {
+    #[tabled(rename = "File")]
+    path: String,
+    #[tabled(rename = "Status")]
+    status: String,
+    #[tabled(rename = "Description")]
+    description: String,
+}
+
+fn get_config_files() -> anyhow::Result<()> {
+    let checks: Vec<(&str, &str)> = vec![
+        (
+            "credentials/.baremetal-init.yaml",
+            "Bare-metal node SSH access config",
+        ),
+        (
+            "credentials/.env",
+            "Environment variables (SSH passwords/keys)",
+        ),
+        ("credentials/secrets.yaml", "Keycloak/ArgoCD/CF secrets"),
+        (
+            "credentials/cloudflare-tunnel.json",
+            "Cloudflare tunnel credentials",
+        ),
+        ("config/sdi-specs.yaml", "SDI VM pool specifications"),
+        (
+            "config/k8s-clusters.yaml",
+            "Multi-cluster Kubernetes config",
+        ),
+        ("_generated/facts/", "Hardware facts (from `scalex facts`)"),
+        (
+            "_generated/sdi/",
+            "SDI OpenTofu state (from `scalex sdi init`)",
+        ),
+        (
+            "_generated/clusters/",
+            "Cluster configs (from `scalex cluster init`)",
+        ),
+    ];
+
+    let mut rows: Vec<ConfigFileRow> = Vec::new();
+    for (path, desc) in &checks {
+        let p = std::path::Path::new(path);
+        let status = if p.exists() {
+            if p.is_dir() {
+                let count = std::fs::read_dir(p).map(|d| d.count()).unwrap_or(0);
+                if count > 0 {
+                    format!("OK ({} items)", count)
+                } else {
+                    "EMPTY".to_string()
+                }
+            } else {
+                // Validate YAML files
+                if path.ends_with(".yaml") || path.ends_with(".yml") {
+                    match std::fs::read_to_string(p) {
+                        Ok(content) => {
+                            if serde_yaml::from_str::<serde_yaml::Value>(&content).is_ok() {
+                                "OK (valid YAML)".to_string()
+                            } else {
+                                "INVALID YAML".to_string()
+                            }
+                        }
+                        Err(_) => "READ ERROR".to_string(),
+                    }
+                } else {
+                    "OK".to_string()
+                }
+            }
+        } else {
+            "MISSING".to_string()
+        };
+
+        rows.push(ConfigFileRow {
+            path: path.to_string(),
+            status,
+            description: desc.to_string(),
+        });
     }
 
     let table = Table::new(&rows).to_string();
