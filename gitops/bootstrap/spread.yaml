@@ -17,6 +17,8 @@ spec:
       kind: "AppProject"
     - group: "argoproj.io"
       kind: "Application"
+    - group: "argoproj.io"
+      kind: "ApplicationSet"
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
