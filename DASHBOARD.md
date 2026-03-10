@@ -97,13 +97,20 @@
 | S3-1 | DataX 프로덕션 설정 완전 커버리지 통합 테스트 | **완료** |
 | S3-2 | cluster-config per-cluster 구조 검증 (common 미존재 + tower/sandbox 존재 + type 검증) | **완료** |
 
-### Sprint 4: GitOps 개선 (기능 추가)
+### Sprint 4: GitOps 보안/정책 기반 — **완료** (TDD, 170 tests)
+
+| ID | 작업 | 상태 |
+|----|------|------|
+| S4-1 | cert-manager ClusterIssuer 템플릿 (Let's Encrypt staging + prod) | **완료** |
+| S4-2 | Kyverno 기본 정책 세트 (disallow-privileged, require-labels, restrict-host-namespaces) | **완료** |
+| S4-3 | GitOps generators 업데이트 (kyverno-policies, cert-issuers 추가) | **완료** |
+| S4-4 | 6개 TDD 테스트 (Checklist A-1~A-5, DASHBOARD 구조 검증) | **완료** |
+
+### Sprint 5: 향후 개선
 
 | ID | 작업 | 설명 | 우선순위 |
 |----|------|------|----------|
-| S4-1 | cert-manager ClusterIssuer 템플릿 | Let's Encrypt staging + prod Issuer 추가 | MEDIUM |
-| S4-2 | Kyverno 기본 정책 세트 | disallow-privileged, require-labels 등 기본 정책 | MEDIUM |
-| S4-3 | ArgoCD persistence 활성화 | `persistence.enabled: true` + PVC 설정 | LOW |
+| S5-1 | ArgoCD persistence 활성화 | `persistence.enabled: true` + PVC 설정 | LOW |
 
 ### 카테고리 B: 사용자 수동 작업 (코드로 해결 불가)
 
@@ -159,13 +166,13 @@ _generated/
 ## 프로젝트 구조
 
 ```
-scalex-cli/                # Rust CLI (primary) — 160+ tests, 0 clippy warnings
+scalex-cli/                # Rust CLI (primary) — 170 tests, 0 clippy warnings
 gitops/                    # Multi-cluster GitOps (ArgoCD)
 +-- bootstrap/spread.yaml  # tower-root + sandbox-root
 +-- generators/            # ApplicationSets per cluster
 +-- projects/              # AppProjects (tower, sandbox)
-+-- common/                # cert-manager, cilium-resources, cluster-config, kyverno
-+-- tower/                 # argocd, cilium, cloudflared-tunnel, keycloak, socks5-proxy
++-- common/                # cert-manager, cilium-resources, kyverno, kyverno-policies
++-- tower/                 # argocd, cert-issuers, cilium, cloudflared-tunnel, cluster-config, keycloak, socks5-proxy
 +-- sandbox/               # cilium, local-path-provisioner, rbac, test-resources
 credentials/               # Secrets + init (gitignored, .example templates)
 config/                    # User config templates (sdi-specs, k8s-clusters)

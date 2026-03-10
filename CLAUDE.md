@@ -60,7 +60,7 @@ scalex get config-files                  # Config file validation
 
 ```bash
 # Rust CLI tests
-cd scalex-cli && cargo test              # 29 tests
+cd scalex-cli && cargo test              # 170 tests
 cargo clippy                             # Lint
 cargo fmt --check                        # Format check
 
@@ -78,7 +78,7 @@ shellcheck playbox lib/*.sh              # Shell lint
 ## Key Patterns
 
 - **GitOps-First**: Post-bootstrap, ArgoCD manages all cluster state via ApplicationSets.
-- **Sync waves**: 0=ArgoCD/config, 1=Cilium/cert-manager/Kyverno/storage, 2=cilium-resources, 3=tunnel/keycloak, 4=RBAC.
+- **Sync waves**: 0=ArgoCD/cluster-config, 1=Cilium/cert-manager/Kyverno/storage, 2=cilium-resources/cert-issuers/kyverno-policies, 3=tunnel/keycloak, 4=RBAC.
 - **Idempotent**: Every CLI operation safe to re-run.
 - **Pure Functions**: Rust CLI uses pure functions for HCL/inventory/vars generation. No side effects in generators.
 - **Secrets**: Created by CLI, stored in `credentials/` (gitignored). Templates in `credentials/*.example`.
@@ -97,8 +97,8 @@ shellcheck playbox lib/*.sh              # Shell lint
 |---------|----------------|------|
 | **Projects** | AppProject | `gitops/projects/{tower,sandbox}-project.yaml` |
 | **Generators** | ApplicationSet | `gitops/generators/{tower,sandbox}/` |
-| **Common Apps** | Kustomization | `gitops/common/{cilium,cert-manager,kyverno,...}/` |
-| **Tower Apps** | Kustomization | `gitops/tower/{argocd,keycloak,cloudflared-tunnel,...}/` |
+| **Common Apps** | Kustomization | `gitops/common/{cilium-resources,cert-manager,kyverno,kyverno-policies}/` |
+| **Tower Apps** | Kustomization | `gitops/tower/{argocd,cilium,cert-issuers,cloudflared-tunnel,cluster-config,keycloak,socks5-proxy}/` |
 | **Sandbox Apps** | Kustomization | `gitops/sandbox/{local-path-provisioner,rbac,...}/` |
 
 **Adding a new common app**: (1) Create `gitops/common/{app}/kustomization.yaml`, (2) Add element to both `gitops/generators/tower/common-generator.yaml` and `gitops/generators/sandbox/common-generator.yaml`.
@@ -121,7 +121,7 @@ shellcheck playbox lib/*.sh              # Shell lint
 │   │   ├── tower/             # common-generator + tower-generator
 │   │   └── sandbox/           # common-generator + sandbox-generator
 │   ├── projects/              # AppProjects (tower-project, sandbox-project)
-│   ├── common/                # Apps for ALL clusters (cilium, cert-manager, kyverno, ...)
+│   ├── common/                # Apps for ALL clusters (cilium-resources, cert-manager, kyverno, kyverno-policies)
 │   ├── tower/                 # Tower-only apps (argocd, keycloak, cloudflared-tunnel, ...)
 │   └── sandbox/               # Sandbox-only apps (local-path-provisioner, rbac, ...)
 ├── credentials/               # Secrets + init config (gitignored, .example templates)
