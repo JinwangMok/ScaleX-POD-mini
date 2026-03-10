@@ -6,8 +6,8 @@
 
 ## Current Status (Sprint 9a complete)
 
-- **Tests**: 296 pass / clippy 0 warnings / fmt clean
-- **Code**: ~12,600 lines Rust, 27 source files
+- **Tests**: 297 pass / clippy 0 warnings / fmt clean
+- **Code**: ~12,700 lines Rust, 27 source files
 - **GitOps**: 41 YAML files (bootstrap + generators + common/tower/sandbox apps)
 - **Docs**: 7 files (ops-guide, setup-guide, architecture, troubleshooting, etc.)
 
@@ -117,7 +117,7 @@
 | `ClusterMode::Baremetal` | OK | `models/cluster.rs` -- Sdi/Baremetal enum |
 | `generate_inventory_baremetal()` | OK | SDI 없이 직접 노드 사용 |
 | k3s 배제 | OK | Kubespray만 사용 (프로덕션 수준) |
-| **베어메탈 모드 E2E 테스트** | UNTESTED | 코드만 존재 |
+| 베어메탈 모드 파이프라인 테스트 | **TESTED (9a)** | `test_baremetal_mode_full_pipeline_inventory_and_vars` — inventory + vars + no-SDI-mapping 검증 |
 
 ### CL-10: 보안 정보 관리
 
