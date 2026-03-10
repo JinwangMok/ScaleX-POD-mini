@@ -556,6 +556,54 @@ kubespray_version: "v2.30.0"
         assert!(args.iter().any(|a| a == "/out/kubeconfig.yaml"));
     }
 
+    /// CL-4: Verify ssh_user from cluster config is used in SCP args (not hardcoded root).
+    #[test]
+    fn test_kubeconfig_scp_uses_cluster_ssh_user() {
+        // When ssh_user is set, it should be used
+        let args = build_kubeconfig_scp_args("jinwang", "10.0.0.1", "/tmp/kube.yaml");
+        let scp_target = args.iter().find(|a| a.contains('@')).unwrap();
+        assert!(
+            scp_target.starts_with("jinwang@"),
+            "must use cluster ssh_user, got: {}",
+            scp_target
+        );
+        assert!(
+            !scp_target.starts_with("root@"),
+            "must NOT use root, got: {}",
+            scp_target
+        );
+    }
+
+    /// CL-8: Verify k8s-clusters.yaml.example parses with ssh_user field.
+    #[test]
+    fn test_example_config_ssh_user_field() {
+        let content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let config: K8sClustersConfig = serde_yaml::from_str(content).unwrap();
+        // Tower cluster should have ssh_user set
+        let tower = config
+            .config
+            .clusters
+            .iter()
+            .find(|c| c.cluster_name == "tower")
+            .unwrap();
+        assert_eq!(
+            tower.ssh_user,
+            Some("jinwang".to_string()),
+            "tower cluster must have ssh_user set in example config"
+        );
+        // Sandbox cluster should not have ssh_user set (defaults to None → root)
+        let sandbox = config
+            .config
+            .clusters
+            .iter()
+            .find(|c| c.cluster_name == "sandbox")
+            .unwrap();
+        assert_eq!(
+            sandbox.ssh_user, None,
+            "sandbox must default to None (root fallback)"
+        );
+    }
+
     // --- clusters_requiring_sdi ---
 
     #[test]
