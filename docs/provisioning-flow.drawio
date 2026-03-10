@@ -1,0 +1,161 @@
+<mxfile host="app.diagrams.net" modified="2026-03-10T00:00:00.000Z" agent="Claude" version="24.0.0">
+  <diagram id="provisioning-flow" name="Provisioning Flow">
+    <mxGraphModel dx="1422" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="playbox-provisioning Flow / 프로비저닝 흐름도" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="350" y="20" width="500" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== -->
+        <!-- CLI Flow (Left Side) -->
+        <!-- ==================== -->
+        <mxCell id="cli-title" value="./playbox up  (CLI 프로비저닝 단계)" style="text;html=1;fontSize=16;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="400" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Step 1: Preflight -->
+        <mxCell id="s1" value="1. preflight&#xa;사전 검사" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="130" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s1-detail" value="- 필수 도구 확인 (kubectl, helm, yq, tofu...)&#xa;- values.yaml 필수 필드 검증&#xa;- SSH 연결 테스트 (bastion → 전체 노드)" style="text;html=1;align=left;fontSize=10;fillColor=#f5f5f5;strokeColor=#CCCCCC;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="120" width="300" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Step 2: Prepare Nodes -->
+        <mxCell id="s2" value="2. prepare-nodes&#xa;노드 준비" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="220" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s2-detail" value="- Ansible playbook (superuser로 실행)&#xa;- ansible_user 생성, sudoers 설정&#xa;- netplan 생성 (bond0/br0), 커널 파라미터" style="text;html=1;align=left;fontSize=10;fillColor=#f5f5f5;strokeColor=#CCCCCC;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="210" width="300" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Step 3: Create Tower -->
+        <mxCell id="s3" value="3. create-tower&#xa;Tower 클러스터 생성" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="310" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s3-detail" value="- OpenTofu로 libvirt VM 생성 (playbox-0 위)&#xa;- k3s 설치 및 대기&#xa;- tower.kubeconfig 다운로드&#xa;- tower.enabled=false면 건너뜀" style="text;html=1;align=left;fontSize=10;fillColor=#f5f5f5;strokeColor=#CCCCCC;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="300" width="300" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Step 4: Create Sandbox -->
+        <mxCell id="s4" value="4. create-sandbox&#xa;Sandbox 클러스터 생성" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="400" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s4-detail" value="- Kubespray 클론 및 요구사항 설치&#xa;- inventory.ini 생성 (bastion ProxyJump)&#xa;- cluster-vars.yml 생성 (OIDC 설정 포함)&#xa;- kubespray cluster.yml 실행&#xa;- kube-proxy 삭제 (Cilium 대체)&#xa;- sandbox.kubeconfig 다운로드" style="text;html=1;align=left;fontSize=10;fillColor=#f5f5f5;strokeColor=#CCCCCC;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="385" width="300" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- Step 5: Bootstrap -->
+        <mxCell id="s5" value="5. bootstrap&#xa;GitOps 부트스트랩" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="500" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s5-detail" value="- ArgoCD Helm 설치&#xa;- 시크릿 생성 (repo PAT, CF 터널, Keycloak DB/admin)&#xa;- spread.yaml 적용 → GitOps 체인 시작" style="text;html=1;align=left;fontSize=10;fillColor=#f5f5f5;strokeColor=#CCCCCC;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="490" width="300" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Step 6: Configure OIDC -->
+        <mxCell id="s6" value="6. configure-oidc&#xa;Keycloak OIDC 설정" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="590" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s6-detail" value="- port-forward로 Keycloak 접근&#xa;- admin 토큰 발급&#xa;- realm, client, admin group, admin user 생성&#xa;- groups claim 매퍼 설정" style="text;html=1;align=left;fontSize=10;fillColor=#f5f5f5;strokeColor=#CCCCCC;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="580" width="300" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Step 7: Generate Kubeconfig -->
+        <mxCell id="s7" value="7. generate-kubeconfig&#xa;클라이언트 kubeconfig 생성" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="680" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s7-detail" value="- Keycloak에서 client secret 조회&#xa;- kubeconfig-oidc.yaml 생성&#xa;  (exec: kubectl oidc-login)&#xa;- 클라이언트 설치 안내 출력" style="text;html=1;align=left;fontSize=10;fillColor=#f5f5f5;strokeColor=#CCCCCC;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="670" width="300" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Done -->
+        <mxCell id="done" value="Provisioning Complete!" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontStyle=1;strokeWidth=3;" vertex="1" parent="1">
+          <mxGeometry x="60" y="770" width="200" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Step arrows -->
+        <mxCell id="a12" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" parent="1" source="s1" target="s2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a23" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" parent="1" source="s2" target="s3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a34" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" parent="1" source="s3" target="s4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a45" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" parent="1" source="s4" target="s5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a56" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" parent="1" source="s5" target="s6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a67" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" parent="1" source="s6" target="s7"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a7d" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" parent="1" source="s7" target="done"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- ======================== -->
+        <!-- GitOps Flow (Right Side) -->
+        <!-- ======================== -->
+        <mxCell id="gitops-title" value="GitOps Bootstrap Chain / GitOps 부트스트랩 체인" style="text;html=1;fontSize=16;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="700" y="80" width="450" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-values" value="values.yaml&#xa;(단일 설정 소스)" style="shape=document;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="130" width="150" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-spread" value="spread.yaml&#xa;(Root App + AppProjects)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="240" width="200" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-generators" value="generators/&#xa;(ApplicationSets)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="330" width="200" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-catalog" value="catalog.yaml&#xa;(앱 레지스트리)" style="shape=document;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="420" width="150" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-apps" value="apps/{generator}/{app}/&#xa;(Application 설정)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="530" width="200" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- GitOps arrows -->
+        <mxCell id="ga1" value="drives" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#d6b656;fontStyle=2;fontSize=10;" edge="1" parent="1" source="g-values" target="g-spread"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ga2" value="creates root App&#xa;pointing to" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#6c8ebf;fontStyle=2;fontSize=10;" edge="1" parent="1" source="g-spread" target="g-generators"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ga3" value="reads via&#xa;jsonPath" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#6c8ebf;fontStyle=2;fontSize=10;" edge="1" parent="1" source="g-generators" target="g-catalog"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ga4" value="creates&#xa;Applications from" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#6c8ebf;fontStyle=2;fontSize=10;" edge="1" parent="1" source="g-catalog" target="g-apps"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Sync Waves -->
+        <mxCell id="sw-title" value="Sync Waves / 동기화 순서" style="text;html=1;fontSize=14;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="960" y="130" width="250" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sw0" value="Wave 0&#xa;ArgoCD, cluster-config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=0;" vertex="1" parent="1">
+          <mxGeometry x="960" y="170" width="200" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="sw1" value="Wave 1&#xa;Cilium, cert-manager,&#xa;local-path-provisioner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="960" y="230" width="200" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="sw2" value="Wave 2&#xa;cilium-resources" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="960" y="300" width="200" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="sw3" value="Wave 3&#xa;cloudflared-tunnel,&#xa;socks5-proxy, keycloak" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="960" y="360" width="200" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="sw4" value="Wave 4&#xa;RBAC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="960" y="430" width="200" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- Sync wave arrows -->
+        <mxCell id="swa01" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;strokeColor=#999999;" edge="1" parent="1" source="sw0" target="sw1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="swa12" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;strokeColor=#999999;" edge="1" parent="1" source="sw1" target="sw2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="swa23" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;strokeColor=#999999;" edge="1" parent="1" source="sw2" target="sw3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="swa34" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;strokeColor=#999999;" edge="1" parent="1" source="sw3" target="sw4"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Tooling info -->
+        <mxCell id="tools-title" value="사용 도구 / Tools" style="text;html=1;fontSize=14;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="960" y="520" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="tools-box" value="OpenTofu + libvirt → Tower VM&#xa;kubespray (Ansible) → Sandbox K8s&#xa;Helm → ArgoCD 설치&#xa;kubectl apply → spread.yaml&#xa;curl + Keycloak REST API → OIDC&#xa;Cloudflare Tunnel → 외부 접근" style="text;html=1;align=left;fontSize=10;fillColor=#f5f5f5;strokeColor=#CCCCCC;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="960" y="550" width="250" height="100" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
