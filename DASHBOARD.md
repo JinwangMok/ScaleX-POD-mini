@@ -4,7 +4,7 @@
 
 ---
 
-## 현재 상태: 130 tests pass / clippy clean / fmt clean
+## 현재 상태: 144 tests pass / clippy clean / fmt clean
 
 **코드 규모**: ~7,600 lines Rust, 22 source files, 55+ pure functions
 **GitOps**: 31 YAML files (bootstrap + generators + common/tower/sandbox apps)
@@ -45,7 +45,7 @@
 | 4 | CF tunnel GitOps 배포 | **완료** | — |
 | 5 | CF tunnel 완성 | **가이드 완료** | 사용자 WebUI 설정 필요 |
 | 6 | CLI 이름 scalex | **완료** | — |
-| 7 | Rust + FP 스타일 | **완료** | 130 tests, 55+ pure functions |
+| 7 | Rust + FP 스타일 | **완료** | 144 tests, 55+ pure functions |
 | 8 | CLI 기능 완성도 | **90%** | `get sdi-pools`/`get clusters` 테스트 0개, secrets apply 명령 없음 |
 | 9 | 베어메탈 확장성 / k3s 배제 | **미완성** | **8개 파일에 k3s 참조 잔존** |
 | 10 | Secrets 구조화 | **코드 완료** | secrets.rs 순수 함수 완료, CLI apply 미구현 |
@@ -181,10 +181,10 @@ Checklist #9 "k3s 배제"에 직접 위배:
 | `scalex sdi sync` | ✅ | 7 | — |
 | `scalex cluster init` | ✅ | 25 | — |
 | `scalex get baremetals` | ✅ | 3 | — |
-| `scalex get sdi-pools` | ✅ | **0** | Unit 4에서 추가 |
-| `scalex get clusters` | ✅ | **0** | Unit 4에서 추가 |
+| `scalex get sdi-pools` | ✅ | 3 | Unit 4 완료 |
+| `scalex get clusters` | ✅ | 4 | Unit 4 완료 |
 | `scalex get config-files` | ✅ | 6 | — |
-| `scalex secrets apply` | **미구현** | 0 | Unit 5에서 추가 |
+| `scalex secrets apply` | ✅ | 3 | Unit 5 완료 |
 
 ---
 
@@ -195,7 +195,7 @@ Checklist #9 "k3s 배제"에 직접 위배:
 |-----|-----------|------|------|
 | cluster-config | 0 | ✅ | ConfigMap |
 | argocd | 0 | ✅ | Helm 8.1.1 |
-| cilium | 1 | **CRITICAL** | k8sServiceHost 하드코딩 → Unit 1 |
+| cilium | 1 | ✅ | Unit 1 완료 — 클러스터별 분리 |
 | cert-manager | 1 | ✅ | Helm v1.18.2 |
 | kyverno | 1 | ✅ | Helm 3.3.7 |
 | cilium-resources | 2 | ✅ | L2 + LB Pool |
@@ -208,7 +208,7 @@ Checklist #9 "k3s 배제"에 직접 위배:
 |-----|-----------|------|------|
 | cluster-config | 0 | ✅ | |
 | test-resources | 0 | ✅ | |
-| cilium | 1 | **CRITICAL** | 잘못된 k8sServiceHost → Unit 1 |
+| cilium | 1 | ✅ | Unit 1 완료 — 클러스터별 k8sServiceHost |
 | cert-manager | 1 | ✅ | |
 | kyverno | 1 | ✅ | |
 | local-path-provisioner | 1 | ✅ | |
@@ -231,7 +231,7 @@ Checklist #9 "k3s 배제"에 직접 위배:
 
 ---
 
-## 테스트 분포 현황 (130 tests)
+## 테스트 분포 현황 (144 tests)
 
 | 모듈 | 파일 | 테스트 수 |
 |------|------|-----------|

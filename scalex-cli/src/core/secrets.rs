@@ -92,6 +92,21 @@ pub fn secrets_for_cluster(cluster_role: &str, secrets: &SecretsConfig) -> Vec<K
     }
 }
 
+/// Orchestrate: parse secrets YAML → generate all K8s Secret manifests for a cluster role.
+/// Returns multi-document YAML string (separated by ---). Pure function.
+pub fn generate_all_secrets_manifests(
+    yaml_content: &str,
+    cluster_role: &str,
+) -> Result<String, String> {
+    let config = parse_secrets_config(yaml_content)?;
+    let specs = secrets_for_cluster(cluster_role, &config);
+    if specs.is_empty() {
+        return Ok(String::new());
+    }
+    let manifests: Vec<String> = specs.iter().map(|s| generate_k8s_secret_yaml(s)).collect();
+    Ok(manifests.join("---\n"))
+}
+
 /// Parse secrets.yaml content into SecretsConfig.
 /// Pure function (takes string, not file path).
 pub fn parse_secrets_config(yaml_content: &str) -> Result<SecretsConfig, String> {
@@ -240,6 +255,46 @@ keycloak:
         assert!(specs
             .iter()
             .all(|s| s.name != "cloudflared-tunnel-credentials"));
+    }
+
+    #[test]
+    fn test_generate_all_secrets_manifests_management() {
+        let yaml = r#"
+keycloak:
+  admin_password: "admin-pass"
+  db_password: "db-pass"
+argocd:
+  repo_pat: ""
+cloudflare:
+  credentials_file: ""
+"#;
+        let result = generate_all_secrets_manifests(yaml, "management").unwrap();
+        // management without cloudflare = 2 secrets separated by ---
+        assert!(result.contains("keycloak-admin"));
+        assert!(result.contains("keycloak-db"));
+        assert!(result.contains("admin-pass"));
+        assert!(result.contains("db-pass"));
+        assert!(result.contains("---"));
+        // Should be valid multi-doc YAML
+        let docs: Vec<&str> = result.split("---").filter(|s: &&str| !s.trim().is_empty()).collect();
+        assert_eq!(docs.len(), 2);
+    }
+
+    #[test]
+    fn test_generate_all_secrets_manifests_workload() {
+        let yaml = r#"
+keycloak:
+  admin_password: "pass"
+  db_password: "db"
+"#;
+        let result = generate_all_secrets_manifests(yaml, "workload").unwrap();
+        assert!(result.is_empty(), "workload clusters need no secrets");
+    }
+
+    #[test]
+    fn test_generate_all_secrets_manifests_invalid_yaml() {
+        let result = generate_all_secrets_manifests("not: valid: [", "management");
+        assert!(result.is_err());
     }
 
     /// Verify the example file content can be parsed

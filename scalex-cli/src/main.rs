@@ -21,6 +21,8 @@ enum Commands {
     Sdi(commands::sdi::SdiArgs),
     /// Kubernetes cluster operations
     Cluster(commands::cluster::ClusterArgs),
+    /// Manage pre-bootstrap K8s secrets
+    Secrets(commands::secrets::SecretsArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -31,5 +33,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Get(args) => commands::get::run(args),
         Commands::Sdi(args) => commands::sdi::run(args),
         Commands::Cluster(args) => commands::cluster::run(args),
+        Commands::Secrets(args) => commands::secrets::run(args),
     }
 }
