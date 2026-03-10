@@ -25,6 +25,8 @@ enum Commands {
     Secrets(commands::secrets::SecretsArgs),
     /// Show platform status across all layers
     Status(commands::status::StatusArgs),
+    /// Generate kernel tuning parameters for K8s nodes
+    KernelTune(commands::kernel_tune::KernelTuneArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -37,5 +39,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Cluster(args) => commands::cluster::run(args),
         Commands::Secrets(args) => commands::secrets::run(args),
         Commands::Status(args) => commands::status::run(args),
+        Commands::KernelTune(args) => commands::kernel_tune::run(args),
     }
 }
