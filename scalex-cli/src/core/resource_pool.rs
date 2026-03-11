@@ -222,13 +222,12 @@ mod tests {
     #[test]
     fn test_resource_pool_includes_total_disk_gb() {
         let facts = vec![
-            make_facts("playbox-0", 8, 32768, 0, 2),  // 2 disks × 500 GB = 1000 GB
-            make_facts("playbox-1", 8, 32768, 0, 3),  // 3 disks × 500 GB = 1500 GB
+            make_facts("playbox-0", 8, 32768, 0, 2), // 2 disks × 500 GB = 1000 GB
+            make_facts("playbox-1", 8, 32768, 0, 3), // 3 disks × 500 GB = 1500 GB
         ];
         let summary = generate_resource_pool_summary(&facts);
         assert_eq!(
-            summary.total_disk_gb,
-            2500,
+            summary.total_disk_gb, 2500,
             "total_disk_gb must aggregate actual disk capacity across all nodes"
         );
     }
@@ -239,8 +238,7 @@ mod tests {
         let facts = vec![make_facts("playbox-0", 8, 32768, 0, 2)]; // 2 × 500 GB
         let summary = generate_resource_pool_summary(&facts);
         assert_eq!(
-            summary.nodes[0].disk_gb,
-            1000,
+            summary.nodes[0].disk_gb, 1000,
             "node disk_gb must be sum of all disk sizes"
         );
     }

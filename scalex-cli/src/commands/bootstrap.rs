@@ -30,7 +30,10 @@ pub struct BootstrapArgs {
 }
 
 pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
-    println!("[bootstrap] Loading cluster config from {}...", args.config.display());
+    println!(
+        "[bootstrap] Loading cluster config from {}...",
+        args.config.display()
+    );
 
     let raw = std::fs::read_to_string(&args.config)?;
     let k8s_config: K8sClustersConfig = serde_yaml::from_str(&raw)?;
@@ -43,8 +46,14 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
         .find(|c| c.cluster_role == "management")
         .ok_or_else(|| anyhow::anyhow!("No management cluster found in config"))?;
 
-    let tower_kubeconfig = args.clusters_dir.join(&tower.cluster_name).join("kubeconfig.yaml");
-    println!("[bootstrap] Phase 1: Installing ArgoCD on '{}'...", tower.cluster_name);
+    let tower_kubeconfig = args
+        .clusters_dir
+        .join(&tower.cluster_name)
+        .join("kubeconfig.yaml");
+    println!(
+        "[bootstrap] Phase 1: Installing ArgoCD on '{}'...",
+        tower.cluster_name
+    );
 
     let helm_args = generate_argocd_helm_install_args(
         &tower_kubeconfig.display().to_string(),
@@ -109,8 +118,10 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
     }
 
     println!("\n[bootstrap] Done. ArgoCD will now sync all applications via spread.yaml.");
-    println!("[bootstrap] Monitor progress: kubectl --kubeconfig {} -n argocd get applications -w",
-        tower_kubeconfig.display());
+    println!(
+        "[bootstrap] Monitor progress: kubectl --kubeconfig {} -n argocd get applications -w",
+        tower_kubeconfig.display()
+    );
 
     Ok(())
 }
@@ -253,7 +264,10 @@ mod tests {
     #[test]
     fn test_helm_args_use_upgrade_install_for_idempotency() {
         let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "7.8.13");
-        assert_eq!(args[0], "upgrade", "Must use 'upgrade --install' for idempotency");
+        assert_eq!(
+            args[0], "upgrade",
+            "Must use 'upgrade --install' for idempotency"
+        );
         assert_eq!(args[1], "--install");
     }
 
@@ -261,10 +275,7 @@ mod tests {
     fn test_helm_args_use_official_argo_helm_repo() {
         let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "7.8.13");
         let repo_idx = args.iter().position(|a| a == "--repo").unwrap();
-        assert_eq!(
-            args[repo_idx + 1],
-            "https://argoproj.github.io/argo-helm"
-        );
+        assert_eq!(args[repo_idx + 1], "https://argoproj.github.io/argo-helm");
     }
 
     #[test]
@@ -280,11 +291,8 @@ mod tests {
 
     #[test]
     fn test_cluster_add_args_contain_cluster_name() {
-        let args = generate_argocd_cluster_add_args(
-            "sandbox",
-            "/tower/kube.yaml",
-            "/sandbox/kube.yaml",
-        );
+        let args =
+            generate_argocd_cluster_add_args("sandbox", "/tower/kube.yaml", "/sandbox/kube.yaml");
         assert!(
             args.contains(&"sandbox".to_string()),
             "Must reference cluster name"
@@ -293,11 +301,8 @@ mod tests {
 
     #[test]
     fn test_cluster_add_args_use_correct_kubeconfigs() {
-        let args = generate_argocd_cluster_add_args(
-            "sandbox",
-            "/tower/kube.yaml",
-            "/sandbox/kube.yaml",
-        );
+        let args =
+            generate_argocd_cluster_add_args("sandbox", "/tower/kube.yaml", "/sandbox/kube.yaml");
         let joined = args.join(" ");
         assert!(
             joined.contains("--kubeconfig /sandbox/kube.yaml"),
@@ -349,7 +354,8 @@ mod tests {
     fn test_bootstrap_pipeline_order_helm_then_register_then_apply() {
         // Verify the 3-phase pipeline produces correct commands in order
         let helm = generate_argocd_helm_install_args("/tower/kube.yaml", "7.8.13");
-        let register = generate_argocd_cluster_add_args("sandbox", "/tower/kube.yaml", "/sandbox/kube.yaml");
+        let register =
+            generate_argocd_cluster_add_args("sandbox", "/tower/kube.yaml", "/sandbox/kube.yaml");
         let apply = generate_kubectl_apply_args("/tower/kube.yaml", "gitops/bootstrap/spread.yaml");
 
         // Phase 1: Helm installs ArgoCD
