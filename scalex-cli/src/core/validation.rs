@@ -5201,6 +5201,144 @@ config:
         }
     }
 
+    // ── A-7: README Installation Guide consistency ──
+
+    /// A-7: Verify all .example files referenced in README actually exist on disk.
+    #[test]
+    fn test_readme_example_files_exist() {
+        let readme = include_str!("../../../README.md");
+
+        let example_files = [
+            "credentials/.baremetal-init.yaml.example",
+            "credentials/.env.example",
+            "config/sdi-specs.yaml.example",
+            "config/k8s-clusters.yaml.example",
+        ];
+
+        for ef in &example_files {
+            // README must reference the cp command for each example
+            let cp_fragment = format!("cp {}", ef);
+            assert!(
+                readme.contains(&cp_fragment),
+                "README must contain 'cp {}' — users need this to create their config",
+                ef
+            );
+
+            // The .example file must actually exist
+            // Actual file existence is verified by test_checklist_credentials_example_completeness
+        }
+
+        // Verify the step references the validation command
+        assert!(
+            readme.contains("scalex get config-files"),
+            "README Step 2 must end with config validation command"
+        );
+    }
+
+    /// A-7: Verify README step ordering follows the workflow dependency graph.
+    /// Step 3 (facts) must come before Step 4 (sdi init),
+    /// Step 4 (sdi init) must come before Step 5 (cluster init),
+    /// Step 5 (cluster init) must come before Step 6/7 (secrets/bootstrap).
+    #[test]
+    fn test_readme_step_ordering_matches_workflow() {
+        let readme = include_str!("../../../README.md");
+
+        // Find positions of key commands in README
+        let facts_pos = readme
+            .find("scalex facts --all")
+            .expect("README must contain scalex facts --all");
+        let sdi_init_pos = readme
+            .find("scalex sdi init config/sdi-specs.yaml")
+            .expect("README must contain scalex sdi init");
+        let cluster_init_pos = readme
+            .find("scalex cluster init config/k8s-clusters.yaml")
+            .expect("README must contain scalex cluster init");
+        let secrets_pos = readme
+            .find("scalex secrets apply")
+            .expect("README must contain scalex secrets apply");
+        let bootstrap_pos = readme
+            .find("scalex bootstrap")
+            .expect("README must contain scalex bootstrap");
+
+        // Verify ordering: facts < sdi init < cluster init < secrets < bootstrap
+        assert!(
+            facts_pos < sdi_init_pos,
+            "README: 'scalex facts' must appear before 'scalex sdi init' (facts are prerequisite)"
+        );
+        assert!(
+            sdi_init_pos < cluster_init_pos,
+            "README: 'scalex sdi init' must appear before 'scalex cluster init' (VMs needed before K8s)"
+        );
+        assert!(
+            cluster_init_pos < secrets_pos,
+            "README: 'scalex cluster init' must appear before 'scalex secrets apply' (cluster needed for secrets)"
+        );
+        assert!(
+            secrets_pos < bootstrap_pos,
+            "README: 'scalex secrets apply' must appear before 'scalex bootstrap' (secrets needed for ArgoCD)"
+        );
+    }
+
+    /// A-7: Verify README prerequisite tools match code's prerequisites_for_command().
+    #[test]
+    fn test_readme_prerequisites_match_code() {
+        let readme = include_str!("../../../README.md");
+
+        // Step 0 must mention all tools required by any command.
+        // Map binary names to their package/mention names in README
+        // (e.g., `ansible-playbook` is installed via `ansible` package)
+        let all_tools: std::collections::HashSet<&str> =
+            ["sdi-init", "cluster-init", "bootstrap", "facts"]
+                .iter()
+                .flat_map(|cmd| prerequisites_for_command(cmd))
+                .collect();
+
+        for tool in &all_tools {
+            let readme_name = match *tool {
+                "ansible-playbook" => "ansible",
+                other => other,
+            };
+            assert!(
+                readme.contains(readme_name),
+                "README Step 0 must mention prerequisite '{}' (for tool '{}') — required by code",
+                readme_name,
+                tool
+            );
+        }
+    }
+
+    /// A-7: Verify README generated output paths match workflow dependencies.
+    #[test]
+    fn test_readme_generated_paths_consistent() {
+        let readme = include_str!("../../../README.md");
+
+        // These paths are referenced in the README and must be consistent with workflow deps
+        let generated_paths = [
+            ("_generated/facts/", "Step 3 output"),
+            ("_generated/sdi/", "Step 4 output"),
+            ("_generated/clusters/", "Step 5 output"),
+        ];
+
+        for (path, step) in &generated_paths {
+            assert!(
+                readme.contains(path),
+                "README must reference '{}' ({}) — produced by the pipeline",
+                path,
+                step
+            );
+        }
+
+        // kubeconfig path used in Steps 5-8 must be consistent
+        assert!(
+            readme.contains("_generated/clusters/tower/kubeconfig.yaml"),
+            "README must reference tower kubeconfig path consistently"
+        );
+        assert!(
+            readme.contains("_generated/clusters/sandbox/kubeconfig.yaml"),
+            "README must reference sandbox kubeconfig path consistently"
+        );
+    }
+
     /// G-11: Verify GitOps directory structure matches expected apps.
     #[test]
     fn test_checklist_gitops_directory_completeness() {

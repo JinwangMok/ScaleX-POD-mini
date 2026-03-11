@@ -129,9 +129,11 @@
 - [x] sdi-init, sdi-init-spec, cluster-init, bootstrap 4개 명령어 워크플로우 정의
 - [x] 누락 artifact별 구체적 해결 명령어 안내
 
-#### A-7. README Installation Guide 정합성
-- [ ] 각 Step의 전제 조건이 이전 Step의 출력과 일치하는지 프로그래밍적 검증
-- [ ] dry-run 시나리오의 전체 파이프라인 통합 테스트
+#### A-7. README Installation Guide 정합성 ✅ (Sprint 41, +4 tests)
+- [x] `.example` 파일 참조 + config 검증 명령어 안내 확인
+- [x] Step 순서가 workflow 의존성 그래프와 일치 (facts < sdi < cluster < secrets < bootstrap)
+- [x] README 필수 도구 목록이 코드의 `prerequisites_for_command()` 출력과 일치
+- [x] `_generated/` 출력 경로가 README 전체에서 일관적
 
 ### Phase B: 실환경 E2E 검증 (⬜ 인프라 필요)
 
@@ -232,11 +234,11 @@ _generated/
 
 ---
 
-## Test Summary (579 tests — 모두 순수 함수 단위 테스트)
+## Test Summary (583 tests — 모두 순수 함수 단위 테스트)
 
 | Module | Tests | 주요 커버리지 |
 |--------|:-----:|----------|
-| core/validation | 209 | pool mapping, cluster IDs/names, CIDR overlap, DNS, bootstrap, 2-layer consistency, **resource over-allocation (+4), workflow deps (+8)** |
+| core/validation | 213 | pool mapping, cluster IDs/names, CIDR overlap, DNS, bootstrap, 2-layer consistency, **resource over-allocation (+4), workflow deps (+8), README consistency (+4)** |
 | commands/sdi | 47 | network resolve, host infra, pool state, clean, GPU |
 | core/gitops | 41 | ApplicationSet, kustomization, sync waves, Cilium, **manifest integrity (+2)** |
 | core/kubespray | 38 | inventory (SDI + baremetal), cluster vars, OIDC, single-node |
