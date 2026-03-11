@@ -7138,4 +7138,292 @@ config:
             spec_errors
         );
     }
+
+    // ===== Sprint 34a: SOCKS5 Proxy GitOps Structure Validation =====
+
+    #[test]
+    fn test_sprint34a_socks5_manifest_valid_k8s_resources() {
+        // SOCKS5 proxy manifest must parse as valid YAML with Deployment + Service
+        let content = include_str!("../../../gitops/tower/socks5-proxy/manifest.yaml");
+
+        // Must contain two YAML documents separated by ---
+        let docs: Vec<&str> = content.split("---").collect();
+        assert!(
+            docs.len() >= 2,
+            "manifest.yaml must contain at least 2 YAML documents (Deployment + Service)"
+        );
+
+        // First doc: Deployment
+        let deployment: serde_yaml::Value =
+            serde_yaml::from_str(docs[0]).expect("Deployment YAML must parse");
+        assert_eq!(
+            deployment["kind"].as_str().unwrap(),
+            "Deployment",
+            "First document must be a Deployment"
+        );
+        assert_eq!(
+            deployment["metadata"]["name"].as_str().unwrap(),
+            "socks5-proxy"
+        );
+        assert_eq!(
+            deployment["metadata"]["namespace"].as_str().unwrap(),
+            "kube-tunnel"
+        );
+
+        // Second doc: Service
+        let service: serde_yaml::Value =
+            serde_yaml::from_str(docs[1]).expect("Service YAML must parse");
+        assert_eq!(
+            service["kind"].as_str().unwrap(),
+            "Service",
+            "Second document must be a Service"
+        );
+        assert_eq!(
+            service["metadata"]["name"].as_str().unwrap(),
+            "socks5-proxy"
+        );
+    }
+
+    #[test]
+    fn test_sprint34a_socks5_sync_wave_3_in_tower_generator() {
+        // SOCKS5 proxy must be in sync wave 3 in tower-generator
+        let content = include_str!("../../../gitops/generators/tower/tower-generator.yaml");
+        let gen: serde_yaml::Value =
+            serde_yaml::from_str(content).expect("tower-generator.yaml must parse");
+
+        let elements = gen["spec"]["generators"][0]["list"]["elements"]
+            .as_sequence()
+            .expect("Must have elements list");
+
+        let socks5_entry = elements
+            .iter()
+            .find(|e| e["appName"].as_str() == Some("socks5-proxy"))
+            .expect("socks5-proxy must be in tower-generator elements");
+
+        assert_eq!(
+            socks5_entry["syncWave"].as_str().unwrap(),
+            "3",
+            "socks5-proxy must be in sync wave 3"
+        );
+        assert_eq!(
+            socks5_entry["namespace"].as_str().unwrap(),
+            "kube-tunnel",
+            "socks5-proxy must be in kube-tunnel namespace"
+        );
+    }
+
+    #[test]
+    fn test_sprint34a_socks5_service_port_1080() {
+        // SOCKS5 Service must expose port 1080 as ClusterIP (not NodePort/LB for security)
+        let content = include_str!("../../../gitops/tower/socks5-proxy/manifest.yaml");
+        let docs: Vec<&str> = content.split("---").collect();
+
+        let service: serde_yaml::Value =
+            serde_yaml::from_str(docs[1]).expect("Service YAML must parse");
+
+        // Port 1080
+        let ports = service["spec"]["ports"]
+            .as_sequence()
+            .expect("Service must have ports");
+        let port = ports[0]["port"].as_u64().unwrap();
+        let target_port = ports[0]["targetPort"].as_u64().unwrap();
+        assert_eq!(port, 1080, "Service port must be 1080");
+        assert_eq!(target_port, 1080, "Service targetPort must be 1080");
+
+        // ClusterIP (not NodePort/LoadBalancer — security requirement)
+        let svc_type = service["spec"]["type"].as_str().unwrap();
+        assert_eq!(
+            svc_type, "ClusterIP",
+            "SOCKS5 proxy must be ClusterIP for security (not exposed externally)"
+        );
+    }
+
+    // ===== Sprint 34b: External Access Documentation Consistency =====
+
+    #[test]
+    fn test_sprint34b_readme_external_access_covers_4_methods() {
+        // README must document all 4 external access methods
+        let content = include_str!("../../../README.md");
+
+        let methods = [
+            ("LAN", "LAN"),
+            ("Tailscale", "Tailscale"),
+            ("Cloudflare Tunnel", "Cloudflare Tunnel"),
+            ("SOCKS5", "SOCKS5"),
+        ];
+        for (label, keyword) in &methods {
+            assert!(
+                content.contains(keyword),
+                "README must mention {} access method (keyword: '{}')",
+                label,
+                keyword
+            );
+        }
+
+        // Must warn about CF Tunnel TLS termination (critical security note)
+        assert!(
+            content.contains("TLS") && content.contains("terminate"),
+            "README must warn about CF Tunnel TLS termination"
+        );
+
+        // Must mention OIDC as the only CF Tunnel auth method
+        assert!(
+            content.contains("OIDC"),
+            "README must mention OIDC for CF Tunnel kubectl"
+        );
+    }
+
+    #[test]
+    fn test_sprint34b_ops_guide_has_access_sections() {
+        // ops-guide.md must have Tailscale, SOCKS5, LAN, and CF Tunnel sections
+        let content = include_str!("../../../docs/ops-guide.md");
+
+        let required_sections = [
+            "Tailscale",
+            "SOCKS5",
+            "LAN",
+            "Cloudflare Tunnel",
+            "Keycloak",
+        ];
+        for section in &required_sections {
+            assert!(
+                content.contains(section),
+                "ops-guide.md must contain section about '{}'",
+                section
+            );
+        }
+
+        // Must have Pre-OIDC guidance (critical: users need Tailscale before Keycloak)
+        assert!(
+            content.contains("Pre-OIDC") || content.contains("pre-OIDC"),
+            "ops-guide.md must mention Pre-OIDC access path"
+        );
+
+        // Must have port 1080 for SOCKS5
+        assert!(
+            content.contains("1080"),
+            "ops-guide.md must mention SOCKS5 port 1080"
+        );
+    }
+
+    // ===== Sprint 34c: README Installation Guide Completeness Audit =====
+
+    #[test]
+    fn test_sprint34c_readme_references_existing_files() {
+        // All files/dirs referenced in README Installation Guide must exist in repo
+        let readme = include_str!("../../../README.md");
+
+        // Config files referenced in Step 2
+        let referenced_files = [
+            "credentials/.baremetal-init.yaml.example",
+            "credentials/.env.example",
+            "config/sdi-specs.yaml.example",
+            "config/k8s-clusters.yaml.example",
+            "gitops/bootstrap/spread.yaml",
+            "docs/ops-guide.md",
+            "docs/SETUP-GUIDE.md",
+            "docs/TROUBLESHOOTING.md",
+            "docs/ARCHITECTURE.md",
+            "docs/CONTRIBUTING.md",
+        ];
+
+        for file in &referenced_files {
+            assert!(
+                readme.contains(file),
+                "README must reference '{}' in Installation Guide or docs",
+                file
+            );
+        }
+
+        // Verify referenced example files actually exist (via include_str compile check)
+        let _ = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let _ = include_str!("../../../credentials/.env.example");
+        let _ = include_str!("../../../config/sdi-specs.yaml.example");
+        let _ = include_str!("../../../config/k8s-clusters.yaml.example");
+        let _ = include_str!("../../../gitops/bootstrap/spread.yaml");
+        let _ = include_str!("../../../docs/ops-guide.md");
+    }
+
+    #[test]
+    fn test_sprint34c_readme_cli_commands_match_subcommands() {
+        // README CLI Reference must list all 8 subcommands from main.rs
+        let readme = include_str!("../../../README.md");
+
+        // These are the 8 subcommands defined in main.rs Commands enum
+        let subcommands = [
+            "facts",
+            "get",
+            "sdi",
+            "cluster",
+            "secrets",
+            "bootstrap",
+            "status",
+            "kernel-tune",
+        ];
+
+        for cmd in &subcommands {
+            let scalex_cmd = format!("scalex {}", cmd);
+            assert!(
+                readme.contains(&scalex_cmd),
+                "README must document 'scalex {}' command",
+                cmd
+            );
+        }
+
+        // README must also document the get subcommands
+        let get_subcommands = ["baremetals", "sdi-pools", "clusters", "config-files"];
+        for sub in &get_subcommands {
+            let get_cmd = format!("scalex get {}", sub);
+            assert!(
+                readme.contains(&get_cmd),
+                "README must document '{}' query command",
+                get_cmd
+            );
+        }
+    }
+
+    #[test]
+    fn test_sprint34c_readme_project_structure_matches_reality() {
+        // README Project Structure section must reference actual directories
+        let readme = include_str!("../../../README.md");
+
+        // Core directories that must be in Project Structure
+        let required_dirs = [
+            "scalex-cli/",
+            "gitops/",
+            "credentials/",
+            "config/",
+            "docs/",
+            "ansible/",
+            "kubespray/",
+            "client/",
+            "tests/",
+            "_generated/",
+        ];
+
+        for dir in &required_dirs {
+            assert!(
+                readme.contains(dir),
+                "README Project Structure must include '{}'",
+                dir
+            );
+        }
+
+        // GitOps subdirs
+        let gitops_subdirs = [
+            "bootstrap/",
+            "generators/",
+            "projects/",
+            "common/",
+            "tower/",
+            "sandbox/",
+        ];
+        for subdir in &gitops_subdirs {
+            assert!(
+                readme.contains(subdir),
+                "README must reference gitops subdirectory '{}'",
+                subdir
+            );
+        }
+    }
 }

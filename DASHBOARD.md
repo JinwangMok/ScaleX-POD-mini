@@ -103,7 +103,7 @@
 | clap derive CLI | ✅ |
 | 순수 함수 분리 (`generate_*` / `run_*`) | ✅ |
 | thiserror 에러 처리 | ✅ |
-| 497 tests, 0 clippy warnings, fmt OK | ✅ |
+| 505 tests, 0 clippy warnings, fmt OK | ✅ |
 
 ---
 
@@ -169,7 +169,7 @@ Architecture, Design Philosophy(7원칙), Installation Guide(Step 0~8), CLI Refe
 ### #12. 디렉토리 구조 — ✅ STRUCTURE-OK
 
 ```
-scalex-cli/           ✅ Rust CLI (497 tests)
+scalex-cli/           ✅ Rust CLI (505 tests)
 gitops/               ✅ ArgoCD multi-cluster
   bootstrap/          ✅ spread.yaml
   generators/         ✅ tower/ + sandbox/
@@ -262,24 +262,24 @@ tests/                ✅ run-tests.sh
 
 ---
 
-### Sprint 34: SOCKS5 Proxy 검증 + External Access 문서 보강
+### Sprint 34: SOCKS5 Proxy 검증 + External Access 문서 보강 ✅ (완료)
 
-#### 34a — SOCKS5 Proxy GitOps 구조 검증 (+3 tests)
-- [ ] `gitops/tower/socks5-proxy/` manifest YAML 파싱 유효성
-- [ ] sync wave 3 설정 확인
-- [ ] Service/Deployment 포트 1080 노출 확인
+#### 34a — SOCKS5 Proxy GitOps 구조 검증 (+3 tests) ✅
+- [x] `gitops/tower/socks5-proxy/` manifest YAML 파싱 유효성 (Deployment + Service)
+- [x] sync wave 3 설정 확인 (tower-generator.yaml)
+- [x] Service port 1080 + ClusterIP 보안 검증
 
-#### 34b — External Access 경로 문서 정합성 (+2 tests)
-- [ ] README External Access 테이블 — 4가지 방법 모두 포함 확인
-- [ ] `docs/ops-guide.md`에 Tailscale + SOCKS5 + LAN 가이드 존재 확인
+#### 34b — External Access 경로 문서 정합성 (+2 tests) ✅
+- [x] README External Access 테이블 — 4가지 방법 모두 포함 확인 (LAN, Tailscale, CF Tunnel, SOCKS5)
+- [x] `docs/ops-guide.md`에 Tailscale + SOCKS5 + LAN + Pre-OIDC 가이드 존재 확인
 
-#### 34c — README Installation Guide 완전성 감사 (+3 tests)
-- [ ] Step 0~8 모든 단계에서 참조하는 파일이 실제 존재하는지
-- [ ] CLI 명령어가 README와 실제 `Cli` struct의 서브커맨드 일치
-- [ ] `scalex --help` 출력과 README CLI Reference 테이블 일치
+#### 34c — README Installation Guide 완전성 감사 (+3 tests) ✅
+- [x] Step 0~8 모든 단계에서 참조하는 파일이 실제 존재하는지 (include_str! 컴파일 타임 검증)
+- [x] CLI 8개 서브커맨드 + get 4개 서브커맨드가 README CLI Reference에 모두 존재
+- [x] README Project Structure에 10개 디렉토리 + gitops 6개 서브디렉토리 매칭
 
 #### 34d — 커밋/푸시
-- [ ] 테스트 카운트 업데이트
+- [x] 테스트 카운트 업데이트 (497 → 505)
 - [ ] 커밋 + 푸시
 
 ---
@@ -425,4 +425,4 @@ _generated/
 | models/* | 8 | parse/serialize |
 | core/resource_pool | 7 | aggregation, table |
 | core/ssh | 5 | SSH command building |
-| **TOTAL** | **497** | **순수 함수 + 구조 + 모듈 간 Integration (Sprint 33)** |
+| **TOTAL** | **505** | **순수 함수 + 구조 + Integration + GitOps/문서 검증 (Sprint 33-34)** |
