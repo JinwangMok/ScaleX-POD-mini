@@ -565,6 +565,20 @@ fn run_sync(
     // Step 5: Check for side effects on removal using pure function
     if !diff.to_remove.is_empty() {
         let sdi_state_path = output_dir.join("sdi-state.json");
+
+        // Safety check: warn if state file missing but removing nodes
+        let safety_warnings =
+            sync::validate_removal_safety(sdi_state_path.exists(), &diff.to_remove);
+        for w in &safety_warnings {
+            eprintln!("[sdi] WARNING: {}", w);
+        }
+        if !safety_warnings.is_empty() && !dry_run {
+            anyhow::bail!(
+                "Cannot safely remove nodes without SDI state. \
+                 Run `scalex sdi init` first or use `--force` to override."
+            );
+        }
+
         if sdi_state_path.exists() {
             let state_raw = std::fs::read_to_string(&sdi_state_path)?;
             let pools: Vec<SdiPoolState> = serde_json::from_str(&state_raw)?;

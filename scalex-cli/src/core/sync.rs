@@ -102,13 +102,29 @@ pub fn classify_conflict_severity(
     }
 }
 
+/// Validate that it is safe to remove nodes when SDI state file is absent.
+/// If state is missing AND nodes are being removed, we cannot check for VM conflicts —
+/// return warnings so the caller can block or alert.
+/// Pure function: no I/O, no side effects.
+pub fn validate_removal_safety(has_state: bool, nodes_to_remove: &[String]) -> Vec<String> {
+    if has_state || nodes_to_remove.is_empty() {
+        return Vec::new();
+    }
+    let mut warnings = Vec::new();
+    warnings.push(format!(
+        "SDI state file not found but {} node(s) scheduled for removal: {}. \
+         Cannot verify whether these hosts have active VMs. \
+         Run `scalex sdi init` first to establish state, or use `--force` to proceed at your own risk.",
+        nodes_to_remove.len(),
+        nodes_to_remove.join(", ")
+    ));
+    warnings
+}
+
 /// Check if any conflicts would affect the management cluster.
 /// Returns true if removing nodes would destroy the management plane — this should be a hard block.
 /// Pure function: no I/O, no side effects.
-pub fn has_management_cluster_conflict(
-    conflicts: &[VmConflict],
-    pools: &[SdiPoolState],
-) -> bool {
+pub fn has_management_cluster_conflict(conflicts: &[VmConflict], pools: &[SdiPoolState]) -> bool {
     conflicts
         .iter()
         .any(|c| classify_conflict_severity(c, pools) == ConflictSeverity::Critical)
@@ -568,6 +584,55 @@ mod tests {
             !has_management_cluster_conflict(&conflicts, &pools),
             "Empty conflicts must return false"
         );
+    }
+
+    // --- validate_removal_safety ---
+
+    #[test]
+    fn test_removal_safety_no_state_with_removals_warns() {
+        let to_remove = vec!["playbox-1".to_string(), "playbox-2".to_string()];
+        let warnings = validate_removal_safety(false, &to_remove);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("SDI state file not found"),
+            "Must warn about missing state — got: {}",
+            warnings[0]
+        );
+        assert!(
+            warnings[0].contains("playbox-1"),
+            "Must list affected nodes"
+        );
+        assert!(
+            warnings[0].contains("playbox-2"),
+            "Must list affected nodes"
+        );
+    }
+
+    #[test]
+    fn test_removal_safety_has_state_no_warning() {
+        let to_remove = vec!["playbox-1".to_string()];
+        let warnings = validate_removal_safety(true, &to_remove);
+        assert!(
+            warnings.is_empty(),
+            "When state file exists, no safety warning needed — conflict detection handles it"
+        );
+    }
+
+    #[test]
+    fn test_removal_safety_no_state_empty_removals_no_warning() {
+        let to_remove: Vec<String> = vec![];
+        let warnings = validate_removal_safety(false, &to_remove);
+        assert!(
+            warnings.is_empty(),
+            "No removals = no risk, even without state file"
+        );
+    }
+
+    #[test]
+    fn test_removal_safety_has_state_empty_removals_no_warning() {
+        let to_remove: Vec<String> = vec![];
+        let warnings = validate_removal_safety(true, &to_remove);
+        assert!(warnings.is_empty());
     }
 
     #[test]

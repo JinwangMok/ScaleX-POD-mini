@@ -6,6 +6,19 @@ use crate::models::sdi::{SdiPool, SdiSpec};
 pub fn generate_inventory(cluster: &ClusterDef, sdi_spec: &SdiSpec) -> Result<String, String> {
     let pool = find_pool(sdi_spec, &cluster.cluster_sdi_resource_pool)?;
 
+    // Validate: at least one node must have control-plane role
+    let has_control_plane = pool
+        .node_specs
+        .iter()
+        .any(|n| n.roles.iter().any(|r| r == "control-plane"));
+    if !has_control_plane {
+        return Err(format!(
+            "SDI pool '{}' for cluster '{}' has no node with control-plane role \
+             (Kubespray requires at least one)",
+            pool.pool_name, cluster.cluster_name
+        ));
+    }
+
     let mut ini = String::new();
 
     // [all] section
@@ -509,6 +522,49 @@ mod tests {
         let result = generate_inventory(&cluster, &sdi);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does-not-exist"));
+    }
+
+    #[test]
+    fn test_generate_inventory_sdi_no_control_plane_rejected() {
+        // SDI pool with workers-only should be rejected (same as baremetal parity)
+        let mut sdi = make_sdi_spec();
+        // Replace sandbox pool's node_specs with workers-only
+        sdi.spec.sdi_pools[1].node_specs = vec![
+            NodeSpec {
+                node_name: "sandbox-w-0".to_string(),
+                ip: "192.168.88.120".to_string(),
+                cpu: 8,
+                mem_gb: 16,
+                disk_gb: 100,
+                host: Some("playbox-1".to_string()),
+                roles: vec!["worker".to_string()],
+                devices: None,
+            },
+            NodeSpec {
+                node_name: "sandbox-w-1".to_string(),
+                ip: "192.168.88.121".to_string(),
+                cpu: 8,
+                mem_gb: 16,
+                disk_gb: 100,
+                host: Some("playbox-2".to_string()),
+                roles: vec!["worker".to_string()],
+                devices: None,
+            },
+        ];
+        let cluster = make_cluster_def("sandbox", "sandbox");
+        let result = generate_inventory(&cluster, &sdi);
+        assert!(result.is_err(), "Workers-only SDI pool must be rejected");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("control-plane"),
+            "Error must mention control-plane — got: {}",
+            err
+        );
+        assert!(
+            err.contains("sandbox"),
+            "Error must mention pool/cluster name — got: {}",
+            err
+        );
     }
 
     #[test]
