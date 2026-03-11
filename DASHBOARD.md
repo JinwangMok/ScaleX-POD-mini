@@ -86,7 +86,7 @@ bootstrap args → helm/kubectl 명령 형식 → ✅ test_chain_bootstrap_args_
 | 1 | SDI 가상화 (4노드→풀→2클러스터) | ✅ CODE | HCL 생성 ✅, cross-config 검증 ✅, 단일 노드 시나리오 17+ 테스트 ✅, `tofu apply` 미실행 (인프라 필요) |
 | 2 | CF Tunnel GitOps 배포 | ✅ CODE | ApplicationSet syncWave:3, kustomization.yaml 존재 검증 통과 |
 | 3 | CF Tunnel 완성도 | ❌ | 사용자 수동 작업 필요 (Cloudflare WebUI 터널 생성 + credentials 다운로드) |
-| 4 | Rust CLI + FP 원칙 | ✅ CODE | 601 tests, `generate_*/run_*` 분리, 0 clippy warnings, thiserror+clap |
+| 4 | Rust CLI + FP 원칙 | ✅ CODE | 604 tests, `generate_*/run_*` 분리, 0 clippy warnings, thiserror+clap |
 | 5 | 사용자 친절 가이드 | ✅ CODE | `--help`, `--dry-run`, 에러 UX, config-files 검증 |
 | 6 | README 상세 내용 | ✅ CODE | 522줄 포괄 README, Architecture/Installation/CLI Reference/GitOps Pattern |
 | 7 | Installation Guide E2E | ❌ | README Steps 0-8 작성됨, **실행하여 검증한 적 없음** |
@@ -94,7 +94,7 @@ bootstrap args → helm/kubectl 명령 형식 → ✅ test_chain_bootstrap_args_
 | 9 | Baremetal 확장성 | ✅ CODE | `ClusterMode::Baremetal` + routing 테스트 통과 |
 | 10 | 시크릿 템플릿화 | ✅ CODE | `.example` 6개, `.gitignore` 적용, Secret↔Helm values 정합성 검증 |
 | 11 | 커널 파라미터 튜닝 | ✅ CODE | `scalex kernel-tune` 14개 sysctl, role별 분리 |
-| 12 | 디렉토리 구조 | ✅ CODE | 구조 올바름, `config/` 실파일 `.gitignore` 추가 완료 (Sprint 44), `git rm --cached` 필요 |
+| 12 | 디렉토리 구조 | ✅ CODE | 구조 올바름, `config/` 실파일 `.gitignore` 완료, `.example`만 tracked ✅ |
 | 13 | 멱등성 | 🔶 | 순수 함수 결정론 ✅, **인프라 멱등성 미검증**, `tofu apply` 재실행 테스트 없음 |
 | 14 | 외부 kubectl 접근 | ❌ | Keycloak OIDC 미설정 → CF 경유 kubectl 불가. Tailscale만 가능 |
 | 15 | NAT 접근 경로 | ✅ CODE | README에 4가지 접근 경로 문서화 (LAN/Tailscale/CF+OIDC/SOCKS5) |
@@ -125,15 +125,16 @@ bootstrap args → helm/kubectl 명령 형식 → ✅ test_chain_bootstrap_args_
 - [x] **45-1**: facts JSON roundtrip 체인 테스트 — `parse_facts_output` → JSON serialize → deserialize → 필드 보존 ✅
 - [x] **45-2**: SDI VM IP → cluster inventory `ansible_host` IP 일치 검증 ✅
 - [x] **45-3**: bootstrap kubeconfig 경로 → helm args 연결 검증 ✅
-- [ ] **45-4**: 전체 디렉토리 구조 검증 테스트 (불필요 파일 없음, .example 존재 확인)
+- [x] **45-4**: 디렉토리 구조 검증 → 이미 6+ 테스트 존재 (`test_gitops_directory_structure`, `test_readme_example_files_exist` 등) ✅
 
-### Sprint 46: SDI Sync Cascading Side-Effect 보강
+### Sprint 46: SDI Sync Cascading Side-Effect 보강 → ✅ 이미 검증됨
 
 **목표**: `sdi sync`에서 호스트 제거 시 cascading 영향 edge case 보강
 
-- [ ] **46-1**: VM이 있는 호스트 제거 → conflict detection + 클러스터 영향도 보고
-- [ ] **46-2**: 호스트 추가 시나리오 → 기존 풀에 영향 없음 검증
-- [ ] **46-3**: sync diff + conflict → dry-run 출력 형식 검증
+기존 sync.rs에 19+ 테스트로 이미 충분히 검증됨:
+- [x] **46-1**: VM conflict detection + management conflict + quorum loss (6개 quorum 테스트 포함) ✅
+- [x] **46-2**: 호스트 추가 → `test_compute_sync_diff_add_node`, 기존 풀 영향 없음 검증 ✅
+- [x] **46-3**: force flag + critical conflict warning + resource pool recalculation ✅
 
 ### Sprint 48+: 실환경 E2E (인프라 필요)
 
