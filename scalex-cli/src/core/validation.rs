@@ -6258,4 +6258,90 @@ config:
             "Single-cluster mode: tower manages no other clusters"
         );
     }
+
+    // ── Sprint 21e: README Installation Guide CLI consistency ──
+
+    /// Sprint 21e: README must only reference real scalex subcommands.
+    /// Catches stale documentation that references removed/renamed commands.
+    #[test]
+    fn test_readme_references_real_scalex_commands() {
+        let readme = include_str!("../../../README.md");
+
+        let valid_subcommands = [
+            "facts",
+            "sdi",
+            "cluster",
+            "get",
+            "secrets",
+            "bootstrap",
+            "status",
+            "kernel-tune",
+        ];
+
+        let mut unknown_commands = Vec::new();
+
+        for line in readme.lines() {
+            // Find "scalex " occurrences in this line
+            let mut search_from = 0;
+            while let Some(pos) = line[search_from..].find("scalex ") {
+                let abs_pos = search_from + pos + 7; // skip "scalex "
+                if abs_pos >= line.len() {
+                    break;
+                }
+
+                // Extract the next word after "scalex "
+                let rest = &line[abs_pos..];
+                let subcommand: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+
+                // Skip flags (--help, etc.) and empty
+                if subcommand.is_empty() || subcommand.starts_with('-') {
+                    search_from = abs_pos;
+                    continue;
+                }
+
+                if !valid_subcommands.contains(&subcommand.as_str()) {
+                    unknown_commands.push(format!("scalex {}", subcommand));
+                }
+
+                search_from = abs_pos;
+            }
+        }
+
+        assert!(
+            unknown_commands.is_empty(),
+            "README references unknown scalex commands: {:?}",
+            unknown_commands
+        );
+    }
+
+    /// Sprint 21e: README Installation Guide must have all 9 steps (0, 0.5, 1-8).
+    #[test]
+    fn test_readme_installation_guide_all_steps() {
+        let readme = include_str!("../../../README.md");
+
+        let required_steps = [
+            "Step 0:",
+            "Step 0.5:",
+            "Step 1:",
+            "Step 1.5:",
+            "Step 2:",
+            "Step 3:",
+            "Step 4:",
+            "Step 5:",
+            "Step 6:",
+            "Step 7:",
+            "Step 8:",
+        ];
+
+        for step in &required_steps {
+            assert!(
+                readme.contains(step),
+                "README Installation Guide missing '{}'",
+                step
+            );
+        }
+    }
 }
