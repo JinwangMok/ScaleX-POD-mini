@@ -75,7 +75,7 @@ cargo fmt --check                        # Format check
 
 ## GitOps Pattern
 
-**Bootstrap**: `kubectl apply -f gitops/bootstrap/spread.yaml`
+**Bootstrap**: `scalex bootstrap` (internally: Helm ArgoCD install → cluster register → `kubectl apply -f gitops/bootstrap/spread.yaml`)
 
 **Multi-cluster structure**:
 - `spread.yaml` → creates `tower-root` + `sandbox-root` Applications

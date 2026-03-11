@@ -12,7 +12,7 @@
 - Sandbox 클러스터 리셋 시에도 유지됨
 - OpenTofu + libvirt로 생성
 
-**Sandbox 클러스터** (4대 베어메탈 노드에 kubespray 설치):
+**Sandbox 클러스터** (playbox-0~3의 SDI VM에 Kubespray K8s):
 - 워크로드용 전체 Kubernetes 클러스터
 - Cilium CNI (kube-proxy 대체)
 - Keycloak을 통한 OIDC 인증
@@ -81,7 +81,7 @@ spread.yaml (루트 Application)
 - Survives sandbox cluster resets
 - Created via OpenTofu + libvirt
 
-**Sandbox cluster** (kubespray on all 4 bare-metal nodes):
+**Sandbox cluster** (SDI VMs across playbox-0~3, Kubespray K8s):
 - Full Kubernetes cluster for workloads
 - Cilium CNI (kube-proxy replacement)
 - Keycloak for OIDC authentication
