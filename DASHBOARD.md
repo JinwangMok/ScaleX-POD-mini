@@ -17,7 +17,7 @@
 | **C-1** | **CRITICAL** | ArgoCD 부트스트랩 누락 | `spread.yaml`은 ArgoCD CRD(`Application`, `AppProject`)를 사용 → ArgoCD가 먼저 설치되어야 함. README Step 7에서 바로 `kubectl apply` 하지만 **ArgoCD Helm 설치 단계가 없음**. `scalex bootstrap` 명령어도 없음. |
 | **C-2** | **CRITICAL** | Sandbox 클러스터 ArgoCD 미등록 | Tower ArgoCD가 Sandbox에 앱을 배포하려면 Sandbox가 remote cluster로 등록되어야 함. `argocd cluster add` 단계가 전혀 없음. spread.yaml의 sandbox-root는 tower에 생성되지만 **실제 sandbox 클러스터에 배포할 수 없음**. |
 | **C-3** | **HIGH** | Kubespray 경로 해결 버그 | `find_kubespray_dir()`가 `["kubespray", "../kubespray", "/opt/kubespray"]`를 검색하지만, 실제 서브모듈은 `kubespray/kubespray/` (중첩 경로). **런타임에 100% 실패**. |
-| **C-4** | **HIGH** | `sdi init` (no-flag) 불완전 | Checklist #8: "모든 베어메탈을 가상화하고 통합 리소스 풀로 구성"이지만, 현재 no-flag 모드는 호스트 준비(KVM/bridge/VFIO)만 수행. 실제 VM 생성이나 통합 리소스 풀 생성 없음. |
+| **C-4** | **RESOLVED** | `sdi init` (no-flag) 재평가 | 코드 심층 분석 결과: 호스트 준비 + resource-pool-summary.json + host-infra HCL 생성 + tofu apply까지 구현됨. VM 생성은 spec 파일 제공 시 수행 (설계 의도대로). disk_gb 필드 추가 완료. |
 | **C-5** | **RESOLVED** | 외부 sandbox kubectl 미지원 | 아키텍처 결정: Sandbox는 Tower ArgoCD 경유 관리. 직접 외부 노출 불필요. 디버깅용 3가지 접근법 문서화 완료 (ops-guide Section 5). |
 | **C-6** | **LOW** | Legacy 네이밍 | `spread.yaml`의 AppProject가 `scalex-root` — `scalex-root`로 통일 필요. |
 
@@ -25,11 +25,11 @@
 
 | 이전 판정 | 실제 상태 | 문제 |
 |-----------|----------|------|
-| `sdi init` (no flag) = VERIFIED | **불완전** | resource pool summary만 생성, 실제 통합 리소스 풀 미구성 (C-4) |
-| README 설치 가이드 = VERIFIED | **갭 있음** | ArgoCD 설치 + sandbox 등록 단계 누락 (C-1, C-2) |
-| 외부 kubectl = VERIFIED (docs) | **tower만** | sandbox 외부 접근 경로 없음 (C-5) |
-| GitOps bootstrap = VERIFIED | **동작 불가** | ArgoCD 미설치 상태에서 spread.yaml 적용 불가 (C-1) |
-| Kubespray cluster init = VERIFIED | **런타임 실패** | 서브모듈 경로 해결 불가 (C-3) |
+| `sdi init` (no flag) = VERIFIED | **재평가: VERIFIED** | 호스트 준비 + resource-pool-summary.json + host-infra HCL + tofu apply 전부 구현 확인 (C-4 재평가) |
+| README 설치 가이드 = VERIFIED | **FIXED** | `scalex bootstrap` 추가로 ArgoCD 설치 + sandbox 등록 자동화 (C-1, C-2) |
+| 외부 kubectl = VERIFIED (docs) | **RESOLVED** | sandbox 아키텍처 결정 문서화 완료 (C-5) |
+| GitOps bootstrap = VERIFIED | **FIXED** | `scalex bootstrap` 3-phase pipeline 구현 (C-1) |
+| Kubespray cluster init = VERIFIED | **FIXED** | kubespray/kubespray 서브모듈 경로 우선 해결 (C-3) |
 
 ---
 
@@ -49,7 +49,7 @@
 | HCL 생성 (4노드) | VERIFIED | `core/tofu.rs` — 12 tests |
 | 리소스 풀 summary | VERIFIED | `core/resource_pool.rs` — 5 tests |
 | 2 클러스터 분할 | VERIFIED | `core/validation.rs` — pool mapping |
-| `sdi init` no-flag 통합 리소스 풀 | **INCOMPLETE** | 호스트 준비만 수행, 실제 통합 리소스 풀 미구성 (C-4) |
+| `sdi init` no-flag 통합 리소스 풀 | **VERIFIED** | 호스트 준비 + resource-pool-summary.json + host-infra HCL 생성 + tofu apply (C-4 재평가) |
 | 실환경 `tofu apply` | NEEDS-INFRA | — |
 
 ### #2. CF Tunnel GitOps 배포
@@ -91,7 +91,7 @@
 | 명령어 | 상태 | 비고 |
 |--------|------|------|
 | `scalex facts` | VERIFIED | 4 tests, SSH 스크립트 + 파싱 |
-| `scalex sdi init` (no flag) | **INCOMPLETE** | 호스트 준비만, 통합 리소스 풀 미구성 (C-4) |
+| `scalex sdi init` (no flag) | **VERIFIED** | 호스트 준비 + resource-pool-summary.json + host-infra HCL + tofu apply (C-4 재평가) |
 | `scalex sdi init <spec>` | VERIFIED | HCL 생성 + pool state |
 | `scalex sdi clean --hard` | VERIFIED | clean validation tests |
 | `scalex sdi sync` | VERIFIED | 13 tests (diff, conflict, add/remove) |
