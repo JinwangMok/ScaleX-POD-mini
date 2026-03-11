@@ -211,6 +211,67 @@ pub fn validate_baremetal_config(config: &BaremetalInitConfig) -> Vec<String> {
     errors
 }
 
+// ── Sprint 38: User-friendly config error helpers (pure functions) ──
+
+/// Format a user-friendly error message when a config file is not found.
+/// If an example file path is provided, suggests copying it.
+/// Pure function: no I/O.
+pub fn format_config_not_found(missing_path: &str, example_path: &str) -> String {
+    format!(
+        "Config file not found: {}\n\
+         \n\
+         To get started, copy the example template:\n\
+         \n\
+         cp {} {}\n\
+         \n\
+         Then edit the file with your actual values.",
+        missing_path, example_path, missing_path
+    )
+}
+
+/// Validate that a config file exists, returning a user-friendly error if not.
+/// Pure function: only checks path existence.
+pub fn validate_config_file_exists(
+    path: &str,
+    example_path: Option<&str>,
+) -> Result<(), String> {
+    if Path::new(path).exists() {
+        Ok(())
+    } else {
+        match example_path {
+            Some(example) => Err(format_config_not_found(path, example)),
+            None => Err(format!("Config file not found: {}", path)),
+        }
+    }
+}
+
+/// Format a user-friendly YAML parse error with file context.
+/// Pure function.
+pub fn format_yaml_parse_error(file_path: &str, err: &serde_yaml::Error) -> String {
+    format!(
+        "Failed to parse YAML in '{}':\n\
+         \n\
+         {}\n\
+         \n\
+         Check indentation and field names against the .example template.",
+        file_path, err
+    )
+}
+
+/// Format multiple validation errors into a single user-friendly message.
+/// Returns empty string if there are no errors.
+/// Pure function.
+pub fn format_validation_errors(context: &str, errors: &[String]) -> String {
+    if errors.is_empty() {
+        return String::new();
+    }
+    let mut msg = format!("{} validation found {} error(s):\n", context, errors.len());
+    for err in errors {
+        msg.push_str(&format!("  - {}\n", err));
+    }
+    msg
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,5 +619,84 @@ targetNodes:
             config.target_nodes[1].reachable_via,
             Some(vec!["playbox-0".to_string()])
         );
+    }
+
+    // ── Sprint 38: Config error UX tests ──
+
+    #[test]
+    fn test_friendly_error_missing_config_file() {
+        let msg = format_config_not_found("config/k8s-clusters.yaml", "config/k8s-clusters.yaml.example");
+        assert!(msg.contains("config/k8s-clusters.yaml"), "must mention the missing file");
+        assert!(msg.contains(".example"), "must suggest copying from .example");
+        assert!(msg.contains("cp "), "must include cp command");
+    }
+
+    #[test]
+    fn test_friendly_error_missing_credentials() {
+        let msg = format_config_not_found("credentials/.baremetal-init.yaml", "credentials/.baremetal-init.yaml.example");
+        assert!(msg.contains("credentials/.baremetal-init.yaml"));
+        assert!(msg.contains(".example"));
+    }
+
+    #[test]
+    fn test_friendly_error_missing_env() {
+        let msg = format_config_not_found("credentials/.env", "credentials/.env.example");
+        assert!(msg.contains("credentials/.env"));
+        assert!(msg.contains(".example"));
+    }
+
+    #[test]
+    fn test_validate_config_file_exists_ok() {
+        // Existing file should return Ok
+        let result = validate_config_file_exists("Cargo.toml", None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_file_exists_missing_with_example() {
+        let result = validate_config_file_exists(
+            "nonexistent/config.yaml",
+            Some("config/k8s-clusters.yaml.example"),
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("nonexistent/config.yaml"), "error must name the missing file");
+        assert!(err.contains(".example"), "error must mention the example file");
+    }
+
+    #[test]
+    fn test_validate_config_file_exists_missing_no_example() {
+        let result = validate_config_file_exists("nonexistent/file.yaml", None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("nonexistent/file.yaml"));
+    }
+
+    #[test]
+    fn test_format_yaml_parse_error_hint() {
+        let bad_yaml = "targetNodes:\n  - name: test\n  bad_indent: true";
+        let err = serde_yaml::from_str::<BaremetalInitConfig>(bad_yaml).unwrap_err();
+        let msg = format_yaml_parse_error("credentials/.baremetal-init.yaml", &err);
+        assert!(msg.contains("credentials/.baremetal-init.yaml"), "must name the file");
+        assert!(msg.contains("YAML"), "must mention YAML");
+    }
+
+    #[test]
+    fn test_format_validation_errors_empty() {
+        let msg = format_validation_errors("SDI spec", &[]);
+        assert!(msg.is_empty(), "no errors = no output");
+    }
+
+    #[test]
+    fn test_format_validation_errors_multiple() {
+        let errors = vec![
+            "Duplicate pool name 'tower'".to_string(),
+            "Node 'cp-0' has 0 CPU cores".to_string(),
+        ];
+        let msg = format_validation_errors("SDI spec", &errors);
+        assert!(msg.contains("SDI spec"), "must mention the context");
+        assert!(msg.contains("Duplicate pool name"), "must include first error");
+        assert!(msg.contains("0 CPU cores"), "must include second error");
+        assert!(msg.contains("2 error(s)"), "must show error count");
     }
 }
