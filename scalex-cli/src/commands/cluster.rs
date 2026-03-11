@@ -1087,4 +1087,293 @@ kubespray_version: "v2.30.0"
             );
         }
     }
+
+    // ── Sprint 37: Dry-run E2E pipeline tests (CL-7) ──
+
+    /// Full pipeline: load both example configs → validate → generate inventory+vars
+    /// for every cluster. This simulates what `scalex cluster init` does minus I/O.
+    #[test]
+    fn test_full_dryrun_pipeline_both_configs() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: crate::models::sdi::SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        // Step 1: Validate cross-references (every SDI cluster must have matching pool)
+        let mapping_errors = crate::core::validation::validate_cluster_sdi_pool_mapping(
+            &k8s_config,
+            &sdi_spec,
+        );
+        assert!(
+            mapping_errors.is_empty(),
+            "pool mapping errors: {:?}",
+            mapping_errors
+        );
+
+        // Step 2: Validate SDI spec itself
+        let sdi_errors = crate::core::validation::validate_sdi_spec(&sdi_spec);
+        assert!(
+            sdi_errors.is_empty(),
+            "SDI spec errors: {:?}",
+            sdi_errors
+        );
+
+        // Step 3: Validate unique cluster names and IDs
+        let name_errors = crate::core::validation::validate_unique_cluster_names(&k8s_config);
+        assert!(name_errors.is_empty(), "duplicate cluster names: {:?}", name_errors);
+
+        let id_errors = crate::core::validation::validate_unique_cluster_ids(&k8s_config);
+        assert!(id_errors.is_empty(), "duplicate cluster IDs: {:?}", id_errors);
+
+        // Step 4: Validate no network overlap
+        let net_errors = crate::core::validation::validate_cluster_network_overlap(&k8s_config);
+        assert!(net_errors.is_empty(), "network overlap: {:?}", net_errors);
+
+        // Step 5: Generate inventory + vars for each cluster
+        for cluster in &k8s_config.config.clusters {
+            let ini = crate::core::kubespray::generate_inventory(cluster, &sdi_spec)
+                .unwrap_or_else(|e| panic!("inventory generation failed for {}: {}", cluster.cluster_name, e));
+
+            // Inventory must have all required sections
+            for section in &["[all]", "[kube_control_plane]", "[etcd]", "[kube_node]", "[k8s_cluster:children]"] {
+                assert!(
+                    ini.contains(section),
+                    "{}: missing section {}",
+                    cluster.cluster_name,
+                    section
+                );
+            }
+
+            let vars = crate::core::kubespray::generate_cluster_vars(
+                cluster,
+                &k8s_config.config.common,
+            );
+
+            // Vars must contain essential Kubespray settings
+            assert!(vars.contains("kube_version:"), "{}: missing kube_version", cluster.cluster_name);
+            assert!(vars.contains("container_manager:"), "{}: missing container_manager", cluster.cluster_name);
+            assert!(vars.contains("kube_pods_subnet:"), "{}: missing kube_pods_subnet", cluster.cluster_name);
+            assert!(vars.contains("kube_service_addresses:"), "{}: missing kube_service_addresses", cluster.cluster_name);
+        }
+    }
+
+    /// Verify that the pipeline produces distinct, non-overlapping inventories
+    /// for tower vs sandbox clusters.
+    #[test]
+    fn test_dryrun_pipeline_inventories_are_distinct() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: crate::models::sdi::SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let inventories: Vec<(String, String)> = k8s_config
+            .config
+            .clusters
+            .iter()
+            .map(|c| {
+                let ini = crate::core::kubespray::generate_inventory(c, &sdi_spec).unwrap();
+                (c.cluster_name.clone(), ini)
+            })
+            .collect();
+
+        assert!(inventories.len() >= 2, "example config must define at least 2 clusters");
+
+        // Collect all IPs from each cluster inventory
+        let extract_ips = |ini: &str| -> Vec<String> {
+            ini.lines()
+                .filter_map(|line| {
+                    line.split("ansible_host=")
+                        .nth(1)
+                        .and_then(|s| s.split_whitespace().next())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        };
+
+        let tower_ips = extract_ips(&inventories[0].1);
+        let sandbox_ips = extract_ips(&inventories[1].1);
+
+        // No IP should appear in both inventories
+        for ip in &tower_ips {
+            assert!(
+                !sandbox_ips.contains(ip),
+                "IP {} appears in both tower and sandbox inventories — clusters must be distinct",
+                ip
+            );
+        }
+
+        // Each cluster must have at least one node
+        assert!(!tower_ips.is_empty(), "tower inventory has no nodes");
+        assert!(!sandbox_ips.is_empty(), "sandbox inventory has no nodes");
+    }
+
+    /// Verify that cluster vars for different clusters have non-overlapping CIDRs
+    /// and distinct cluster names/IDs.
+    #[test]
+    fn test_dryrun_pipeline_cluster_vars_distinct() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let all_vars: Vec<(String, String)> = k8s_config
+            .config
+            .clusters
+            .iter()
+            .map(|c| {
+                let vars = crate::core::kubespray::generate_cluster_vars(c, &k8s_config.config.common);
+                (c.cluster_name.clone(), vars)
+            })
+            .collect();
+
+        assert!(all_vars.len() >= 2);
+
+        // Tower and sandbox must have different pod CIDRs
+        let tower_vars = &all_vars[0].1;
+        let sandbox_vars = &all_vars[1].1;
+
+        assert_ne!(
+            k8s_config.config.clusters[0].network.pod_cidr,
+            k8s_config.config.clusters[1].network.pod_cidr,
+            "clusters must have distinct pod CIDRs"
+        );
+
+        // Each must reference its own cluster_name
+        assert!(
+            tower_vars.contains("cluster_name: \"tower\""),
+            "tower vars must contain tower cluster_name"
+        );
+        assert!(
+            sandbox_vars.contains("cluster_name: \"sandbox\""),
+            "sandbox vars must contain sandbox cluster_name"
+        );
+
+        // Cilium cluster IDs must differ
+        if let (Some(t_cilium), Some(s_cilium)) = (
+            &k8s_config.config.clusters[0].cilium,
+            &k8s_config.config.clusters[1].cilium,
+        ) {
+            assert_ne!(
+                t_cilium.cluster_id, s_cilium.cluster_id,
+                "Cilium cluster IDs must be unique across clusters"
+            );
+        }
+    }
+
+    /// Single-node pipeline: 1 bare-metal → 1 SDI pool → 1 cluster → full validation.
+    /// This tests the minimal viable deployment scenario (CL-1 philosophy).
+    #[test]
+    fn test_dryrun_single_node_pipeline_end_to_end() {
+        let sdi_yaml = r#"
+resource_pool:
+  name: "single-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.1.0/24"
+    gateway: "192.168.1.1"
+    nameservers: ["1.1.1.1"]
+os_image:
+  source: "https://example.com/img.qcow2"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id.pub"
+spec:
+  sdi_pools:
+    - pool_name: "aio"
+      purpose: "all-in-one"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "node-0"
+          ip: "192.168.1.100"
+          cpu: 4
+          mem_gb: 8
+          disk_gb: 50
+          roles: [control-plane, worker]
+"#;
+
+        let k8s_yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+    cni: "cilium"
+    cilium_version: "1.17.5"
+    kube_proxy_remove: true
+    helm_enabled: true
+  clusters:
+    - cluster_name: "mini"
+      cluster_sdi_resource_pool: "aio"
+      cluster_role: "management"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+        dns_domain: "mini.local"
+      cilium:
+        cluster_id: 1
+        cluster_name: "mini"
+"#;
+
+        let sdi_spec: crate::models::sdi::SdiSpec = serde_yaml::from_str(sdi_yaml).unwrap();
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_yaml).unwrap();
+
+        // Validation
+        let mapping_errors = crate::core::validation::validate_cluster_sdi_pool_mapping(&k8s_config, &sdi_spec);
+        assert!(mapping_errors.is_empty(), "mapping errors: {:?}", mapping_errors);
+
+        let sdi_errors = crate::core::validation::validate_sdi_spec(&sdi_spec);
+        assert!(sdi_errors.is_empty(), "SDI errors: {:?}", sdi_errors);
+
+        // Generate
+        let cluster = &k8s_config.config.clusters[0];
+        let ini = crate::core::kubespray::generate_inventory(cluster, &sdi_spec).unwrap();
+        let vars = crate::core::kubespray::generate_cluster_vars(cluster, &k8s_config.config.common);
+
+        // Single node appears in all required sections
+        assert!(ini.contains("node-0 ansible_host=192.168.1.100"));
+        assert!(ini.contains("[kube_control_plane]\nnode-0"));
+        assert!(ini.contains("[kube_node]\nnode-0"));
+
+        // Vars contain essential settings
+        assert!(vars.contains("kube_version: \"1.33.1\""));
+        assert!(vars.contains("kube_pods_subnet: \"10.244.0.0/20\""));
+        assert!(vars.contains("cilium_cluster_id: 1"));
+    }
+
+    /// Verify that generated HCL (OpenTofu) matches the SDI spec.
+    /// Tests the SDI layer of the pipeline: sdi-specs → generate_tofu_main.
+    #[test]
+    fn test_dryrun_sdi_to_hcl_pipeline() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: crate::models::sdi::SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let hcl = crate::core::tofu::generate_tofu_main(&sdi_spec, "scalex");
+
+        // Every node from every pool must appear in HCL
+        for pool in &sdi_spec.spec.sdi_pools {
+            for node in &pool.node_specs {
+                assert!(
+                    hcl.contains(&node.node_name),
+                    "HCL must contain node '{}' from pool '{}'",
+                    node.node_name,
+                    pool.pool_name
+                );
+                assert!(
+                    hcl.contains(&node.ip),
+                    "HCL must contain IP '{}' for node '{}'",
+                    node.ip,
+                    node.node_name
+                );
+            }
+        }
+
+        // HCL must reference the OS image
+        assert!(hcl.contains(&sdi_spec.os_image.source), "HCL must reference OS image source");
+
+        // HCL must reference the network bridge
+        assert!(
+            hcl.contains(&sdi_spec.resource_pool.network.management_bridge),
+            "HCL must reference management bridge"
+        );
+    }
 }
