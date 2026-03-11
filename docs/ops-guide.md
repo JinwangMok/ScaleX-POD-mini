@@ -203,34 +203,58 @@ scalex facts --host playbox-0
 
 ### NAT 망 외부에서 접근 (2가지 방법)
 
-#### 방법 1: Cloudflare Tunnel (권장)
+#### 방법 1: Cloudflare Tunnel (OIDC 설정 완료 후에만 kubectl 가능)
 - 별도 소프트웨어 설치 불필요
 - 브라우저로 직접 접근:
   - ArgoCD: `https://cd.jinwang.dev`
   - Keycloak: `https://auth.jinwang.dev`
-- K8s API: `https://api.k8s.jinwang.dev` (kubectl 설정 필요)
+- K8s API: `https://api.k8s.jinwang.dev` (**OIDC 설정 완료 후**에만 kubectl 가능)
 
-##### Keycloak 설정 전 kubectl 접근 (Pre-OIDC)
+> **⚠ CF Tunnel과 client certificate 인증 제한 (중요)**
+>
+> Cloudflare Tunnel은 HTTP 레이어(L7)에서 동작하며, **TLS를 CF Edge에서 종단(terminate)** 합니다.
+> 따라서 kubectl의 client certificate auth가 kube-apiserver에 전달되지 않습니다:
+>
+> 1. kubectl이 `api.k8s.jinwang.dev`에 연결 → CF Edge가 TLS 종단
+> 2. CF Edge → cloudflared Pod → kube-apiserver로 **새로운** HTTPS 연결 생성
+> 3. **원본 client certificate는 이 과정에서 소실됨**
+>
+> 결론: CF Tunnel 경유 kubectl은 **OIDC token 기반 인증만 가능**합니다.
+> client certificate를 사용하는 admin kubeconfig는 CF Tunnel을 통해 동작하지 않습니다.
 
-Keycloak이 아직 설정되지 않은 경우에도 Cloudflare Tunnel을 통해 kubectl 접근이 가능합니다.
-Tower 클러스터의 admin kubeconfig에서 server URL만 변경하면 됩니다:
+##### Pre-OIDC kubectl 접근 — Tailscale 사용 (CF Tunnel 불가)
+
+Keycloak OIDC가 아직 설정되지 않은 경우, **CF Tunnel 경유 kubectl은 불가능**합니다.
+Pre-OIDC 상태에서 외부 kubectl 접근은 **Tailscale 경유만 가능**합니다:
 
 ```bash
-# 1. admin kubeconfig 복사
-cp _generated/clusters/tower/kubeconfig.yaml ~/.kube/tower-tunnel.yaml
-
-# 2. server URL을 Cloudflare Tunnel URL로 변경
-# 변경 전: server: https://192.168.88.100:6443
-# 변경 후: server: https://api.k8s.jinwang.dev
-sed -i 's|server: https://.*:6443|server: https://api.k8s.jinwang.dev|' ~/.kube/tower-tunnel.yaml
-
-# 3. 접근 테스트
-export KUBECONFIG=~/.kube/tower-tunnel.yaml
+# Tailscale 경유 Tower kubectl (client certificate 인증 사용 — 정상 동작)
+cp _generated/clusters/tower/kubeconfig.yaml ~/.kube/tower-tailscale.yaml
+sed -i 's|server: https://.*:6443|server: https://100.64.0.1:6443|' ~/.kube/tower-tailscale.yaml
+export KUBECONFIG=~/.kube/tower-tailscale.yaml
 kubectl get nodes
 ```
 
-> **참고**: 이 방식은 admin 인증서를 사용하므로 개인 작업용으로만 사용하세요.
-> Keycloak 설정 완료 후에는 OIDC 기반 kubeconfig를 사용하는 것을 권장합니다.
+> **참고**: Tailscale은 L3(WireGuard) VPN이므로 TLS가 종단되지 않고 client certificate가
+> 그대로 kube-apiserver에 전달됩니다. Pre-OIDC 외부 접근의 유일한 방법입니다.
+
+##### OIDC 설정 완료 후 CF Tunnel kubectl 접근
+
+Keycloak OIDC 설정 완료 후에는 CF Tunnel 경유 kubectl이 가능합니다:
+
+```bash
+# OIDC kubeconfig 사용 (token 기반 — CF Tunnel 통과 가능)
+export KUBECONFIG=client/kubeconfig-oidc.yaml
+kubectl get nodes  # 브라우저가 열리며 Keycloak 로그인
+```
+
+#### 접근 경로별 인증 호환성
+
+| 접근 경로 | client certificate | OIDC token | bearer token |
+|-----------|-------------------|------------|--------------|
+| **LAN 직접** | ✅ | ✅ | ✅ |
+| **Tailscale VPN** | ✅ (L3 VPN, TLS 비종단) | ✅ | ✅ |
+| **CF Tunnel** | ❌ (TLS 종단으로 인증서 소실) | ✅ | ✅ |
 
 #### 방법 2: Tailscale VPN
 
@@ -305,6 +329,25 @@ kubectl get nodes
 - 관리 VLAN: 별도 VLAN 구성 시 태그 설정 필요
 - 포트 미러링: 네트워크 디버깅 시 스위치의 모니터링 포트 활용
 - PoE: 일부 장비 PoE 지원 시 UPS 연결 권장
+
+### SOCKS5 프록시 사용 가이드
+
+Tower 클러스터에 SOCKS5 프록시(`socks5-proxy`)가 배포됩니다. 이 프록시는 **ClusterIP** Service로
+배포되므로 외부에서 직접 접근할 수 없습니다. LAN 또는 Tailscale 경유로 kubectl port-forward를 통해 사용합니다.
+
+```bash
+# 1. Tower 클러스터에 kubectl 접근 (LAN 또는 Tailscale)
+export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
+
+# 2. SOCKS5 프록시 port-forward (로컬 1080 → 클러스터 내 SOCKS5)
+kubectl -n kube-tunnel port-forward svc/socks5-proxy 1080:1080 &
+
+# 3. SOCKS5 프록시를 통한 클러스터 내부 서비스 접근
+curl --socks5-hostname localhost:1080 http://argocd-server.argocd:8080/healthz
+```
+
+> **보안 참고**: SOCKS5 프록시는 인증 없이 동작하므로, 외부에 직접 노출(NodePort/LoadBalancer)하면
+> 안 됩니다. ClusterIP + port-forward 방식이 보안상 올바른 접근 경로입니다.
 
 ---
 

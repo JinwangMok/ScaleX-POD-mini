@@ -1,3 +1,4 @@
+use crate::core::validation::validate_bootstrap_prerequisites;
 use crate::models::cluster::K8sClustersConfig;
 use clap::Args;
 use std::path::PathBuf;
@@ -37,6 +38,18 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
 
     let raw = std::fs::read_to_string(&args.config)?;
     let k8s_config: K8sClustersConfig = serde_yaml::from_str(&raw)?;
+
+    // Pre-bootstrap validation: check CF credentials
+    let cf_creds_path = "credentials/cloudflare-tunnel.json";
+    let cf_exists = std::path::Path::new(cf_creds_path).exists();
+    let warnings = validate_bootstrap_prerequisites(
+        &args.clusters_dir.display().to_string(),
+        cf_creds_path,
+        cf_exists,
+    );
+    for w in &warnings {
+        eprintln!("[bootstrap] WARNING: {}", w);
+    }
 
     // Step 1: Install ArgoCD on tower cluster
     let tower = k8s_config

@@ -141,6 +141,33 @@ pub fn validate_sdi_spec(spec: &SdiSpec) -> Vec<String> {
     errors
 }
 
+/// Validate bootstrap prerequisites. Pure function: checks if required files/state exist.
+/// Returns list of warnings (empty = all prerequisites met).
+pub fn validate_bootstrap_prerequisites(
+    tower_kubeconfig_path: &str,
+    cf_credentials_path: &str,
+    cf_credentials_exist: bool,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if tower_kubeconfig_path.is_empty() {
+        warnings
+            .push("Tower kubeconfig path is empty — run 'scalex cluster init' first".to_string());
+    }
+
+    if !cf_credentials_exist {
+        warnings.push(format!(
+            "Cloudflare Tunnel credentials not found at '{}'. \
+             cloudflared Pod will CrashLoop after bootstrap. \
+             Create the tunnel in Cloudflare Dashboard and save credentials first. \
+             See: docs/ops-guide.md Section 1",
+            cf_credentials_path
+        ));
+    }
+
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4785,16 +4812,16 @@ config:
             "ops-guide must document pre-OIDC kubectl access"
         );
 
-        // Must show how to change server URL to CF Tunnel domain
+        // Must reference CF Tunnel kubectl endpoint (even if to explain limitation)
         assert!(
             ops_guide.contains("api.k8s.jinwang.dev"),
             "ops-guide must reference CF Tunnel kubectl endpoint"
         );
 
-        // Must mention admin kubeconfig modification
+        // Must recommend Tailscale for Pre-OIDC kubectl (CF Tunnel client cert doesn't work)
         assert!(
-            ops_guide.contains("kubeconfig") && ops_guide.contains("tower-tunnel"),
-            "ops-guide must show kubeconfig modification for tunnel access"
+            ops_guide.contains("kubeconfig") && ops_guide.contains("tower-tailscale"),
+            "ops-guide must show Tailscale kubeconfig for pre-OIDC access (CF Tunnel client cert auth is impossible)"
         );
     }
 
@@ -5247,6 +5274,167 @@ config:
         assert!(
             spread.contains("scalex-root"),
             "spread.yaml must use 'scalex-root' as the root AppProject name"
+        );
+    }
+
+    // ── Sprint 17a: CF Tunnel Pre-OIDC Auth Compatibility (C-7) ──
+
+    /// C-7: ops-guide must clearly state that CF Tunnel does NOT support client certificate auth.
+    /// CF Tunnel operates at HTTP layer (L7) — TLS is terminated at CF Edge, so client certs
+    /// are presented to CF, NOT to the kube-apiserver backend.
+    #[test]
+    fn test_checklist_cf_tunnel_client_cert_limitation_documented() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Must explicitly warn about client certificate limitation through CF Tunnel
+        assert!(
+            ops_guide.contains("client certificate")
+                || ops_guide.contains("client cert")
+                || ops_guide.contains("클라이언트 인증서"),
+            "ops-guide must document CF Tunnel client certificate auth limitation"
+        );
+
+        // Must mention TLS termination as the reason
+        assert!(
+            ops_guide.contains("TLS")
+                && (ops_guide.contains("종단") || ops_guide.contains("terminat")),
+            "ops-guide must explain TLS termination as the reason client certs don't work"
+        );
+    }
+
+    /// C-7: ops-guide must recommend Tailscale (not CF Tunnel) for Pre-OIDC kubectl.
+    #[test]
+    fn test_checklist_pre_oidc_kubectl_recommends_tailscale() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Must have a clear section about Pre-OIDC access limitations
+        assert!(
+            ops_guide.contains("Pre-OIDC") || ops_guide.contains("pre-OIDC"),
+            "ops-guide must have Pre-OIDC access section"
+        );
+
+        // Must recommend Tailscale for Pre-OIDC kubectl
+        assert!(
+            ops_guide.contains("Tailscale") && ops_guide.contains("Pre-OIDC"),
+            "ops-guide must recommend Tailscale for Pre-OIDC kubectl access"
+        );
+    }
+
+    /// C-7: ops-guide external access section must document auth method compatibility per path.
+    #[test]
+    fn test_checklist_access_path_auth_compatibility_matrix() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Must have an auth compatibility table or list showing which auth works on which path
+        let has_cf_oidc = ops_guide.contains("OIDC")
+            && (ops_guide.contains("Tunnel") || ops_guide.contains("tunnel"));
+        let has_tailscale_cert = ops_guide.contains("Tailscale")
+            && (ops_guide.contains("cert") || ops_guide.contains("인증서"));
+
+        assert!(
+            has_cf_oidc && has_tailscale_cert,
+            "ops-guide must document auth compatibility: CF Tunnel=OIDC only, Tailscale=cert+token"
+        );
+    }
+
+    // ── Sprint 17b: Tower supplementary_addresses_in_ssl_keys (C-9) ──
+
+    /// C-9: k8s-clusters.yaml.example must include supplementary_addresses_in_ssl_keys
+    /// for the tower cluster when Tailscale bastion IP is used for kubectl access.
+    #[test]
+    fn test_checklist_tower_supplementary_ssl_keys_in_example() {
+        let k8s_config = include_str!("../../../config/k8s-clusters.yaml.example");
+
+        // Tower cluster section must have supplementary_addresses_in_ssl_keys
+        // because Tailscale users access tower API server via bastion IP
+        let tower_section_idx = k8s_config.find("cluster_name: \"tower\"").unwrap();
+        let sandbox_section_idx = k8s_config.find("cluster_name: \"sandbox\"").unwrap();
+        let tower_section = &k8s_config[tower_section_idx..sandbox_section_idx];
+
+        assert!(
+            tower_section.contains("supplementary_addresses_in_ssl_keys"),
+            "Tower cluster must have supplementary_addresses_in_ssl_keys for Tailscale access. \
+             Without it, kubectl via Tailscale IP will fail TLS verification."
+        );
+    }
+
+    // ── Sprint 17c: SOCKS5 Proxy Access Path (C-8) ──
+
+    /// C-8: ops-guide must document SOCKS5 proxy access path — it's ClusterIP, so requires
+    /// kubectl port-forward from a machine with existing kubectl access (LAN/Tailscale).
+    #[test]
+    fn test_checklist_socks5_proxy_access_path_documented() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Must document how to access the SOCKS5 proxy
+        assert!(
+            ops_guide.contains("SOCKS5") || ops_guide.contains("socks5"),
+            "ops-guide must document SOCKS5 proxy usage"
+        );
+
+        // Must mention it's ClusterIP and requires port-forward
+        assert!(
+            ops_guide.contains("port-forward") || ops_guide.contains("포트 포워딩"),
+            "ops-guide must explain SOCKS5 requires port-forward (ClusterIP)"
+        );
+    }
+
+    // ── Sprint 17d: CF Credentials Pre-Bootstrap Check (C-10) ──
+
+    /// C-10: README installation guide must warn about CF credentials before bootstrap.
+    #[test]
+    fn test_checklist_cf_credentials_pre_bootstrap_warning() {
+        let readme = include_str!("../../../README.md");
+
+        // README Step 6/7 must mention cloudflare-tunnel.json requirement
+        assert!(
+            readme.contains("cloudflare-tunnel.json"),
+            "README must reference cloudflare-tunnel.json in bootstrap prerequisites"
+        );
+
+        // Must warn about CrashLoop if credentials missing
+        assert!(
+            readme.contains("CrashLoop") || readme.contains("기동 실패"),
+            "README must warn about cloudflared CrashLoop if credentials are missing"
+        );
+    }
+
+    /// C-10: bootstrap validation should check for CF credentials existence.
+    #[test]
+    fn test_bootstrap_cf_credentials_validation() {
+        // validate_bootstrap_prerequisites must return warning when CF credentials are missing
+        let warnings = validate_bootstrap_prerequisites(
+            "_generated/clusters/tower/kubeconfig.yaml",
+            "credentials/cloudflare-tunnel.json",
+            false, // cf_credentials_exist
+        );
+
+        assert!(
+            !warnings.is_empty(),
+            "Bootstrap must warn when CF credentials are missing"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("cloudflare") || w.contains("Cloudflare")),
+            "Warning must mention Cloudflare credentials"
+        );
+    }
+
+    /// C-10: bootstrap validation should pass when CF credentials exist.
+    #[test]
+    fn test_bootstrap_cf_credentials_present_no_warning() {
+        let warnings = validate_bootstrap_prerequisites(
+            "_generated/clusters/tower/kubeconfig.yaml",
+            "credentials/cloudflare-tunnel.json",
+            true, // cf_credentials_exist
+        );
+
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.contains("cloudflare") || w.contains("Cloudflare")),
+            "Should not warn about CF credentials when they exist"
         );
     }
 }
