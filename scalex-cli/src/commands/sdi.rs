@@ -88,6 +88,10 @@ enum SdiCommand {
         /// Dry run — show sync plan without executing
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+
+        /// Force — bypass safety checks (e.g. missing SDI state file)
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
 }
 
@@ -115,7 +119,8 @@ pub fn run(args: SdiArgs) -> anyhow::Result<()> {
             facts_dir,
             output_dir,
             dry_run,
-        } => run_sync(config, env_file, facts_dir, output_dir, dry_run),
+            force,
+        } => run_sync(config, env_file, facts_dir, output_dir, dry_run, force),
     }
 }
 
@@ -506,6 +511,7 @@ fn run_sync(
     facts_dir: PathBuf,
     output_dir: PathBuf,
     dry_run: bool,
+    force: bool,
 ) -> anyhow::Result<()> {
     println!("[sdi] Sync: reconciling baremetal config with current state...");
 
@@ -572,11 +578,14 @@ fn run_sync(
         for w in &safety_warnings {
             eprintln!("[sdi] WARNING: {}", w);
         }
-        if !safety_warnings.is_empty() && !dry_run {
+        if !safety_warnings.is_empty() && !dry_run && !force {
             anyhow::bail!(
                 "Cannot safely remove nodes without SDI state. \
                  Run `scalex sdi init` first or use `--force` to override."
             );
+        }
+        if !safety_warnings.is_empty() && force {
+            eprintln!("[sdi] --force specified, proceeding despite missing state.");
         }
 
         if sdi_state_path.exists() {
