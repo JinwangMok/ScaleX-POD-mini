@@ -70,7 +70,7 @@
 
 ### 강점
 - **Rust CLI 아키텍처**: 순수 함수(`generate_*`) / IO 함수(`run_*`) 분리가 일관적
-- **테스트 커버리지**: 579개 단위 테스트 (+25 from Sprint 41), `cargo clippy` 0 warnings, `cargo fmt` OK
+- **테스트 커버리지**: 583개 단위 테스트 (+29 from Sprint 41), `cargo clippy` 0 warnings, `cargo fmt` OK
 - **Config 스키마**: `sdi-specs.yaml`, `k8s-clusters.yaml`, `.baremetal-init.yaml` 3개 파일이 `serde`로 타입 안전하게 파싱
 - **GitOps 구조**: ApplicationSet 기반 멀티-클러스터 패턴 구현
 - **Cross-config 검증**: pool mapping, CIDR overlap, cluster ID uniqueness, resource over-allocation, quorum loss 등
@@ -85,8 +85,8 @@
 6. ~~리소스 과다할당 감지~~: SDI spec vs facts CPU/MEM 초과 검증 (4 tests)
 
 ### 남은 개선 사항
-1. **README Installation Guide**: 실행 순서의 논리적 일관성 재검증 필요
-2. **실환경 E2E 검증**: 물리 인프라에서 전체 파이프라인 실행
+1. **실환경 E2E 검증**: 물리 인프라에서 전체 파이프라인 실행 (Phase B)
+2. **문서 최종화**: 실행 결과 기반 README/가이드 수정 (Phase C)
 
 ---
 
