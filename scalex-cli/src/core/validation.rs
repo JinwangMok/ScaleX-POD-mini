@@ -6317,6 +6317,158 @@ config:
         );
     }
 
+    // ── Sprint 25a: SDI CLI consistency ──
+
+    /// Sprint 25a: `sdi clean --hard` must use configurable config/env paths,
+    /// not hardcoded credentials paths. Verifies the code no longer contains
+    /// hardcoded PathBuf::from("credentials/...") in run_clean.
+    #[test]
+    fn test_sdi_clean_no_hardcoded_config_paths() {
+        let sdi_rs = include_str!("../commands/sdi.rs");
+
+        // Find the run_clean function body
+        let run_clean_start = sdi_rs
+            .find("fn run_clean(")
+            .expect("run_clean function must exist");
+        // Find the next top-level function after run_clean
+        let run_clean_body = &sdi_rs[run_clean_start..];
+        let run_clean_end = run_clean_body[1..]
+            .find("\nfn ")
+            .map(|p| p + 1)
+            .unwrap_or(run_clean_body.len());
+        let run_clean_code = &run_clean_body[..run_clean_end];
+
+        assert!(
+            !run_clean_code.contains("PathBuf::from(\"credentials/"),
+            "run_clean must not hardcode credentials paths — use CLI --config/--env-file args. \
+             Found hardcoded PathBuf::from(\"credentials/...\") in run_clean"
+        );
+    }
+
+    /// Sprint 25a: All SDI subcommands (init, clean, sync) must accept --config flag.
+    #[test]
+    fn test_sdi_all_subcommands_accept_config_flag() {
+        let sdi_rs = include_str!("../commands/sdi.rs");
+
+        // Each subcommand variant should have a `config: PathBuf` field
+        // We check the SdiCommand enum contains config for Init, Clean, and Sync
+        let subcommands = ["Init {", "Clean {", "Sync {"];
+        for subcmd in &subcommands {
+            let pos = sdi_rs.find(subcmd).unwrap_or_else(|| {
+                panic!("SdiCommand::{} must exist", subcmd);
+            });
+            // Find the closing brace of this variant
+            let variant_body = &sdi_rs[pos..];
+            let end = variant_body.find("},").unwrap_or(variant_body.len());
+            let variant = &variant_body[..end];
+
+            assert!(
+                variant.contains("config: PathBuf"),
+                "SdiCommand::{} must have `config: PathBuf` field for consistent CLI flags",
+                subcmd.trim_end_matches(" {")
+            );
+        }
+    }
+
+    /// Sprint 25b: build_pool_state must correctly map placement hosts
+    /// and handle pools with mixed explicit/implicit host assignments.
+    #[test]
+    fn test_build_pool_state_mixed_host_assignment() {
+        use crate::models::sdi::*;
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "test".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "test".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "test".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![
+                    SdiPool {
+                        pool_name: "tower".to_string(),
+                        purpose: "management".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec!["host-a".to_string()],
+                            spread: false,
+                        },
+                        node_specs: vec![NodeSpec {
+                            node_name: "tower-0".to_string(),
+                            ip: "10.0.0.10".to_string(),
+                            cpu: 2,
+                            mem_gb: 4,
+                            disk_gb: 30,
+                            host: None, // should fall back to placement host
+                            roles: vec!["control-plane".to_string()],
+                            devices: None,
+                        }],
+                    },
+                    SdiPool {
+                        pool_name: "sandbox".to_string(),
+                        purpose: "workload".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec![],
+                            spread: true,
+                        },
+                        node_specs: vec![
+                            NodeSpec {
+                                node_name: "sandbox-0".to_string(),
+                                ip: "10.0.0.20".to_string(),
+                                cpu: 4,
+                                mem_gb: 8,
+                                disk_gb: 60,
+                                host: Some("host-b".to_string()), // explicit
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "sandbox-1".to_string(),
+                                ip: "10.0.0.21".to_string(),
+                                cpu: 8,
+                                mem_gb: 16,
+                                disk_gb: 100,
+                                host: None, // no placement host, no explicit → "unassigned"
+                                roles: vec!["worker".to_string()],
+                                devices: Some(DeviceConfig {
+                                    gpu_passthrough: true,
+                                }),
+                            },
+                        ],
+                    },
+                ],
+            },
+        };
+
+        let state = crate::commands::sdi::build_pool_state_public(&spec);
+        assert_eq!(state.len(), 2, "must produce 2 pool states");
+
+        // Tower pool: node should get host from placement
+        assert_eq!(state[0].pool_name, "tower");
+        assert_eq!(state[0].nodes[0].node_name, "tower-0");
+        assert_eq!(state[0].nodes[0].host, "host-a");
+        assert!(!state[0].nodes[0].gpu_passthrough);
+
+        // Sandbox pool: explicit host
+        assert_eq!(state[1].pool_name, "sandbox");
+        assert_eq!(state[1].nodes[0].host, "host-b");
+        assert_eq!(state[1].nodes[0].cpu, 4);
+
+        // Sandbox pool: no host → "unassigned"
+        assert_eq!(state[1].nodes[1].host, "unassigned");
+        assert!(state[1].nodes[1].gpu_passthrough);
+        assert_eq!(state[1].nodes[1].disk_gb, 100);
+    }
+
     /// Sprint 21e: README Installation Guide must have all 9 steps (0, 0.5, 1-8).
     #[test]
     fn test_readme_installation_guide_all_steps() {

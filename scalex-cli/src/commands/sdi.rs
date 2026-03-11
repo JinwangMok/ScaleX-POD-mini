@@ -51,6 +51,14 @@ enum SdiCommand {
         #[arg(long = "yes-i-really-want-to")]
         confirm: bool,
 
+        /// Path to baremetal-init.yaml (used for --hard node cleanup)
+        #[arg(long, default_value = "credentials/.baremetal-init.yaml")]
+        config: PathBuf,
+
+        /// Path to .env file
+        #[arg(long, default_value = "credentials/.env")]
+        env_file: PathBuf,
+
         /// Output directory for generated OpenTofu files
         #[arg(long, default_value = "_generated/sdi")]
         output_dir: PathBuf,
@@ -96,9 +104,11 @@ pub fn run(args: SdiArgs) -> anyhow::Result<()> {
         SdiCommand::Clean {
             hard,
             confirm,
+            config,
+            env_file,
             output_dir,
             dry_run,
-        } => run_clean(hard, confirm, output_dir, dry_run),
+        } => run_clean(hard, confirm, config, env_file, output_dir, dry_run),
         SdiCommand::Sync {
             config,
             env_file,
@@ -411,7 +421,14 @@ fn run_init(
     Ok(())
 }
 
-fn run_clean(hard: bool, confirm: bool, output_dir: PathBuf, dry_run: bool) -> anyhow::Result<()> {
+fn run_clean(
+    hard: bool,
+    confirm: bool,
+    config_path: PathBuf,
+    env_path: PathBuf,
+    output_dir: PathBuf,
+    dry_run: bool,
+) -> anyhow::Result<()> {
     if let Some(err) = validate_clean_args(hard, confirm) {
         anyhow::bail!(err);
     }
@@ -446,8 +463,6 @@ fn run_clean(hard: bool, confirm: bool, output_dir: PathBuf, dry_run: bool) -> a
 
     if hard {
         // SSH into each node and run full cleanup (K8s, KVM, bridge removal)
-        let config_path = PathBuf::from("credentials/.baremetal-init.yaml");
-        let env_path = PathBuf::from("credentials/.env");
         if config_path.exists() && env_path.exists() {
             let bm_config = load_baremetal_config(&config_path, &env_path)?;
             let cleanup_script = host_prepare::generate_node_cleanup_script();
@@ -782,6 +797,12 @@ fn run_facts_collection(
         }
     }
     Ok(())
+}
+
+/// Public wrapper for cross-module test access.
+#[cfg(test)]
+pub fn build_pool_state_public(spec: &SdiSpec) -> Vec<SdiPoolState> {
+    build_pool_state(spec)
 }
 
 fn build_pool_state(spec: &SdiSpec) -> Vec<SdiPoolState> {
