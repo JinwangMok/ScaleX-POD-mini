@@ -94,7 +94,7 @@
 | clap derive CLI | ✅ 8개 서브커맨드 (facts, sdi, cluster, get, secrets, bootstrap, status, kernel-tune) |
 | 순수 함수 분리 | ✅ 생성 함수(`generate_*`)는 I/O 없음, 실행 함수(`run_*`)와 분리 |
 | thiserror 에러 | ✅ `core/error.rs`에 ScalexError 정의 |
-| 412 tests, 0 clippy warnings | ✅ 전부 통과 |
+| 414 tests, 0 clippy warnings | ✅ 전부 통과 |
 | cargo fmt | ✅ 통과 |
 
 ---
@@ -200,7 +200,7 @@ README.md에 포함된 섹션: Architecture Overview, Design Philosophy (7개 �
 **상태: ✅ VERIFIED**
 
 ```
-scalex-cli/           ✅ Rust CLI (412 tests)
+scalex-cli/           ✅ Rust CLI (414 tests)
 gitops/               ✅ ArgoCD multi-cluster
   bootstrap/          ✅ spread.yaml
   generators/         ✅ tower/ + sandbox/
@@ -295,12 +295,13 @@ tests/                ✅ run-tests.sh
 - [x] 19c: 2-Layer 템플릿 관리 검증 (Layer1: sdi-specs+k8s-clusters / Layer2: ApplicationSets)
 - [x] 19d: 단일 노드 SDI 풀 + 단일 클러스터 K8s config 파싱 검증
 
-### Sprint 21: 엣지 케이스 검증 강화 ✅ DONE (408 → 412 tests)
+### Sprint 21: 엣지 케이스 검증 강화 ✅ DONE (408 → 414 tests)
 
 - [x] 21a: 중복 클러스터 이름 검증 함수 추가 + cluster init 파이프라인에 연결
 - [x] 21b: SDI 호스트 참조 검증 함수 추가 + sdi init 파이프라인에 연결
 - [x] 21c: README External Access 섹션 확장 (CF Tunnel TLS 제약, SOCKS5, LAN 경로)
-- [x] 21d: CLAUDE.md 테스트 카운트 업데이트
+- [x] 21d: CLAUDE.md 테스트 카운트 업데이트 + ARCHITECTURE.md sandbox 설명 수정
+- [x] 21e: README CLI 일관성 테스트 + Installation Guide 전체 단계 검증 테스트
 
 ### Sprint 22: 실환경 E2E 검증 — SDI + Kubespray (⬜ 인프라 필요)
 
@@ -414,7 +415,7 @@ _generated/
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| core/validation | 90+ | pool mapping, cluster IDs/names, CIDR, DNS, single-node, baremetal, idempotency, sync wave, AppProject, sdi-init, E2E pipeline, SSH, 3rd cluster, GitOps consistency, spec caching, CF Tunnel auth, Tower SAN, CF credentials, SOCKS5 manifest, directory structure, 2-layer template, single-node mode, duplicate names, SDI host refs |
+| core/validation | 92+ | pool mapping, cluster IDs/names, CIDR, DNS, single-node, baremetal, idempotency, sync wave, AppProject, sdi-init, E2E pipeline, SSH, 3rd cluster, GitOps consistency, spec caching, CF Tunnel auth, Tower SAN, CF credentials, SOCKS5 manifest, directory structure, 2-layer template, single-node mode, duplicate names, SDI host refs, README CLI consistency, Installation Guide steps |
 | core/gitops | 39 | ApplicationSet, kustomization, sync waves, Cilium, ClusterMesh, generators |
 | core/kubespray | 32+ | inventory (SDI + baremetal), cluster vars, OIDC, Cilium, single-node, Tower SAN |
 | commands/status | 21 | platform status reporting |
@@ -432,4 +433,4 @@ _generated/
 | core/resource_pool | 7 | aggregation, table, disk_gb |
 | core/ssh | 5 | SSH command building, ProxyJump key, reachable_node_ip key |
 | commands/facts | 4 | facts gathering |
-| **TOTAL** | **412** | **순수 함수 테스트만 — 실행 경로 미포함** |
+| **TOTAL** | **414** | **순수 함수 테스트만 — 실행 경로 미포함** |
