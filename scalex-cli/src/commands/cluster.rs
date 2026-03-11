@@ -294,9 +294,19 @@ fn run_kubespray(cluster_dir: &std::path::Path, cluster_name: &str) -> anyhow::R
     }
 }
 
+/// Candidate paths to search for kubespray's cluster.yml.
+/// Pure function: returns the list of candidate directories to check.
+pub fn kubespray_candidate_paths() -> Vec<&'static str> {
+    vec![
+        "kubespray/kubespray", // Git submodule (primary)
+        "kubespray",           // Direct clone
+        "../kubespray",        // Sibling directory
+        "/opt/kubespray",      // System-wide install
+    ]
+}
+
 fn find_kubespray_dir() -> anyhow::Result<String> {
-    // Check common locations
-    let candidates = ["kubespray", "../kubespray", "/opt/kubespray"];
+    let candidates = kubespray_candidate_paths();
     for dir in &candidates {
         if std::path::Path::new(dir).join("cluster.yml").exists() {
             return Ok(dir.to_string());
@@ -761,5 +771,38 @@ kubespray_version: "v2.30.0"
 
         let targets = clusters_needing_gitops_update(&config);
         assert!(targets.is_empty());
+    }
+
+    // --- kubespray_candidate_paths (Sprint 15a: C-3 fix) ---
+
+    #[test]
+    fn test_kubespray_candidates_includes_submodule_path() {
+        let candidates = super::kubespray_candidate_paths();
+        assert!(
+            candidates.contains(&"kubespray/kubespray"),
+            "Must include git submodule path 'kubespray/kubespray' — got: {:?}",
+            candidates
+        );
+    }
+
+    #[test]
+    fn test_kubespray_submodule_path_is_first_candidate() {
+        let candidates = super::kubespray_candidate_paths();
+        assert_eq!(
+            candidates[0], "kubespray/kubespray",
+            "Submodule path must be first candidate (highest priority) — got: {:?}",
+            candidates
+        );
+    }
+
+    #[test]
+    fn test_kubespray_candidates_no_legacy_only_paths() {
+        let candidates = super::kubespray_candidate_paths();
+        // Ensure the old bug (missing submodule path) cannot regress
+        let has_submodule = candidates.iter().any(|c| c.contains("kubespray/kubespray"));
+        assert!(
+            has_submodule,
+            "Regression: kubespray submodule path missing from candidates"
+        );
     }
 }

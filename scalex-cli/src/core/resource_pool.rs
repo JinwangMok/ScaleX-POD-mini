@@ -11,6 +11,7 @@ pub struct ResourcePoolSummary {
     pub total_memory_mb: u64,
     pub total_gpu_count: usize,
     pub total_disk_count: usize,
+    pub total_disk_gb: u64,
     pub nodes: Vec<NodeResourceSummary>,
 }
 
@@ -24,6 +25,7 @@ pub struct NodeResourceSummary {
     pub gpu_count: usize,
     pub gpu_models: Vec<String>,
     pub disk_count: usize,
+    pub disk_gb: u64,
     pub nic_count: usize,
     pub kernel_version: String,
     pub has_bridge: bool,
@@ -43,6 +45,7 @@ pub fn generate_resource_pool_summary(facts: &[NodeFacts]) -> ResourcePoolSummar
             gpu_count: f.gpus.len(),
             gpu_models: f.gpus.iter().map(|g| g.model.clone()).collect(),
             disk_count: f.disks.len(),
+            disk_gb: f.disks.iter().map(|d| d.size_gb).sum(),
             nic_count: f.nics.len(),
             kernel_version: f.kernel.version.clone(),
             has_bridge: f.bridges.iter().any(|b| b == "br0"),
@@ -56,6 +59,7 @@ pub fn generate_resource_pool_summary(facts: &[NodeFacts]) -> ResourcePoolSummar
         total_memory_mb: nodes.iter().map(|n| n.memory_mb).sum(),
         total_gpu_count: nodes.iter().map(|n| n.gpu_count).sum(),
         total_disk_count: nodes.iter().map(|n| n.disk_count).sum(),
+        total_disk_gb: nodes.iter().map(|n| n.disk_gb).sum(),
         nodes,
     }
 }
@@ -75,8 +79,8 @@ pub fn format_resource_pool_table(summary: &ResourcePoolSummary) -> String {
         summary.total_memory_mb / 1024,
     ));
     out.push_str(&format!(
-        "║  GPUs: {}  │  Disks: {}                                          ║\n",
-        summary.total_gpu_count, summary.total_disk_count,
+        "║  GPUs: {}  │  Disks: {} ({} GB)                                    ║\n",
+        summary.total_gpu_count, summary.total_disk_count, summary.total_disk_gb,
     ));
     out.push_str("╠══════════════════════════════════════════════════════════════════╣\n");
 
@@ -211,5 +215,33 @@ mod tests {
         facts.bridges = vec![]; // no br0
         let summary = generate_resource_pool_summary(&[facts]);
         assert!(!summary.nodes[0].has_bridge);
+    }
+
+    /// C-4: Resource pool must include total disk capacity in GB (not just count)
+    /// for meaningful capacity planning.
+    #[test]
+    fn test_resource_pool_includes_total_disk_gb() {
+        let facts = vec![
+            make_facts("playbox-0", 8, 32768, 0, 2),  // 2 disks × 500 GB = 1000 GB
+            make_facts("playbox-1", 8, 32768, 0, 3),  // 3 disks × 500 GB = 1500 GB
+        ];
+        let summary = generate_resource_pool_summary(&facts);
+        assert_eq!(
+            summary.total_disk_gb,
+            2500,
+            "total_disk_gb must aggregate actual disk capacity across all nodes"
+        );
+    }
+
+    /// C-4: Per-node summary must include disk capacity in GB.
+    #[test]
+    fn test_node_summary_includes_disk_gb() {
+        let facts = vec![make_facts("playbox-0", 8, 32768, 0, 2)]; // 2 × 500 GB
+        let summary = generate_resource_pool_summary(&facts);
+        assert_eq!(
+            summary.nodes[0].disk_gb,
+            1000,
+            "node disk_gb must be sum of all disk sizes"
+        );
     }
 }

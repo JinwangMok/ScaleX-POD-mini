@@ -23,6 +23,8 @@ enum Commands {
     Cluster(commands::cluster::ClusterArgs),
     /// Manage pre-bootstrap K8s secrets
     Secrets(commands::secrets::SecretsArgs),
+    /// Bootstrap ArgoCD: install Helm chart, register clusters, apply spread.yaml
+    Bootstrap(commands::bootstrap::BootstrapArgs),
     /// Show platform status across all layers
     Status(commands::status::StatusArgs),
     /// Generate kernel tuning parameters for K8s nodes
@@ -38,6 +40,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Sdi(args) => commands::sdi::run(args),
         Commands::Cluster(args) => commands::cluster::run(args),
         Commands::Secrets(args) => commands::secrets::run(args),
+        Commands::Bootstrap(args) => commands::bootstrap::run(args),
         Commands::Status(args) => commands::status::run(args),
         Commands::KernelTune(args) => commands::kernel_tune::run(args),
     }

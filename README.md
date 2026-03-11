@@ -286,12 +286,19 @@ scalex secrets apply
 
 > **중요**: Cloudflare Tunnel 사용 시, 이 단계 **이전에** [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/)에서 터널을 생성하고 credentials를 `credentials/cloudflare-tunnel.json`에 저장해야 합니다. 이 파일이 없으면 Step 7에서 cloudflared Pod가 기동 실패합니다. 상세: [docs/ops-guide.md](docs/ops-guide.md)
 
-### Step 7: GitOps 부트스트랩 (ArgoCD)
+### Step 7: ArgoCD 부트스트랩 (`scalex bootstrap`)
+
+이 단계는 3가지 작업을 자동으로 수행합니다:
+1. **Tower 클러스터에 ArgoCD Helm 차트 설치** (CRD + 서버)
+2. **Sandbox 클러스터를 ArgoCD에 remote cluster로 등록** (Tower가 Sandbox를 관리하기 위해 필수)
+3. **`gitops/bootstrap/spread.yaml` 적용** (ApplicationSets를 통한 GitOps 시작)
 
 ```bash
-# 반드시 Tower 클러스터의 kubeconfig를 사용
-export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
-kubectl apply -f gitops/bootstrap/spread.yaml
+# 한 번의 명령으로 ArgoCD 설치 + 클러스터 등록 + GitOps 부트스트랩 완료
+scalex bootstrap
+
+# 또는 dry-run으로 어떤 작업이 실행되는지 먼저 확인
+scalex bootstrap --dry-run
 
 # ArgoCD가 모든 앱을 자동 배포 (sync wave 순서)
 # Wave 0: ArgoCD, cluster-config
@@ -301,11 +308,29 @@ kubectl apply -f gitops/bootstrap/spread.yaml
 # Wave 4: RBAC
 
 # 배포 진행 상황 확인 (수 분 소요)
+export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
 kubectl -n argocd get applications -w
 # 모든 앱이 Synced/Healthy가 될 때까지 대기
 ```
 
-> **주의**: `KUBECONFIG`가 Tower를 가리키는지 반드시 확인하세요. Sandbox kubeconfig로 실행하면 ArgoCD가 잘못된 클러스터에 배포됩니다.
+> **사전 요구**: Step 5 (Kubespray)가 완료되어 `_generated/clusters/tower/kubeconfig.yaml`과 `_generated/clusters/sandbox/kubeconfig.yaml`이 존재해야 합니다.
+>
+> **수동 실행** (디버깅/학습 목적):
+> ```bash
+> # 1. ArgoCD Helm 설치
+> helm upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm \
+>   --namespace argocd --create-namespace \
+>   --kubeconfig _generated/clusters/tower/kubeconfig.yaml --wait
+>
+> # 2. Sandbox 클러스터 등록
+> argocd cluster add sandbox \
+>   --kubeconfig _generated/clusters/sandbox/kubeconfig.yaml \
+>   --server-kubeconfig _generated/clusters/tower/kubeconfig.yaml -y
+>
+> # 3. GitOps 부트스트랩 적용
+> kubectl --kubeconfig _generated/clusters/tower/kubeconfig.yaml \
+>   apply -f gitops/bootstrap/spread.yaml
+> ```
 
 ### Step 8: 최종 검증
 
@@ -347,6 +372,7 @@ scalex facts --all                          # HW 정보 수집
 scalex sdi init config/sdi-specs.yaml       # VM 풀 생성
 scalex cluster init config/k8s-clusters.yaml # K8s 클러스터 생성
 scalex secrets apply                         # 시크릿 배포
+scalex bootstrap                            # ArgoCD 설치 + 클러스터 등록 + GitOps 부트스트랩
 scalex status                               # 전체 상태
 scalex get clusters                         # 클러스터 목록
 scalex sdi clean --hard --yes-i-really-want-to  # 전체 초기화
@@ -369,6 +395,7 @@ See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for detailed instructions.
 | `scalex sdi sync` | Reconcile bare-metal changes (add/remove nodes) |
 | `scalex cluster init <k8s-clusters.yaml>` | Kubespray → multi-cluster provisioning |
 | `scalex secrets apply` | Generate and apply pre-bootstrap K8s secrets |
+| `scalex bootstrap` | Install ArgoCD + register clusters + apply spread.yaml |
 
 ### Query Commands
 

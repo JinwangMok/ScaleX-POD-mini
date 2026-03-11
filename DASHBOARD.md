@@ -4,132 +4,202 @@
 
 ---
 
-## Checklist Status (15 Items)
+## Critical Analysis (2026-03-11 재평가)
 
-> **판정 기준**: "코드 존재"가 아닌 "테스트로 검증됨"을 기준으로 판정.
-> - **VERIFIED**: 오프라인 테스트로 로직 검증 완료
-> - **CODE-ONLY**: 코드는 존재하나 실환경 검증 미완료
+> **이전 DASHBOARD의 근본적 문제**: "코드 존재 + 단위 테스트 통과"를 "VERIFIED"로 판정했으나,
+> 이는 **순수 함수의 문자열 출력 검증**일 뿐 **실제 시스템 동작 검증이 아님**.
+> 352개 테스트 전부 오프라인 순수 함수 테스트이며, 실제 SSH/libvirt/Kubespray/ArgoCD 통합은 0건.
+
+### 발견된 Critical Gaps (코드 레벨 — 인프라 없이 수정 가능)
+
+| ID | 심각도 | 갭 | 상세 |
+|----|--------|-----|------|
+| **C-1** | **CRITICAL** | ArgoCD 부트스트랩 누락 | `spread.yaml`은 ArgoCD CRD(`Application`, `AppProject`)를 사용 → ArgoCD가 먼저 설치되어야 함. README Step 7에서 바로 `kubectl apply` 하지만 **ArgoCD Helm 설치 단계가 없음**. `scalex bootstrap` 명령어도 없음. |
+| **C-2** | **CRITICAL** | Sandbox 클러스터 ArgoCD 미등록 | Tower ArgoCD가 Sandbox에 앱을 배포하려면 Sandbox가 remote cluster로 등록되어야 함. `argocd cluster add` 단계가 전혀 없음. spread.yaml의 sandbox-root는 tower에 생성되지만 **실제 sandbox 클러스터에 배포할 수 없음**. |
+| **C-3** | **HIGH** | Kubespray 경로 해결 버그 | `find_kubespray_dir()`가 `["kubespray", "../kubespray", "/opt/kubespray"]`를 검색하지만, 실제 서브모듈은 `kubespray/kubespray/` (중첩 경로). **런타임에 100% 실패**. |
+| **C-4** | **HIGH** | `sdi init` (no-flag) 불완전 | Checklist #8: "모든 베어메탈을 가상화하고 통합 리소스 풀로 구성"이지만, 현재 no-flag 모드는 호스트 준비(KVM/bridge/VFIO)만 수행. 실제 VM 생성이나 통합 리소스 풀 생성 없음. |
+| **C-5** | **MEDIUM** | 외부 sandbox kubectl 미지원 | CF Tunnel이 `api.k8s.jinwang.dev` → tower API만 라우팅. Sandbox API는 외부에서 접근 불가. SOCKS5 프록시가 배포되지만 CF Tunnel에 노출되지 않음. |
+| **C-6** | **LOW** | Legacy 네이밍 | `spread.yaml`의 AppProject가 `playbox-root` — `scalex-root`로 통일 필요. |
+
+### 이전 DASHBOARD "VERIFIED" 판정의 비판
+
+| 이전 판정 | 실제 상태 | 문제 |
+|-----------|----------|------|
+| `sdi init` (no flag) = VERIFIED | **불완전** | resource pool summary만 생성, 실제 통합 리소스 풀 미구성 (C-4) |
+| README 설치 가이드 = VERIFIED | **갭 있음** | ArgoCD 설치 + sandbox 등록 단계 누락 (C-1, C-2) |
+| 외부 kubectl = VERIFIED (docs) | **tower만** | sandbox 외부 접근 경로 없음 (C-5) |
+| GitOps bootstrap = VERIFIED | **동작 불가** | ArgoCD 미설치 상태에서 spread.yaml 적용 불가 (C-1) |
+| Kubespray cluster init = VERIFIED | **런타임 실패** | 서브모듈 경로 해결 불가 (C-3) |
+
+---
+
+## Checklist Status (15 Items) — 재평가
+
+> **판정 기준** (수정):
+> - **VERIFIED**: 오프라인 테스트 + 코드 로직 검증 완료 (순수 함수 레벨)
+> - **BUG**: 코드에 버그가 있어 런타임 실패 확실
+> - **INCOMPLETE**: 코드가 요구사항을 부분적으로만 충족
+> - **GAP**: 코드 자체가 부재
 > - **NEEDS-INFRA**: 물리 인프라에서만 검증 가능
-> - **GAP**: 코드 또는 테스트가 부족
 
-### Layer 1: SDI 가상화 (Checklist #1)
+### #1. SDI 가상화 (4노드 → 리소스 풀 → 2 클러스터)
 
-| 항목 | 상태 | 근거 |
+| 항목 | 상태 | 비고 |
 |------|------|------|
-| 4노드 OpenTofu 가상화 코드 | VERIFIED | `core/tofu.rs` — 12 tests (HCL 생성, SSH URI, VFIO, single-node, host-infra) |
-| 리소스 풀 통합 | VERIFIED | `core/resource_pool.rs` — 5 tests (aggregation, table) |
-| 2개 클러스터(tower+sandbox) 분할 | VERIFIED | `core/validation.rs` — pool mapping + cluster ID 검증 |
-| **실환경 `tofu apply` 실행** | **NEEDS-INFRA** | 실제 libvirt VM 생성은 물리 노드 필요 |
+| HCL 생성 (4노드) | VERIFIED | `core/tofu.rs` — 12 tests |
+| 리소스 풀 summary | VERIFIED | `core/resource_pool.rs` — 5 tests |
+| 2 클러스터 분할 | VERIFIED | `core/validation.rs` — pool mapping |
+| `sdi init` no-flag 통합 리소스 풀 | **INCOMPLETE** | 호스트 준비만 수행, 실제 통합 리소스 풀 미구성 (C-4) |
+| 실환경 `tofu apply` | NEEDS-INFRA | — |
 
-### Layer 2: Cloudflare Tunnel (Checklist #2, #3, #14)
+### #2. CF Tunnel GitOps 배포
 
-| 항목 | 상태 | 근거 |
+| 항목 | 상태 | 비고 |
 |------|------|------|
-| CF Tunnel ArgoCD GitOps 배포 | VERIFIED | `gitops/tower/cloudflared-tunnel/` — kustomization + values.yaml |
-| 터널 라우팅 설정 (3개 도메인) | VERIFIED | `api.k8s.jinwang.dev`, `auth.jinwang.dev`, `cd.jinwang.dev` |
-| 사용자 수동 작업 가이드 | VERIFIED | `docs/ops-guide.md` Section 1 + `docs/CLOUDFLARE-ACCESS.md` |
-| SOCKS5 프록시 (kubectl용) | CODE-ONLY | `gitops/tower/socks5-proxy/manifest.yaml` 존재, 실환경 미검증 |
-| **외부 kubectl 접근 E2E** | **NEEDS-INFRA** | CF Tunnel → SOCKS5 → kube-apiserver 경로 실검증 필요 |
-| Keycloak 없이 kubectl 동작 여부 | VERIFIED | `docs/ops-guide.md` Section 4 "Pre-OIDC" — CF Tunnel + admin kubeconfig |
+| `gitops/tower/cloudflared-tunnel/` | VERIFIED | kustomization + values.yaml 존재 |
+| 터널 이름 `playbox-admin-static` 일치 | VERIFIED | `values.yaml` line 2 |
+| ArgoCD ApplicationSet에 포함 | VERIFIED | tower-generator에 등록 |
 
-### Layer 3: CLI 도구 (Checklist #4, #8)
+### #3. CF Tunnel 완성도 + 사용자 수동 작업
 
-| 항목 | 상태 | 근거 |
+| 항목 | 상태 | 비고 |
 |------|------|------|
-| Rust 구현 | VERIFIED | `scalex-cli/` — Cargo.toml, 26 .rs files, ~14,000 lines |
-| FP 원칙 (순수 함수) | VERIFIED | 모든 generator가 입출력만 처리, side-effect 없음 |
-| `scalex facts` | VERIFIED | `commands/facts.rs` — 4 tests + `core/config.rs` — 15 tests |
-| `scalex sdi init` (no flag) | VERIFIED | `commands/sdi.rs` — resource pool summary 생성 로직 |
-| `scalex sdi init <spec>` | VERIFIED | `commands/sdi.rs` — HCL 생성 + pool state 저장 |
-| `scalex sdi clean --hard` | VERIFIED | `commands/sdi.rs` — clean validation tests |
-| `scalex sdi sync` | VERIFIED | `core/sync.rs` — 13 tests (diff, conflict, add/remove) |
-| `scalex cluster init` | VERIFIED | `commands/cluster.rs` — 11 tests + `core/kubespray.rs` — 32 tests |
-| `scalex get` (4 subcommands) | VERIFIED | `commands/get.rs` — 18 tests |
-| `.baremetal-init.yaml` 3가지 SSH 모드 | VERIFIED | direct, reachable_node_ip, reachable_via + ProxyJump |
-| **실환경 CLI 실행** | **NEEDS-INFRA** | 모든 명령어의 실 실행은 물리 노드 필요 |
+| 사용자 수동 작업 가이드 | VERIFIED | `docs/ops-guide.md` Section 1 (6단계) |
+| 라우팅 3개 도메인 | VERIFIED | api.k8s / auth / cd .jinwang.dev |
+| **Sandbox 외부 접근** | **GAP** | CF Tunnel이 tower API만 라우팅 (C-5) |
 
-### Layer 4: 문서화 (Checklist #5, #6, #7)
+### #4. CLI Rust 구현 + FP 원칙
 
-| 항목 | 상태 | 근거 |
+| 항목 | 상태 | 비고 |
 |------|------|------|
-| README.md 설치 가이드 (Step 0-8) | VERIFIED | 8단계 + pre-flight + troubleshooting 포함 |
-| 7개 docs/ 문서 | VERIFIED | setup-guide, architecture, ops-guide, troubleshooting 등 |
-| CLI 레퍼런스 | VERIFIED | README.md에 core + query 명령어 전체 문서화 |
-| **설치 가이드 E2E 실행 검증** | **NEEDS-INFRA** | 초기화된 베어메탈 → `scalex get clusters` 동작까지 미검증 |
+| Rust 구현 | VERIFIED | 26 .rs files, 16,127 lines |
+| FP 원칙 | VERIFIED | 모든 generator 순수 함수 |
+| 코드 구조 최적성 | VERIFIED | commands/core/models 3계층, thiserror, clap derive |
 
-### Layer 5: 아키텍처 & 확장성 (Checklist #9-15)
+### #5-7. 문서화 + Installation Guide
 
-| 항목 | 상태 | 근거 |
+| 항목 | 상태 | 비고 |
 |------|------|------|
-| #9 Baremetal 모드 확장성 | VERIFIED | `ClusterMode::Baremetal` enum + `generate_inventory_baremetal()` + tests |
-| #10 시크릿 템플릿화 | VERIFIED | `credentials/*.example` 5개 + `core/secrets.rs` — 12 tests |
-| #11 커널 파라미터 튜닝 | VERIFIED | `commands/kernel_tune.rs` + `core/kernel.rs` — 14 tests + `docs/ops-guide.md` |
-| #12 디렉토리 구조 | VERIFIED | scalex-cli/ + gitops/ + credentials/ + config/ + docs/ 정합 |
-| #13 멱등성 | CODE-ONLY | 코드상 멱등 설계이나 실환경 재적용 미검증 |
-| #14 외부 kubectl (CF Tunnel) | **NEEDS-INFRA** | 라우팅 설정 존재, 실 접근 미검증 |
-| #15 NAT 접근 경로 (Tailscale+CF) | VERIFIED | `docs/ops-guide.md` Section 4 + LAN 접근 가이드 포함 |
+| README Step 0-8 | **INCOMPLETE** | ArgoCD Helm 설치 단계 누락 (C-1) |
+| docs/ 7개 문서 | VERIFIED | architecture, ops-guide, troubleshooting 등 |
+| CLI 레퍼런스 | VERIFIED | README에 core + query 전체 문서화 |
+| **Sandbox 클러스터 등록 가이드** | **GAP** | ArgoCD에 remote cluster 등록 단계 없음 (C-2) |
+| E2E 실행 검증 | NEEDS-INFRA | — |
+
+### #8. CLI 기능 전체
+
+| 명령어 | 상태 | 비고 |
+|--------|------|------|
+| `scalex facts` | VERIFIED | 4 tests, SSH 스크립트 + 파싱 |
+| `scalex sdi init` (no flag) | **INCOMPLETE** | 호스트 준비만, 통합 리소스 풀 미구성 (C-4) |
+| `scalex sdi init <spec>` | VERIFIED | HCL 생성 + pool state |
+| `scalex sdi clean --hard` | VERIFIED | clean validation tests |
+| `scalex sdi sync` | VERIFIED | 13 tests (diff, conflict, add/remove) |
+| `scalex cluster init` | **BUG** | kubespray 경로 해결 실패 (C-3) |
+| `scalex get` (4 subcommands) | VERIFIED | 18 tests |
+| `scalex bootstrap` (신규 필요) | **GAP** | ArgoCD 설치 + 클러스터 등록 + spread 적용 (C-1, C-2) |
+
+### #9. Baremetal 확장성
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| `ClusterMode::Baremetal` | VERIFIED | enum + inventory + vars generation |
+| k3s 배제 | VERIFIED | Kubespray만 사용, k3s 참조 0건 |
+
+### #10. 시크릿 템플릿화
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| `credentials/*.example` 5개 | VERIFIED | baremetal-init, .env, secrets, cloudflare-tunnel |
+| `core/secrets.rs` | VERIFIED | 12 tests |
+
+### #11. 커널 파라미터 튜닝
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| `scalex kernel-tune` | VERIFIED | 14 tests |
+| 가이드 | VERIFIED | `docs/ops-guide.md` Section 3 |
+
+### #12. 디렉토리 구조
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| scalex-cli/ + gitops/ 핵심 구조 | VERIFIED | Checklist 요구사항 일치 |
+| 불필요 파일 없음 | VERIFIED | PROMPT.md 등 삭제 완료 |
+
+### #13. 멱등성
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| HCL/inventory/vars 재생성 동일성 | VERIFIED | idempotency tests |
+| 실환경 재적용 | NEEDS-INFRA | — |
+
+### #14. 외부 kubectl (CF Tunnel)
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| Tower Pre-OIDC kubectl | VERIFIED (docs) | ops-guide Section 4 |
+| **Sandbox 외부 kubectl** | **GAP** | CF Tunnel 미라우팅 (C-5) |
+| SOCKS5 프록시 | INCOMPLETE | 배포됨, CF Tunnel에 미노출 |
+
+### #15. NAT 접근 경로
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| CF Tunnel + Tailscale + LAN | VERIFIED | ops-guide Section 4 |
+| 스위치 접근 가이드 | VERIFIED | 포함됨 |
 
 ---
 
-## Gap Summary
+## Execution Plan — Sprint 15 시리즈
 
-### 오프라인 갭 — 전부 해결 ✅
+### Sprint 15a: Kubespray 경로 해결 버그 수정 (C-3) 🔧
+> **TDD**: RED → GREEN → REFACTOR
 
-| ID | 갭 | 해결 Sprint |
-|----|------|-------------|
-| ~~G-7~~ | Config example 파일 스펙 일치 | **13a** — 파싱 + 필드 존재 테스트 |
-| ~~G-8~~ | `sdi init` 자동 디스커버리 경로 | **13a** — resource pool summary 테스트 |
-| ~~G-9~~ | CF Tunnel 라우팅 도메인 일치 | **13a** — GitOps YAML 파싱 테스트 |
-| ~~G-10~~ | 멱등성 오프라인 테스트 | **13a** — HCL/inventory 재생성 동일성 |
-| ~~G-11~~ | README CLI 명령어 일치 | **13a** — README 파싱 + CLI 비교 |
-| ~~G-12~~ | 불필요 파일 (PROMPT.md 등) | **13a** — 삭제 완료 |
-| ~~G-13~~ | Keycloak 없이 외부 kubectl | **13b** — ops-guide.md Section 4 이미 문서화 |
+- [ ] RED: `find_kubespray_dir()`가 `kubespray/kubespray/` 경로를 찾는 테스트 작성
+- [ ] GREEN: 서브모듈 경로 `kubespray/kubespray/`를 후보에 추가
+- [ ] REFACTOR: 후보 목록 정리 + 프로젝트 루트 기준 해결
 
-### 실환경 필수 갭 (물리 인프라 필요)
+### Sprint 15b: `scalex bootstrap` 명령어 추가 (C-1, C-2) 🔧
+> ArgoCD 설치 → Sandbox 클러스터 등록 → spread.yaml 적용
 
-| ID | 갭 | 해결 방법 |
-|----|------|-----------|
-| I-1 | `scalex facts --all` 실행 (4노드) | 물리 노드 SSH 접근 |
-| I-2 | `scalex sdi init` → 실제 VM 생성 | libvirt + OpenTofu |
-| I-3 | `scalex cluster init` → 실제 K8s 프로비저닝 | Kubespray 실행 |
-| I-4 | GitOps bootstrap → ArgoCD 동작 | K8s 클러스터 필요 |
-| I-5 | CF Tunnel 외부 kubectl 접근 | 실제 터널 + 도메인 필요 |
-| I-6 | `sdi clean --hard` + 재구축 (멱등성) | 전체 인프라 필요 |
+- [ ] RED: `scalex bootstrap` 서브커맨드 파싱 테스트
+- [ ] RED: ArgoCD Helm install 스크립트 생성 테스트
+- [ ] RED: `argocd cluster add` 명령 생성 테스트
+- [ ] GREEN: `commands/bootstrap.rs` 구현
+- [ ] REFACTOR: main.rs에 Bootstrap 서브커맨드 등록
 
----
+### Sprint 15c: README Installation Guide 수정 (C-1, C-2)
+> Step 6.5 추가: ArgoCD 설치 + Sandbox 클러스터 등록
 
-## Execution Plan
+- [ ] RED: README에 `scalex bootstrap` 또는 ArgoCD 설치 단계 존재 검증 테스트
+- [ ] GREEN: README Step 6.5 추가
+- [ ] REFACTOR: Step 번호 재조정
 
-### Sprint 13a: Config Format Alignment + Gap Tests (오프라인) ✅
-- [x] `.baremetal-init.yaml.example` 파싱 + 3가지 SSH 모드 필드 존재 검증
-- [x] `sdi-specs.yaml.example` 파싱 + pool_name/nodeSpecs 구조 검증
-- [x] `k8s-clusters.yaml.example` 파싱 + cluster_sdi_resource_pool 매핑 검증
-- [x] CF Tunnel 라우팅, 멱등성, README, GitOps 디렉토리 등 18 tests
-- [x] PROMPT.md, REQUEST-TO-USER.md 삭제
+### Sprint 15d: `sdi init` no-flag 강화 (C-4)
+> no-flag 실행 시: 호스트 준비 → facts 기반 통합 리소스 풀 JSON 생성 → 사용 가능 리소스 표시
 
-### Sprint 13b: External Access Documentation Verification (오프라인) ✅
-- [x] G-13 해결: Pre-OIDC kubectl 접근 경로 검증 (ops-guide.md Section 4 이미 문서화)
-- [x] NAT 접근 3가지 방법 (CF Tunnel, Tailscale, LAN+스위치) 문서화 검증
-- [x] 2 tests 추가 (342 total)
+- [ ] RED: no-flag 실행 시 resource-pool.json 생성 + 총 리소스 집계 테스트
+- [ ] GREEN: `run_init()` no-flag 경로에서 resource-pool.json 생성
+- [ ] REFACTOR: 사용자 출력 메시지 개선
 
-### Sprint 13c: 2-Layer Template Consistency + Client OIDC (오프라인) ✅
-- [x] sdi-specs pool_name ↔ k8s-clusters cluster_sdi_resource_pool 정합성 검증
-- [x] k8s-clusters domains ↔ CF Tunnel values.yaml 라우팅 정합성 검증
-- [x] client/kubeconfig-oidc.yaml.j2 Jinja2 변수 검증 (domains, keycloak)
-- [x] credentials/ 5개 example 파일 완전성 검증
-- [x] 버그 수정: setup-client.sh "playbox" → "scalex" 레거시 참조
-- [x] 5 tests 추가 (347 total)
+### Sprint 15e: 외부 sandbox 접근 문서화 (C-5)
+> 아키텍처 결정: sandbox는 tower ArgoCD를 통해 관리됨 → 직접 외부 kubectl 불필요
 
-### Sprint 13d: Edge Cases (오프라인) ✅
-- [x] Cilium cluster_id 고유성 검증 (ClusterMesh 요구사항)
-- [x] 공통 설정 필수 필드 검증 (CNI, runtime, etcd, DNS 등)
-- [x] SDI+Baremetal 혼합 모드 공존 검증 (#9 확장성)
-- [x] SDI node placement → baremetal-init 호스트 참조 검증
-- [x] 클러스터 간 Pod/Service CIDR 비중복 검증
-- [x] 5 tests 추가 (352 total)
+- [ ] RED: ops-guide에 sandbox 접근 아키텍처 설명 존재 테스트
+- [ ] GREEN: 문서 업데이트 — sandbox는 tower를 통한 관리 설명
+- [ ] 대안: sandbox API를 CF Tunnel에 추가 라우팅 (향후)
 
-### Sprint 14: 실환경 E2E (물리 인프라 필요)
-- [ ] I-1 ~ I-6 순차 실행
+### Sprint 15f: Legacy 네이밍 정리 (C-6)
+- [ ] `spread.yaml`의 `playbox-root` → 일관된 네이밍
+
+### Sprint 16: 실환경 E2E (물리 인프라 필요)
+- [ ] I-1: `scalex facts --all` 실행
+- [ ] I-2: `scalex sdi init` → VM 생성
+- [ ] I-3: `scalex cluster init` → K8s 프로비저닝
+- [ ] I-4: `scalex bootstrap` → ArgoCD + GitOps
+- [ ] I-5: CF Tunnel 외부 kubectl 접근
+- [ ] I-6: `sdi clean --hard` + 재구축 (멱등성)
 
 ---
 
@@ -145,15 +215,24 @@ secrets.yaml
 +-------------------------------------------+
 |              scalex CLI (Rust)             |
 |  facts → sdi init → cluster init         |
+|  → bootstrap → secrets apply              |
 |  get baremetals/sdi-pools/clusters        |
-|  secrets apply / status / kernel-tune     |
+|  status / kernel-tune                     |
 +-------------------------------------------+
         |
         v
 _generated/
 ├── facts/          (hardware JSON per node)
 ├── sdi/            (OpenTofu HCL + state + resource-pool.json)
-└── clusters/       (inventory.ini + vars per cluster)
+└── clusters/       (inventory.ini + vars + kubeconfig per cluster)
+        |
+        v
++-------------------------------------------+
+|        scalex bootstrap                   |
+|  1. ArgoCD Helm install (tower)           |
+|  2. Sandbox cluster register              |
+|  3. kubectl apply spread.yaml             |
++-------------------------------------------+
         |
         v
 +-------------------------------------------+
@@ -186,12 +265,8 @@ _generated/
 | core/tofu | 12 | HCL gen, SSH URI, VFIO, single-node, host-infra |
 | models/* | 8 | parse/serialize |
 | core/resource_pool | 5 | aggregation, table |
-| commands/facts | 4 | facts gathering |
 | core/ssh | 5 | SSH command building, ProxyJump key, reachable_node_ip key |
-| core/validation (13a-e) | 18 | config alignment, CF tunnel routing, idempotency, README accuracy, GitOps completeness |
-| core/validation (13b) | 2 | pre-OIDC kubectl access docs, NAT access methods docs |
-| core/validation (13c) | 5 | 2-layer template consistency, OIDC template, credentials completeness, setup-client fix |
-| core/validation (13d) | 5 | Cilium cluster_id, common config, mixed-mode, host placement, CIDR overlap |
+| commands/facts | 4 | facts gathering |
 | **TOTAL** | **352** | |
 
 ---
@@ -200,14 +275,15 @@ _generated/
 
 | Sprint | Date | Tests | Summary |
 |--------|------|-------|---------|
+| 15a | 2026-03-11 | — | (진행 예정) Kubespray 경로 해결 버그 수정 |
 | 13d | 2026-03-11 | 352 | Edge cases: Cilium cluster_id, common config, mixed-mode, host placement, CIDR overlap |
 | 13c | 2026-03-11 | 347 | 2-layer template 정합성, OIDC 템플릿, credentials 완전성, setup-client.sh 버그 수정 |
 | 13b | 2026-03-11 | 342 | G-13 해결 (pre-OIDC kubectl 이미 문서화), NAT 접근 경로 검증 tests |
-| 13a | 2026-03-11 | 340 | Checklist 15항목 갭 분석 + 18 tests (config alignment, CF tunnel, idempotency, docs accuracy) |
+| 13a | 2026-03-11 | 340 | Checklist 15항목 갭 분석 + 18 tests |
 | 12e | 2026-03-11 | 322 | GitOps structure ↔ cluster config consistency test |
-| 12d | 2026-03-11 | 321 | 3rd cluster extensibility test (tower+sandbox+datax pipeline) |
+| 12d | 2026-03-11 | 321 | 3rd cluster extensibility test |
 | 12b | 2026-03-11 | 320 | Meta-file cleanup |
-| 12a | 2026-03-11 | 320 | Gap verification tests: baremetal E2E, CF tunnel, single-node SDI |
+| 12a | 2026-03-11 | 320 | Gap verification tests |
 | 11b | 2026-03-11 | 315 | E2E pipeline + SSH integration tests |
 | 11a | 2026-03-11 | 313 | DASHBOARD rewrite + sdi init resource pool verification |
 | 10a | 2026-03-11 | 308 | 9 bugs fixed (B-1~B-9) |

@@ -761,6 +761,7 @@ dns_domain: "tower.local"
             total_memory_mb: 65536,
             total_gpu_count: 1,
             total_disk_count: 4,
+            total_disk_gb: 2000,
             nodes: vec![
                 NodeResourceSummary {
                     node_name: "playbox-0".to_string(),
@@ -771,6 +772,7 @@ dns_domain: "tower.local"
                     gpu_count: 1,
                     gpu_models: vec!["RTX 3060".to_string()],
                     disk_count: 2,
+                    disk_gb: 1000,
                     nic_count: 2,
                     kernel_version: "6.8.0".to_string(),
                     has_bridge: true,
@@ -784,6 +786,7 @@ dns_domain: "tower.local"
                     gpu_count: 0,
                     gpu_models: vec![],
                     disk_count: 2,
+                    disk_gb: 1000,
                     nic_count: 1,
                     kernel_version: "6.8.0".to_string(),
                     has_bridge: false,
@@ -815,6 +818,7 @@ dns_domain: "tower.local"
             total_memory_mb: 0,
             total_gpu_count: 0,
             total_disk_count: 0,
+            total_disk_gb: 0,
             nodes: vec![],
         };
         let rows = resource_pool_to_rows(&summary);

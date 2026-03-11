@@ -1,3 +1,4 @@
+pub mod bootstrap;
 pub mod cluster;
 pub mod facts;
 pub mod get;

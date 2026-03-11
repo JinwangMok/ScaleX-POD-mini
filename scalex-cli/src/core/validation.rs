@@ -4524,6 +4524,7 @@ config:
             "scalex sdi init",
             "scalex sdi clean",
             "scalex sdi sync",
+            "scalex bootstrap",
             "scalex cluster init",
             "scalex get baremetals",
             "scalex get sdi-pools",
@@ -4561,6 +4562,24 @@ config:
                 step
             );
         }
+    }
+
+    /// C-1/C-2: README must document `scalex bootstrap` as a distinct installation step.
+    /// This is critical: without ArgoCD install + cluster registration, spread.yaml cannot work.
+    #[test]
+    fn test_checklist_readme_bootstrap_step_exists() {
+        let readme = include_str!("../../../README.md");
+
+        assert!(
+            readme.contains("scalex bootstrap"),
+            "README must document 'scalex bootstrap' command — ArgoCD install + cluster registration is a critical missing step"
+        );
+
+        // Must explain what bootstrap does
+        assert!(
+            readme.contains("ArgoCD"),
+            "README bootstrap step must mention ArgoCD installation"
+        );
     }
 
     /// G-11: Verify all docs/ files referenced in README actually exist.
