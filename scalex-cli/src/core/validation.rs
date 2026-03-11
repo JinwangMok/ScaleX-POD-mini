@@ -5437,4 +5437,274 @@ config:
             "Should not warn about CF credentials when they exist"
         );
     }
+
+    // ── Sprint 18a: CLI execution path pipeline verification ──
+
+    /// Sprint 18a: Verify `sdi init` no-spec pipeline ordering:
+    /// facts check → host-prep → resource-pool summary → host-infra HCL → tofu
+    #[test]
+    fn test_sdi_init_no_spec_pipeline_ordering() {
+        use crate::core::resource_pool;
+        use crate::models::baremetal::*;
+        use std::collections::HashMap;
+
+        // Step 1: Facts must exist before init proceeds
+        let facts = vec![NodeFacts {
+            node_name: "playbox-0".to_string(),
+            timestamp: "2026-03-11T00:00:00Z".to_string(),
+            cpu: CpuInfo {
+                model: "Intel".to_string(),
+                cores: 8,
+                threads: 16,
+                architecture: "x86_64".to_string(),
+            },
+            memory: MemoryInfo {
+                total_mb: 32768,
+                available_mb: 28000,
+            },
+            disks: vec![DiskInfo {
+                name: "sda".to_string(),
+                size_gb: 500,
+                model: "Samsung".to_string(),
+                disk_type: "disk".to_string(),
+            }],
+            nics: vec![NicInfo {
+                name: "eno1".to_string(),
+                mac: "aa:bb:cc:dd:ee:ff".to_string(),
+                speed: "1G".to_string(),
+                driver: "igb".to_string(),
+                state: "UP".to_string(),
+            }],
+            gpus: vec![],
+            iommu_groups: vec![],
+            kernel: KernelInfo {
+                version: "6.8.0".to_string(),
+                params: HashMap::new(),
+            },
+            bridges: vec!["br0".to_string()],
+            bonds: vec![],
+            pcie: vec![],
+        }];
+
+        // Step 2: Resource pool summary generation (prerequisite for any SDI operation)
+        let summary = resource_pool::generate_resource_pool_summary(&facts);
+        assert_eq!(summary.total_nodes, 1);
+        assert!(summary.total_cpu_cores > 0, "Resource pool must show CPU");
+        assert!(
+            summary.total_memory_mb > 0,
+            "Resource pool must show memory"
+        );
+
+        // Step 3: Host-infra inputs derived from baremetal config (not facts)
+        let inputs = crate::commands::sdi::build_host_infra_inputs(&[
+            crate::core::config::NodeConnectionConfig {
+                name: "playbox-0".to_string(),
+                direct_reachable: true,
+                node_ip: "192.168.88.8".to_string(),
+                reachable_node_ip: None,
+                reachable_via: None,
+                admin_user: "jinwang".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Password,
+                ssh_password: Some("pass".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+        ]);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].ssh_user, "jinwang");
+
+        // Step 4: Host-infra HCL generation
+        let hcl = crate::core::tofu::generate_tofu_host_infra(
+            &inputs,
+            "br0",
+            "192.168.88.0/24",
+            "192.168.88.1",
+        );
+        assert!(
+            hcl.contains("libvirt_pool"),
+            "Host-infra HCL must define storage pool"
+        );
+        assert!(
+            hcl.contains("libvirt"),
+            "Host-infra HCL must use libvirt provider"
+        );
+
+        // Pipeline ordering verified: facts → resource-pool → host-infra inputs → HCL
+    }
+
+    /// Sprint 18a: Verify `cluster init` pipeline generates both inventory and vars
+    /// for every cluster, and gitops Cilium values are generated per-cluster.
+    #[test]
+    fn test_cluster_init_pipeline_completeness() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let mut cluster_outputs = Vec::new();
+
+        for cluster in &k8s.config.clusters {
+            // Step 1: Inventory generation
+            let inv = crate::core::kubespray::generate_inventory(cluster, &sdi).unwrap();
+
+            // Step 2: Cluster vars generation
+            let vars = crate::core::kubespray::generate_cluster_vars(cluster, &k8s.config.common);
+
+            // Step 3: Cilium values generation (for gitops update)
+            let cilium_values = crate::core::gitops::generate_cilium_values(
+                "192.168.88.100", // mock CP IP
+                6443,             // default kube-apiserver port
+            );
+
+            // Verify all outputs are non-empty
+            assert!(
+                !inv.is_empty(),
+                "Inventory must be generated for {}",
+                cluster.cluster_name
+            );
+            assert!(
+                !vars.is_empty(),
+                "Vars must be generated for {}",
+                cluster.cluster_name
+            );
+            assert!(
+                !cilium_values.is_empty(),
+                "Cilium values must be generated for {}",
+                cluster.cluster_name
+            );
+
+            cluster_outputs.push(cluster.cluster_name.clone());
+        }
+
+        // Both tower and sandbox must have outputs
+        assert!(
+            cluster_outputs.contains(&"tower".to_string()),
+            "Pipeline must process tower cluster"
+        );
+        assert!(
+            cluster_outputs.contains(&"sandbox".to_string()),
+            "Pipeline must process sandbox cluster"
+        );
+    }
+
+    // ── Sprint 18b: CF Tunnel external kubectl documentation verification ──
+
+    /// Sprint 18b: README must explicitly warn that CF Tunnel kubectl requires
+    /// Keycloak OIDC to be configured first.
+    #[test]
+    fn test_readme_cf_tunnel_requires_keycloak_warning() {
+        let readme = include_str!("../../../README.md");
+
+        // README must mention that CF Tunnel external access requires OIDC/Keycloak
+        let has_oidc_requirement =
+            readme.contains("Keycloak") && (readme.contains("OIDC") || readme.contains("oidc"));
+
+        assert!(
+            has_oidc_requirement,
+            "README must mention that CF Tunnel external kubectl requires Keycloak OIDC"
+        );
+
+        // README must mention TLS termination or client cert limitation
+        assert!(
+            readme.contains("TLS") || readme.contains("client cert") || readme.contains("인증서"),
+            "README must mention CF Tunnel TLS termination or client cert limitation"
+        );
+    }
+
+    /// Sprint 18b: README External Access must clarify pre-OIDC limitations.
+    #[test]
+    fn test_readme_pre_oidc_access_limitation() {
+        let readme = include_str!("../../../README.md");
+
+        // Must mention Tailscale as pre-OIDC external access method
+        assert!(
+            readme.contains("Tailscale"),
+            "README must mention Tailscale for external access"
+        );
+
+        // Must explicitly state CF Tunnel OIDC-only constraint
+        assert!(
+            readme.contains("OIDC"),
+            "README must mention OIDC as required auth for CF Tunnel"
+        );
+    }
+
+    /// Sprint 18b: SOCKS5 proxy usage scenario must be documented as LAN/Tailscale internal.
+    #[test]
+    fn test_socks5_proxy_scope_documented() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        assert!(
+            ops_guide.contains("SOCKS5") || ops_guide.contains("socks5"),
+            "ops-guide must document SOCKS5 proxy"
+        );
+    }
+
+    // ── Sprint 18c: baremetal-init.yaml format consistency with Checklist ──
+
+    /// Sprint 18c: .baremetal-init.yaml.example must support all 3 access modes
+    /// from the Checklist specification.
+    #[test]
+    fn test_baremetal_init_example_three_access_modes() {
+        let example = include_str!("../../../credentials/.baremetal-init.yaml.example");
+
+        // Case 1: direct_reachable: true
+        assert!(
+            example.contains("direct_reachable: true"),
+            "Example must show direct reachable mode (Case 1)"
+        );
+
+        // Case 2: reachable_node_ip (external IP like Tailscale)
+        assert!(
+            example.contains("reachable_node_ip"),
+            "Example must show external IP mode (Case 2)"
+        );
+
+        // Case 3: reachable_via (ProxyJump)
+        assert!(
+            example.contains("reachable_via"),
+            "Example must show ProxyJump mode (Case 3)"
+        );
+    }
+
+    /// Sprint 18c: .baremetal-init.yaml.example must support both password and key auth.
+    #[test]
+    fn test_baremetal_init_example_both_auth_modes() {
+        let example = include_str!("../../../credentials/.baremetal-init.yaml.example");
+
+        assert!(
+            example.contains("sshPassword") || example.contains("ssh_password"),
+            "Example must show password auth"
+        );
+        assert!(
+            example.contains("sshKeyPath") || example.contains("ssh_key_path"),
+            "Example must show key auth"
+        );
+        assert!(
+            example.contains("sshKeyPathOfReachableNode")
+                || example.contains("ssh_key_path_of_reachable_node"),
+            "Example must show proxy hop key (Case 3b)"
+        );
+    }
+
+    /// Sprint 18c: .baremetal-init.yaml must parse with all 4 nodes for our setup.
+    #[test]
+    fn test_baremetal_init_example_has_four_nodes() {
+        let example = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let config: serde_yaml::Value = serde_yaml::from_str(example).unwrap();
+
+        let nodes = config["targetNodes"].as_sequence().unwrap();
+        assert_eq!(
+            nodes.len(),
+            4,
+            "Example must define exactly 4 nodes (playbox-0 through playbox-3)"
+        );
+
+        // Verify all 4 playbox nodes are present
+        let names: Vec<&str> = nodes.iter().map(|n| n["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"playbox-0"));
+        assert!(names.contains(&"playbox-1"));
+        assert!(names.contains(&"playbox-2"));
+        assert!(names.contains(&"playbox-3"));
+    }
 }

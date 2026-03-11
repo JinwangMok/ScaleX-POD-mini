@@ -87,7 +87,7 @@ scalex facts --all
 scalex sdi init config/sdi-specs.yaml
 scalex cluster init config/k8s-clusters.yaml
 scalex secrets apply
-kubectl apply -f gitops/bootstrap/spread.yaml
+scalex bootstrap
 ```
 
 ## Useful Queries

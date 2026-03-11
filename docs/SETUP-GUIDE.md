@@ -71,8 +71,8 @@ scalex cluster init config/k8s-clusters.yaml
 # 4. Apply pre-bootstrap secrets (Keycloak, Cloudflare, ArgoCD)
 scalex secrets apply
 
-# 5. Bootstrap GitOps (ArgoCD manages everything after this)
-kubectl apply -f gitops/bootstrap/spread.yaml
+# 5. Bootstrap GitOps (ArgoCD install + cluster register + spread.yaml)
+scalex bootstrap
 
 # 6. Verify
 scalex get baremetals     # Hardware facts

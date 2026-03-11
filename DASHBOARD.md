@@ -4,235 +4,339 @@
 
 ---
 
-## Critical Analysis (2026-03-11 Sprint 17 재평가)
+## 이전 DASHBOARD 비판적 분석
 
-### 이전 DASHBOARD의 근본적 문제
+이전 DASHBOARD는 모든 15개 항목을 `CODE-COMPLETE`로 표기했으나, 이는 **근본적으로 오해의 소지가 있다.**
 
-> **이전 DASHBOARD는 거의 모든 항목을 "VERIFIED"로 표시했으나, 이는 다음과 같은 이유로 부정확하다:**
->
-> 1. **380개 테스트 전부 오프라인 순수 함수 테스트** — 실제 SSH/libvirt/Kubespray/ArgoCD 통합 테스트는 0건
-> 2. **"VERIFIED" = "코드가 존재한다"** — 실제 동작 검증이 아니라 문자열 출력 테스트 통과를 의미
-> 3. **아키텍처적 결함이 발견되지 않은 채 방치** — CF Tunnel Pre-OIDC kubectl 인증 불가능, SOCKS5 프록시 접근 불가 등
-> 4. **문서 존재 = 기능 검증으로 취급** — "VERIFIED (docs)"라는 판정은 문서가 정확한지조차 검증하지 않음
-> 5. **워크플로우 통합 검증 부재** — 개별 명령어 단위 테스트만 존재, `facts → sdi init → cluster init → bootstrap` E2E 파이프라인 미검증
+### 왜 "CODE-COMPLETE"가 틀린 표현인가
 
-### Sprint 17에서 발견한 새로운 Critical Gaps
+1. **388개 테스트는 전부 순수 함수(pure function) 단위 테스트다.** HCL 생성, inventory 파싱, YAML 검증 등 데이터 변환 로직만 검증하며, 실제 SSH 연결, `tofu apply`, Kubespray 실행, kubectl 접근을 전혀 테스트하지 않는다.
 
-| ID | 심각도 | 갭 | 상세 |
-|----|--------|-----|------|
-| **C-7** | **CRITICAL** | CF Tunnel Pre-OIDC kubectl 인증 불가 | CF Tunnel은 HTTP 모드로 TLS를 종단(terminate)하므로 client certificate가 kube-apiserver에 전달되지 않음. ops-guide Section 4의 "admin kubeconfig로 CF Tunnel 경유 kubectl 가능" 가이드는 **아키텍처적으로 불가능한 내용** |
-| **C-8** | **HIGH** | SOCKS5 프록시 ClusterIP — 외부 미접근 | `socks5-proxy`가 ClusterIP Service로만 배포되어 외부 접근 불가. kubectl port-forward가 필요하지만 이는 chicken-and-egg 문제 발생 |
-| **C-9** | **HIGH** | Tower `supplementary_addresses_in_ssl_keys` 누락 | Tower 클러스터에 Tailscale IP(`100.64.0.1`)가 API server SAN에 미포함 — Tailscale 경유 직접 kubectl 접근 시 TLS 검증 실패 가능 |
-| **C-10** | **MEDIUM** | CF Tunnel credentials 사전 검증 부재 | `scalex bootstrap` 실행 시 `credentials/cloudflare-tunnel.json` 존재 여부를 사전 검증하지 않아 cloudflared Pod CrashLoop 발생 가능 |
-| **C-11** | **MEDIUM** | Pre-OIDC 외부 kubectl 대안 부재 | CF Tunnel 경유 client cert 불가 → token 기반 인증 메커니즘이 구현되어 있지 않음 |
+2. **"코드가 존재한다" ≠ "기능이 동작한다."** `scalex sdi init`은 HCL을 생성하고 `tofu apply`를 호출하는 코드가 있지만, 실제 물리 노드에서 libvirt VM이 정상 생성되는지는 **한 번도 검증되지 않았다.**
 
-### 이전 Sprint(13~16)에서 해결된 갭
+3. **CF Tunnel을 통한 외부 kubectl은 구조적으로 불가능하다 (Keycloak 미설정 상태에서).** CF Tunnel은 TLS를 종단(terminate)하므로 클라이언트 인증서 인증이 전달되지 않는다. OIDC 토큰 인증만 통과 가능하며, Keycloak Realm/Client가 설정되지 않은 현재 상태에서는 CF Tunnel 경유 kubectl은 **작동하지 않는다.** 이를 CODE-COMPLETE로 표기하는 것은 오류다.
 
-| ID | 상태 | 갭 | 해결 내역 |
-|----|------|-----|----------|
-| C-1 | **FIXED** | ArgoCD 부트스트랩 누락 | `scalex bootstrap` 3-phase pipeline 구현 |
-| C-2 | **FIXED** | Sandbox 클러스터 ArgoCD 미등록 | `scalex bootstrap` Phase 2에서 자동 등록 |
-| C-3 | **FIXED** | Kubespray 경로 해결 버그 | `kubespray/kubespray/` 서브모듈 경로 우선 |
-| C-4 | **FIXED** | `sdi init` no-flag 구현 | 호스트 준비 + resource-pool + host-infra HCL + tofu apply |
-| C-5 | **RESOLVED** | 외부 sandbox kubectl | 아키텍처 결정: Tower 경유 관리 |
-| C-6 | **FIXED** | Legacy 네이밍 | `scalex-root` 통일 |
-| G-1 | **FIXED** | `sdi clean` host-infra tofu 미파괴 | `TofuDestroyHostInfra` variant 추가 |
-| G-2 | **FIXED** | `sdi init <spec>` resource-pool-summary 미생성 | 공통 경로 이동 |
-| G-3 | **FIXED** | `sdi init` spec 캐싱 | `sdi-spec-cache.yaml` 자동 생성 |
+4. **Checklist 5-7을 하나로 묶어 개별 격차를 은폐했다.** 문서 존재 여부와 "초기화된 베어메탈에서 scalex get clusters까지 실행 가능한가"는 완전히 다른 검증 수준이다.
+
+5. **NEEDS-INFRA라는 면책 조항으로 검증 책임을 회피했다.** 실환경 없이도 검증 가능한 로직 갭들(에러 핸들링 경로, 설정 파일 포맷 정합성 등)이 존재하지만 이를 일괄적으로 "인프라 필요"로 분류했다.
 
 ---
 
-## Checklist Status (15 Items) — Sprint 17 재평가
+## 현재 상태 (정직한 평가)
 
-> **판정 기준 (엄격 적용)**:
-> - **CODE-COMPLETE**: 순수 함수 테스트 통과 + 코드 로직 검토 완료 (오프라인 레벨). 실환경 미검증
-> - **BUG**: 코드/아키텍처 버그 존재 — 수정 필요
-> - **GAP**: 요구사항 대비 코드/기능 부재
-> - **NEEDS-INFRA**: 물리 인프라에서만 검증 가능
-> - **FIXED**: Sprint 17에서 수정 완료 (테스트 통과)
+| 상태 | 의미 |
+|------|------|
+| ✅ VERIFIED | 테스트로 검증 완료 (코드 + 테스트 통과) |
+| 🔶 CODE-EXISTS | 코드는 존재하지만 실환경 미검증 |
+| 🔶 PARTIAL | 일부만 구현/검증 |
+| ❌ NOT-VERIFIED | 검증되지 않음 |
+| ⬜ NEEDS-USER | 사용자 수동 작업 필요 |
+
+---
+
+## Checklist 상세 검증 (15개 항목)
 
 ### #1. SDI 가상화 (4노드 → 리소스 풀 → 2 클러스터)
 
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| HCL 생성 (4노드) | CODE-COMPLETE | `core/tofu.rs` — 12 tests |
-| 리소스 풀 summary | CODE-COMPLETE | `core/resource_pool.rs` — 7 tests |
-| 2 클러스터 분할 | CODE-COMPLETE | `core/validation.rs` — pool mapping |
-| `sdi init` no-flag → 통합 리소스 풀 | CODE-COMPLETE | host 준비 + resource-pool-summary + host-infra HCL + tofu apply |
-| `sdi init <spec>` → VM 풀 생성 | CODE-COMPLETE | HCL + state + spec 캐싱 |
-| `sdi clean` host-infra 정리 | CODE-COMPLETE | host-infra tofu destroy 포함 (G-1 해결) |
-| 실환경 `tofu apply` | NEEDS-INFRA | 4개 베어메탈 노드 필요 |
+**상태: ✅ VERIFIED (코드 로직) / 🔶 CODE-EXISTS (실행)**
 
-### #2. CF Tunnel GitOps 배포
+| 구성 요소 | 검증 수준 |
+|-----------|----------|
+| `sdi-specs.yaml` 파싱/검증 | ✅ 테스트 통과 (모델 파싱, pool 검증, IP 중복, 리소스 0 체크) |
+| HCL 생성 (`generate_tofu_main`) | ✅ 테스트 통과 (provider, VM 정의, ssh_user, VFIO, single-node) |
+| Host-infra HCL 생성 | ✅ 테스트 통과 (단일/다중 노드, 멱등성) |
+| 리소스 풀 요약 생성 | ✅ 테스트 통과 (집계, 테이블 포맷, disk_gb) |
+| KVM/bridge/VFIO 설치 스크립트 | ✅ 테스트 통과 (스크립트 생성은 순수 함수) |
+| `tofu init/apply` 실제 실행 | 🔶 코드 존재, 미검증 |
+| VM이 실제로 생성/접근 가능한지 | ❌ 미검증 |
 
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| `gitops/tower/cloudflared-tunnel/` | CODE-COMPLETE | kustomization + values.yaml 존재 |
-| 터널 이름 `playbox-admin-static` 일치 | CODE-COMPLETE | `values.yaml` line 2 |
-| ArgoCD ApplicationSet에 포함 | CODE-COMPLETE | tower-generator sync wave 3 |
-
-### #3. CF Tunnel 완성도 + 사용자 수동 작업
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| 사용자 수동 작업 가이드 | CODE-COMPLETE | `docs/ops-guide.md` Section 1 (6단계) |
-| 라우팅 3개 도메인 | CODE-COMPLETE | api.k8s / auth / cd .jinwang.dev |
-| CF credentials 사전 검증 | ~~GAP~~ **FIXED** | C-10: `scalex bootstrap` 전 credentials 존재 확인 검증 추가 |
-
-### #4. CLI Rust 구현 + FP 원칙
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| Rust 구현 | CODE-COMPLETE | 27 .rs files, ~16,800 LOC |
-| FP 원칙 (Pure Function) | CODE-COMPLETE | 모든 generator 순수 함수, I/O 분리 |
-| thiserror + clap derive | CODE-COMPLETE | 에러 처리 + CLI 파싱 |
-| 코드 구조 | CODE-COMPLETE | commands/core/models 3계층 |
-
-### #5-7. 문서화 + Installation Guide
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| README Step 0-8 | CODE-COMPLETE | Pre-flight 포함 9단계 가이드 |
-| docs/ 7개 문서 | CODE-COMPLETE | architecture, ops-guide, troubleshooting 등 |
-| CLI 레퍼런스 | CODE-COMPLETE | README에 core + query 전체 문서화 |
-| E2E 실행 검증 | NEEDS-INFRA | 실제 베어메탈에서 Step 0~8 순서 실행 필요 |
-
-### #8. CLI 기능 전체
-
-| 명령어 | 상태 | 비고 |
-|--------|------|------|
-| `scalex facts` | CODE-COMPLETE | 4 tests, SSH 스크립트 + 파싱 |
-| `scalex sdi init` (no flag) | CODE-COMPLETE | host 준비 + resource-pool + host-infra HCL + tofu apply |
-| `scalex sdi init <spec>` | CODE-COMPLETE | HCL + state + summary + spec 캐싱 |
-| `scalex sdi clean --hard` | CODE-COMPLETE | host-infra tofu destroy 포함 |
-| `scalex sdi sync` | CODE-COMPLETE | 13 tests (diff, conflict, add/remove) |
-| `scalex cluster init` | CODE-COMPLETE | inventory + vars + kubespray 실행 |
-| `scalex get` (4 subcommands) | CODE-COMPLETE | 18 tests |
-| `scalex bootstrap` | CODE-COMPLETE | ArgoCD Helm + 클러스터 등록 + spread 적용 |
-
-### #9. Baremetal 확장성
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| `ClusterMode::Baremetal` | CODE-COMPLETE | enum + inventory + vars generation |
-| k3s 배제 | CODE-COMPLETE | Kubespray만 사용, k3s 참조 0건 |
-
-### #10. 시크릿 템플릿화
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| `credentials/*.example` 4개 | CODE-COMPLETE | baremetal-init, .env, secrets, cloudflare-tunnel |
-| `core/secrets.rs` | CODE-COMPLETE | 12 tests |
-| CF credentials 사전 검증 | ~~GAP~~ **FIXED** | C-10: bootstrap 전 검증 추가 |
-
-### #11. 커널 파라미터 튜닝
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| `scalex kernel-tune` | CODE-COMPLETE | 14 tests |
-| 가이드 | CODE-COMPLETE | `docs/ops-guide.md` Section 3 |
-
-### #12. 디렉토리 구조
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| scalex-cli/ + gitops/ 핵심 구조 | CODE-COMPLETE | Checklist 요구사항 일치 |
-| 불필요 파일 없음 | CODE-COMPLETE | `.omc/` 상태 파일은 gitignored |
-
-### #13. 멱등성
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| HCL/inventory/vars 재생성 동일성 | CODE-COMPLETE | idempotency tests |
-| 실환경 재적용 | NEEDS-INFRA | `sdi clean → sdi init → cluster init` 사이클 |
-
-### #14. 외부 kubectl (CF Tunnel)
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| CF Tunnel Pre-OIDC kubectl | ~~BUG~~ **FIXED** | C-7: client cert → CF Tunnel 불가. token 기반 대안 문서화 + 검증 추가 |
-| Tailscale kubectl | CODE-COMPLETE | Tower kubeconfig + Tailscale IP |
-| SOCKS5 프록시 | ~~BUG~~ **FIXED** | C-8: ClusterIP → Tailscale/LAN 경유로 접근 경로 문서화 |
-| Tower SAN 검증 | ~~GAP~~ **FIXED** | C-9: Tailscale IP를 Tower SAN에 추가하는 검증 |
-
-### #15. NAT 접근 경로
-
-| 항목 | 상태 | 비고 |
-|------|------|------|
-| CF Tunnel + Tailscale + LAN | CODE-COMPLETE | ops-guide Section 4 |
-| 스위치 접근 가이드 | CODE-COMPLETE | 포함됨 |
-| 접근 경로별 인증 제약 명시 | ~~GAP~~ **FIXED** | C-7: CF Tunnel은 OIDC만, Tailscale은 cert/token, LAN은 모두 가능 |
+**근본 원인**: 순수 함수(HCL 생성)와 I/O 함수(`tofu apply` 실행)가 분리되어 있어 순수 함수만 테스트됨. 이는 올바른 설계이지만, "SDI 가상화가 작동한다"고 주장하기 위해서는 실환경 검증이 필수.
 
 ---
 
-## Execution Plan — Sprint 17 시리즈
+### #2. CF Tunnel GitOps 배포
 
-### Sprint 17a: CF Tunnel Pre-OIDC kubectl 인증 수정 (C-7, C-11) — CRITICAL
+**상태: ✅ VERIFIED**
 
-> **TDD**: RED → GREEN → REFACTOR
+- `gitops/tower/cloudflared-tunnel/kustomization.yaml` — Helm chart 정의 확인 (community-charts, v2.1.2)
+- `gitops/tower/cloudflared-tunnel/values.yaml` — tunnel name `playbox-admin-static`, ingress 규칙 3개 확인
+- `gitops/generators/tower/tower-generator.yaml` — sync wave 3에 cloudflared-tunnel 포함 확인
+- **결론**: ArgoCD가 spread.yaml 적용 시 CF Tunnel을 자동 배포하는 GitOps 구조 ✅
 
-**문제**: CF Tunnel은 HTTP 모드(L7)로 동작하여 TLS를 CF Edge에서 종단한다.
-따라서 kubectl의 client certificate auth가 kube-apiserver에 전달되지 않는다.
-ops-guide의 "admin kubeconfig server URL만 변경하면 된다" 가이드는 아키텍처적으로 불가능.
+---
 
-**해결 방안**:
-1. ops-guide 수정: CF Tunnel 경유 Pre-OIDC kubectl은 불가능함을 명시
-2. Pre-OIDC 외부 접근은 Tailscale 경유만 가능함을 문서화
-3. CF Tunnel은 OIDC 설정 완료 후에만 kubectl 접근 가능
-4. 검증 코드 추가: CF Tunnel 접근 경로별 인증 호환성 validation
+### #3. CF Tunnel 완성도 + 사용자 수동 작업
 
-- [x] RED: `validate_cf_tunnel_auth_compatibility()` 테스트 — CF Tunnel + client cert 조합이 warning 생성
-- [x] GREEN: validation 로직 구현
-- [x] REFACTOR: ops-guide.md 수정
-- [x] 커밋
+**상태: 🔶 PARTIAL**
 
-### Sprint 17b: Tower `supplementary_addresses_in_ssl_keys` 검증 (C-9) — HIGH
+**자동 처리되는 부분:**
+- Helm chart 배포 (ArgoCD)
+- K8s Secret 생성 (`scalex secrets apply`)
+- Ingress 규칙 (api.k8s, auth, cd)
 
-> **TDD**: RED → GREEN → REFACTOR
+**사용자가 직접 수행해야 하는 작업:**
+1. ⬜ Cloudflare Dashboard에서 tunnel `playbox-admin-static` 생성
+2. ⬜ Credentials JSON 다운로드 → `credentials/cloudflare-tunnel.json` 저장
+3. ⬜ Public Hostname 3개 설정 (cd.jinwang.dev, auth.jinwang.dev, api.k8s.jinwang.dev)
+4. ⬜ DNS CNAME 자동 생성 확인
 
-**문제**: Tailscale IP(`100.64.0.1`)가 Sandbox에만 있고 Tower에 없음.
-Tower kubeconfig를 Tailscale 경유로 사용하려면 Tower API server cert에도 해당 IP가 필요.
-(단, Tower VM은 `192.168.88.100`이므로 Tailscale IP는 port-forward/proxy 시에만 필요)
+**문서화 상태**: `docs/ops-guide.md`에 상세 가이드 존재 ✅
 
-- [x] RED: Tower 클러스터에 Tailscale bastion IP가 SAN에 포함되어야 한다는 테스트
-- [x] GREEN: k8s-clusters.yaml.example에 tower `supplementary_addresses_in_ssl_keys` 추가
-- [x] REFACTOR: validation에 bastion IP SAN 검증 추가
+---
 
-### Sprint 17c: SOCKS5 프록시 접근성 수정 (C-8) — HIGH
+### #4. CLI Rust 구현 + FP 원칙
 
-> **문제**: SOCKS5 프록시가 ClusterIP로만 배포되어 외부 접근 불가.
-> kubectl port-forward로 접근하려면 이미 kubectl이 필요 → chicken-and-egg.
+**상태: ✅ VERIFIED**
 
-**해결**: SOCKS5는 LAN/Tailscale 경유 Tower SSH → port-forward로 사용.
-아키텍처적으로 이것이 올바른 접근 — 보안상 SOCKS5를 외부에 직접 노출하면 안 됨.
-문서에 사용 경로 명확히 기재.
+| 항목 | 상태 |
+|------|------|
+| Rust 구현 | ✅ `scalex-cli/` — Cargo 프로젝트, 27개 .rs 파일 |
+| clap derive CLI | ✅ 8개 서브커맨드 (facts, sdi, cluster, get, secrets, bootstrap, status, kernel-tune) |
+| 순수 함수 분리 | ✅ 생성 함수(`generate_*`)는 I/O 없음, 실행 함수(`run_*`)와 분리 |
+| thiserror 에러 | ✅ `core/error.rs`에 ScalexError 정의 |
+| 388 tests, 0 clippy warnings | ✅ 전부 통과 |
+| cargo fmt | ✅ 통과 |
 
-- [x] ops-guide에 SOCKS5 접근 경로 명시
-- [x] 검증 테스트 추가
+---
 
-### Sprint 17d: CF credentials 사전 검증 (C-10) — MEDIUM
+### #5. 사용자 친절한 가이드
 
-- [x] RED: bootstrap validation이 cloudflare-tunnel.json 존재를 확인하는 테스트
-- [x] GREEN: validation 로직 추가
-- [x] REFACTOR
+**상태: ✅ VERIFIED**
 
-### Sprint 17e: 전체 테스트 통과 확인 + 커밋
+- README.md: Installation Guide (Step 0~8), Quick Reference, CLI Reference, Troubleshooting 테이블
+- docs/ops-guide.md: Cloudflare Tunnel + Keycloak 설정 가이드
+- docs/SETUP-GUIDE.md: 상세 프로비저닝 워크스루
+- docs/TROUBLESHOOTING.md: 문제별 원인/해결 테이블
+- CLI: `--help`, `--dry-run` 모든 커맨드 지원
 
-- [ ] `cargo test` 전체 통과
-- [ ] `cargo clippy` warning 0
-- [ ] `cargo fmt --check` 통과
-- [ ] 커밋 + 푸쉬
+---
 
-### Sprint 18: 실환경 E2E (물리 인프라 필요)
+### #6. README.md 상세 내용 포함
 
-- [ ] I-1: `scalex facts --all` 실행 → 4노드 HW 정보 수집
-- [ ] I-2: `scalex sdi init config/sdi-specs.yaml` → VM 풀 생성
-- [ ] I-3: `scalex cluster init config/k8s-clusters.yaml` → K8s 프로비저닝
-- [ ] I-4: `scalex secrets apply` → 시크릿 배포
-- [ ] I-5: `scalex bootstrap` → ArgoCD + GitOps
-- [ ] I-6: Tailscale 경유 외부 kubectl 접근 검증
-- [ ] I-7: OIDC 설정 후 CF Tunnel 경유 kubectl 접근 검증
-- [ ] I-8: `sdi clean --hard --yes-i-really-want-to` + 재구축 (멱등성)
+**상태: ✅ VERIFIED**
+
+README.md에 포함된 섹션: Architecture Overview, Design Philosophy (7개 원칙), Installation Guide, Quick Reference, CLI Reference, GitOps Pattern (sync waves, app 추가 방법), Project Structure, Testing, Documentation 링크 테이블
+
+---
+
+### #7. README Installation Guide → 초기화된 베어메탈에서 `scalex get clusters`까지
+
+**상태: 🔶 PARTIAL**
+
+- README의 Installation Guide (Step 0~8)는 논리적으로 완전한 흐름을 제공 ✅
+- 각 단계별 실패 시 대응 가이드 포함 ✅
+- **그러나**: 실제 초기화된 베어메탈에서 이 가이드를 따라 끝까지 실행한 적이 없음 ❌
+- Step 4 (SDI) → Step 5 (Kubespray) → Step 7 (Bootstrap) 경로가 실환경에서 작동하는지 미검증
+
+---
+
+### #8. CLI 기능 전체
+
+**상태별 검증:**
+
+| 명령어 | 코드 | 순수 함수 테스트 | 실행 로직 | 실환경 검증 |
+|--------|------|:---------------:|:---------:|:----------:|
+| `scalex facts --all` | ✅ | ✅ (스크립트 생성, 파싱) | ✅ (SSH 실행) | ❌ |
+| `scalex sdi init` (no spec) | ✅ | ✅ (host-infra HCL) | ✅ (tofu apply) | ❌ |
+| `scalex sdi init <spec>` | ✅ | ✅ (main.tf, VFIO, pool state) | ✅ (tofu apply) | ❌ |
+| `scalex sdi clean --hard` | ✅ | ✅ (plan 로직) | ✅ (tofu destroy + SSH cleanup) | ❌ |
+| `scalex sdi sync` | ✅ | ✅ (diff, VM conflict) | ✅ (동기화 실행) | ❌ |
+| `scalex cluster init` | ✅ | ✅ (inventory, vars, OIDC) | ✅ (kubespray + kubeconfig) | ❌ |
+| `scalex get baremetals` | ✅ | ✅ | N/A (읽기 전용) | ❌ |
+| `scalex get sdi-pools` | ✅ | ✅ | N/A | ❌ |
+| `scalex get clusters` | ✅ | ✅ | N/A | ❌ |
+| `scalex get config-files` | ✅ | ✅ | N/A | ❌ |
+| `scalex secrets apply` | ✅ | ✅ | ✅ | ❌ |
+| `scalex bootstrap` | ✅ | ✅ (helm/argocd/kubectl args) | ✅ (3-phase) | ❌ |
+| `scalex status` | ✅ | ✅ (21 tests) | N/A | ❌ |
+| `scalex kernel-tune` | ✅ | ✅ (14 tests) | N/A | ❌ |
+
+**`./credentials/.baremetal-init.yaml` 포맷 정합성:**
+- Checklist 스펙: `sshKeyPathOfReachableNode` (case 3 key auth) ✅
+- 3가지 접근 방식 지원: direct, external IP, ProxyJump ✅
+- `.env` 변수 참조 방식 ✅
+
+---
+
+### #9. Baremetal 확장성 (SDI 없이 직접 사용)
+
+**상태: ✅ VERIFIED (코드 수준)**
+
+- `k8s-clusters.yaml`에 `cluster_mode: "baremetal"` 옵션 존재 ✅
+- `generate_inventory_baremetal()` 함수 구현 + 테스트 ✅
+- `test_baremetal_mode_e2e_pipeline` — baremetal 모드 E2E 파이프라인 테스트 ✅
+- `test_edge_mixed_mode_sdi_and_baremetal_coexistence` — SDI/baremetal 혼합 모드 ✅
+- k3s 참조: README/소스에 없음 ✅ (drawio 다이어그램에만 잔존 — 기능 영향 없음)
+
+---
+
+### #10. 시크릿 템플릿화
+
+**상태: ✅ VERIFIED**
+
+- `credentials/*.example` 파일 존재: `.baremetal-init.yaml.example`, `.env.example`, `secrets.yaml.example`, `cloudflare-tunnel.json.example`
+- `credentials/` 디렉토리 `.gitignore`에 포함 ✅
+- `scalex secrets apply`로 K8s Secret 자동 생성 ✅
+- 테스트: management/workload 클러스터별 시크릿 생성 검증 (12 tests) ✅
+
+---
+
+### #11. 커널 파라미터 튜닝
+
+**상태: ✅ VERIFIED (코드 수준)**
+
+- `scalex kernel-tune` 커맨드 구현 ✅
+- 역할별 파라미터 추천 (base, control-plane, worker, management) ✅
+- `diff` 기능 (현재 값 vs 추천 값 비교) ✅
+- Ansible task YAML 생성 ✅
+- sysctl.conf 파일 생성 ✅
+- 14개 테스트 통과 ✅
+- 가이드: `docs/ops-guide.md`에 커널 튜닝 섹션 존재 ✅
+
+---
+
+### #12. 디렉토리 구조
+
+**상태: ✅ VERIFIED**
+
+```
+scalex-cli/           ✅ Rust CLI (388 tests)
+gitops/               ✅ ArgoCD multi-cluster
+  bootstrap/          ✅ spread.yaml
+  generators/         ✅ tower/ + sandbox/
+  projects/           ✅ tower-project + sandbox-project
+  common/             ✅ cert-manager, cilium-resources, kyverno, kyverno-policies
+  tower/              ✅ argocd, cert-issuers, cilium, cloudflared-tunnel, cluster-config, keycloak, socks5-proxy
+  sandbox/            ✅ cilium, cluster-config, local-path-provisioner, rbac, test-resources
+credentials/          ✅ .example 템플릿
+config/               ✅ sdi-specs, k8s-clusters 예제
+docs/                 ✅ 7개 문서
+ansible/              ✅ node preparation
+kubespray/            ✅ submodule v2.30.0
+client/               ✅ OIDC kubeconfig
+tests/                ✅ run-tests.sh
+```
+
+불필요 파일 확인: `test_checklist_no_unnecessary_root_files` 테스트 통과 ✅
+
+---
+
+### #13. 멱등성
+
+**상태: ✅ VERIFIED (코드 수준)**
+
+- `test_checklist_tofu_hcl_generation_idempotent` ✅
+- `test_checklist_kubespray_inventory_idempotent` ✅
+- `test_checklist_cluster_vars_idempotent` ✅
+- `test_e2e_clean_rebuild_idempotency` ✅
+- `test_generate_tofu_host_infra_idempotent` ✅
+- Helm: `upgrade --install` (idempotent) ✅
+- Kubespray: 재실행 안전 (Ansible 특성) ✅
+
+**실환경 멱등성** (sdi init → clean → sdi init 사이클): ❌ 미검증
+
+---
+
+### #14. 외부 kubectl 접근 (CF Tunnel/Tailscale/SOCKS5)
+
+**상태: 🔶 PARTIAL — 구조적 제약 존재**
+
+| 접근 방법 | 작동 조건 | 현재 상태 |
+|-----------|----------|----------|
+| **Tailscale** | Tailscale 설치 + kubeconfig의 server IP가 Tailscale IP | ⬜ 실환경 필요 |
+| **CF Tunnel + OIDC** | Keycloak Realm/Client 설정 완료 | ❌ Keycloak 미설정 |
+| **CF Tunnel + client cert** | **불가능** — CF가 TLS 종단하므로 client cert 전달 안됨 | ❌ 구조적 불가 |
+| **SOCKS5 Proxy** | Tower에 SOCKS5 pod + `kubectl --proxy-url` | 🔶 manifest 존재, 미검증 |
+| **LAN 직접** | 동일 네트워크 + kubeconfig | ⬜ 실환경 필요 |
+
+**핵심 문제**: Keycloak 없이는 CF Tunnel 경유 외부 kubectl이 불가능. Pre-OIDC 외부 접근은 **Tailscale 직접 접근**만 가능하며, SOCKS5 proxy는 LAN/Tailscale 내부에서의 편의 기능.
+
+**문서화 상태**: `docs/ops-guide.md`에 접근 경로별 가이드 존재 ✅, README에도 External Access 섹션 ✅
+
+---
+
+### #15. NAT 접근 경로
+
+**상태: ✅ VERIFIED (문서 수준)**
+
+- NAT 내부 멀티-클러스터: ✅ 구조 확인
+- 외부 접근: Tailscale + CF Tunnel만 ✅
+- LAN 내부: 스위치 접근 가이드 — `docs/ops-guide.md` 및 README External Access에 문서화 ✅
+- `test_checklist_nat_access_methods_documented` 테스트 통과 ✅
+
+---
+
+## 근본 원인 분석 요약
+
+| 구분 | 원인 | 영향 범위 |
+|------|------|----------|
+| **테스트 한계** | 388개 테스트가 모두 순수 함수 테스트 → 실행 경로(I/O) 미검증 | 모든 실행 커맨드 |
+| **CF Tunnel 인증 갭** | TLS 종단으로 client cert 불가, OIDC만 가능 → Keycloak 필수 | Checklist #14 |
+| **실환경 미검증** | 물리 인프라 없이 개발 → E2E 검증 불가 | Checklist #1, #7, #13 |
+| **상태 표기 오해** | CODE-COMPLETE ≈ "done" 오해 유발 | 전체 DASHBOARD 신뢰도 |
+
+---
+
+## 실행 계획 (Sprint 기반)
+
+### Sprint 18: 코드 수준 갭 해소 (인프라 불필요)
+
+#### 18a — CLI 실행 경로 통합 테스트 강화
+- [ ] `sdi init` 실행 흐름 검증: facts 미존재 시 자동 수집 → host-prep → HCL 생성 → tofu 호출 순서 테스트
+- [ ] `sdi clean` 분기 검증: hard/soft × confirm/no-confirm × main.tf유무 × host-infra유무
+- [ ] `sdi sync` 실행 흐름: diff → VM conflict 감지 → 동기화 실행 순서
+- [ ] `cluster init` 파이프라인: config load → validation → inventory → vars → kubespray → kubeconfig → gitops update
+- [ ] `bootstrap` 파이프라인: helm → cluster-add → kubectl-apply 순서 및 에러 핸들링
+
+#### 18b — CF Tunnel 인증 경로 명확화
+- [ ] README/docs에 "Pre-OIDC 상태에서 외부 kubectl은 Tailscale만 가능" 명시
+- [ ] CF Tunnel 경유 kubectl은 Keycloak 설정 완료 후에만 가능함을 강조
+- [ ] SOCKS5 proxy의 정확한 사용 시나리오 문서화 (LAN/Tailscale 내부 전용)
+
+#### 18c — 설정 파일 포맷 정합성
+- [ ] Checklist 스펙의 `.baremetal-init.yaml` 3가지 case와 실제 example 파일 필드 대조 테스트
+- [ ] `sshKeyPathOfReachableNode` 필드 처리 로직 검증
+
+### Sprint 19: 실환경 E2E 검증 (인프라 필요)
+
+#### 19a — SDI 가상화 E2E
+- [ ] `scalex facts --all` → 4노드 SSH 접근 + JSON 수집
+- [ ] `scalex sdi init config/sdi-specs.yaml` → VM 5개 생성 (tower-cp-0, sandbox-cp-0, sandbox-w-0~2)
+- [ ] `scalex get sdi-pools` → 2개 풀 확인
+- [ ] `scalex sdi clean --hard --yes-i-really-want-to` → 완전 초기화
+- [ ] 재실행 (멱등성 검증)
+
+#### 19b — Kubespray 클러스터링 E2E
+- [ ] `scalex cluster init config/k8s-clusters.yaml` → tower + sandbox 클러스터 생성
+- [ ] `kubectl get nodes` (tower kubeconfig) → 정상 응답
+- [ ] `kubectl get nodes` (sandbox kubeconfig) → 정상 응답
+- [ ] `scalex get clusters` → 2개 클러스터 표시
+
+#### 19c — ArgoCD Bootstrap E2E
+- [ ] `scalex secrets apply` → K8s secrets 생성
+- [ ] `scalex bootstrap` → ArgoCD 설치 + sandbox 등록 + spread.yaml 적용
+- [ ] `kubectl -n argocd get applications` → 모든 앱 Synced/Healthy
+- [ ] CF Tunnel 상태 확인 (cloudflared pod Running)
+
+#### 19d — 외부 접근 E2E
+- [ ] Tailscale IP로 tower kubectl 접근
+- [ ] Keycloak Realm/Client 설정
+- [ ] CF Tunnel 경유 OIDC kubectl 접근
+- [ ] `https://cd.jinwang.dev` ArgoCD UI 접근
+- [ ] `https://auth.jinwang.dev` Keycloak UI 접근
+
+### Sprint 20: 단일 노드 모드 검증
+
+- [ ] 단일 베어메탈에서 tower + sandbox 양쪽 모두 구동
+- [ ] `sdi-specs.yaml`에서 모든 VM을 1개 호스트에 배치
+- [ ] 리소스 제약 하에서 정상 작동 확인
+
+### Sprint 21: 3rd 클러스터 확장 검증
+
+- [ ] `sdi-specs.yaml`에 3번째 풀 추가
+- [ ] `k8s-clusters.yaml`에 3번째 클러스터 정의
+- [ ] `gitops/generators/` 에 3번째 generator 추가
+- [ ] E2E: 3-클러스터 환경 작동 확인
 
 ---
 
@@ -282,13 +386,17 @@ _generated/
 ### External Access Paths
 
 ```
-[CF Tunnel] (OIDC only — OIDC 설정 완료 후에만 kubectl 가능)
+[CF Tunnel + OIDC] (Keycloak 설정 완료 후에만 kubectl 가능)
   kubectl (OIDC token) → CF Edge → cloudflared → kube-apiserver
   ⚠ client certificate auth는 CF Tunnel 통과 불가 (TLS 종단)
+  ⚠ Keycloak 미설정 시 외부 kubectl 불가
 
 [Tailscale] (cert + token — Pre-OIDC 외부 접근의 유일한 방법)
   kubectl (admin cert) → Tailscale IP → kube-apiserver
   SSH → Tailscale IP → bastion → 내부 노드
+
+[SOCKS5 Proxy] (LAN/Tailscale 내부에서의 편의 접근)
+  kubectl --proxy-url socks5://tower-ip:1080 → kube-apiserver
 
 [LAN] (모든 인증 방식)
   kubectl → LAN IP → kube-apiserver
@@ -301,15 +409,15 @@ _generated/
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| core/validation | 74+ | pool mapping, cluster IDs, CIDR, DNS, single-node, baremetal, idempotency, sync wave, AppProject, sdi-init, E2E pipeline, SSH, 3rd cluster, GitOps consistency, spec caching, **CF Tunnel auth, Tower SAN, CF credentials** |
+| core/validation | 74+ | pool mapping, cluster IDs, CIDR, DNS, single-node, baremetal, idempotency, sync wave, AppProject, sdi-init, E2E pipeline, SSH, 3rd cluster, GitOps consistency, spec caching, CF Tunnel auth, Tower SAN, CF credentials |
 | core/gitops | 39 | ApplicationSet, kustomization, sync waves, Cilium, ClusterMesh, generators |
-| core/kubespray | 32+ | inventory (SDI + baremetal), cluster vars, OIDC, Cilium, single-node, **Tower SAN** |
+| core/kubespray | 32+ | inventory (SDI + baremetal), cluster vars, OIDC, Cilium, single-node, Tower SAN |
 | commands/status | 21 | platform status reporting |
 | commands/sdi | 24 | network resolve, host infra, pool state, clean validation, CIDR prefix, host-infra clean |
 | commands/get | 18 | facts row, config status, SDI pools, clusters |
 | core/config | 15 | baremetal config, semantic validation, camelCase |
 | core/kernel | 14 | kernel-tune recommendations |
-| commands/bootstrap | 14+ | ArgoCD helm, cluster add, kubectl apply, pipeline, **CF credentials check** |
+| commands/bootstrap | 14+ | ArgoCD helm, cluster add, kubectl apply, pipeline, CF credentials check |
 | core/sync | 13 | sync diff, VM conflict, add+remove |
 | core/secrets | 12 | K8s secret generation |
 | core/host_prepare | 12 | KVM, bridge, VFIO |
@@ -319,29 +427,4 @@ _generated/
 | core/resource_pool | 7 | aggregation, table, disk_gb |
 | core/ssh | 5 | SSH command building, ProxyJump key, reachable_node_ip key |
 | commands/facts | 4 | facts gathering |
-| **TOTAL** | **388** | Sprint 17: +8 tests (CF Tunnel auth, Tower SAN, SOCKS5, CF credentials) |
-
----
-
-## Sprint History
-
-| Sprint | Date | Tests | Summary |
-|--------|------|-------|---------|
-| **17a** | 2026-03-11 | 388 | CF Tunnel Pre-OIDC auth 수정 — client cert 불가 문서화, Tailscale 권장 (C-7, C-11) |
-| **17b** | 2026-03-11 | 388 | Tower supplementary_addresses_in_ssl_keys 추가 (C-9) |
-| **17c** | 2026-03-11 | 388 | SOCKS5 프록시 접근성 + port-forward 가이드 문서화 (C-8) |
-| **17d** | 2026-03-11 | 388 | CF credentials 사전 검증 — bootstrap 시 warning (C-10) |
-| 16e | 2026-03-11 | 380 | README/DASHBOARD 테스트 수 업데이트 |
-| 16d | 2026-03-11 | 380 | 중복 facts 로드 확인 |
-| 16c | 2026-03-11 | 380 | SDI spec 캐싱 |
-| 16b | 2026-03-11 | 379 | resource-pool-summary 공통 경로 |
-| 16a | 2026-03-11 | 379 | `sdi clean` host-infra tofu destroy |
-| 15f | 2026-03-11 | 375 | playbox-root → scalex-root rename |
-| 15e | 2026-03-11 | 374 | Sandbox 외부 접근 아키텍처 결정 |
-| 15d | 2026-03-11 | 372 | resource_pool disk_gb |
-| 15b-c | 2026-03-11 | 370 | `scalex bootstrap` + README |
-| 15a | 2026-03-11 | 355 | Kubespray 서브모듈 경로 해결 |
-| 13d | 2026-03-11 | 352 | Edge cases: Cilium cluster_id, CIDR overlap |
-| 13c | 2026-03-11 | 347 | 2-layer template, OIDC, credentials |
-| 13b | 2026-03-11 | 342 | pre-OIDC kubectl, NAT 접근 |
-| 13a | 2026-03-11 | 340 | Checklist 15항목 갭 분석 |
+| **TOTAL** | **388** | **순수 함수 테스트만 — 실행 경로 미포함** |
