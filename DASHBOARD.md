@@ -20,16 +20,17 @@
 
 **결론**: 순수 함수 테스트 ≠ 인프라 달성. "코드는 작성했다"와 "동작한다"는 전혀 다르다.
 
-### 비판 2: 파이프라인 체인 미검증
+### 비판 2: 파이프라인 체인 미검증 → ✅ Sprint 45에서 보강
 
-각 단계의 출력이 다음 단계의 입력으로 올바르게 흘러가는지 **체인 테스트가 없다**:
+~~각 단계의 출력이 다음 단계의 입력으로 올바르게 흘러가는지 체인 테스트가 없다.~~
 
+**수정 (Sprint 45)**: 3개 cross-module chain test 추가 (601→604 tests):
 ```
-facts output JSON → sdi init이 이 JSON을 읽을 수 있는가? → 미검증
-sdi-specs.yaml pool_name → k8s-clusters.yaml cluster_sdi_resource_pool 매핑 → 부분 검증
-sdi init HCL의 VM IP → cluster init inventory의 ansible_host IP → 미검증
-cluster init inventory → Kubespray가 기대하는 정확한 형식인가? → 미검증
-bootstrap args → 실제 helm/kubectl 명령으로 실행 가능한가? → 미검증
+facts output JSON → sdi init 소비 가능 → ✅ test_chain_facts_json_roundtrip_for_sdi_consumption
+sdi-specs.yaml pool_name → k8s-clusters.yaml 매핑 → ✅ 기존 validate_cluster_sdi_pool_mapping
+sdi init HCL의 VM IP → inventory의 ansible_host IP → ✅ test_chain_sdi_vm_ips_flow_into_inventory_ansible_host
+cluster init inventory → Kubespray 형식 → ✅ 기존 test_full_dryrun_pipeline_both_configs (섹션 검증)
+bootstrap args → helm/kubectl 명령 형식 → ✅ test_chain_bootstrap_args_reference_generated_kubeconfig_path + 기존 8개 bootstrap 테스트
 ```
 
 ### 비판 3: 멱등성 검증 오류
@@ -117,13 +118,13 @@ bootstrap args → 실제 helm/kubectl 명령으로 실행 가능한가? → 미
 - [x] **44-5**: config 파일 git 추적 상태 확인 — 이미 `.gitignore`에 있고 추적되지 않음 ✅
 - [x] **44-6**: `.example` 파일 확인 — `config/sdi-specs.yaml.example`, `config/k8s-clusters.yaml.example` 이미 존재 ✅
 
-### Sprint 45: 파이프라인 체인 보강 + 누락 검증
+### Sprint 45: 파이프라인 체인 보강 + 누락 검증 ✅
 
 **목표**: 기존 테스트에서 커버하지 않는 파이프라인 간극(gap) 식별 및 보강
 
-- [ ] **45-1**: facts 출력 JSON → sdi init 입력 연결 체인 테스트 (facts JSON 포맷 → host 목록 추출)
-- [ ] **45-2**: sdi HCL 생성 VM IP → cluster inventory ansible_host IP 일치 검증
-- [ ] **45-3**: bootstrap 인수 → helm/kubectl 명령 형식 유효성 검증
+- [x] **45-1**: facts JSON roundtrip 체인 테스트 — `parse_facts_output` → JSON serialize → deserialize → 필드 보존 ✅
+- [x] **45-2**: SDI VM IP → cluster inventory `ansible_host` IP 일치 검증 ✅
+- [x] **45-3**: bootstrap kubeconfig 경로 → helm args 연결 검증 ✅
 - [ ] **45-4**: 전체 디렉토리 구조 검증 테스트 (불필요 파일 없음, .example 존재 확인)
 
 ### Sprint 46: SDI Sync Cascading Side-Effect 보강

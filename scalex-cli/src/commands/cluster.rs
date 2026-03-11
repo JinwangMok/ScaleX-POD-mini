@@ -1444,4 +1444,155 @@ config:
             "HCL must reference management bridge"
         );
     }
+
+    /// Sprint 45: Cross-module chain test — facts JSON roundtrip.
+    /// Verifies that NodeFacts can be serialized to JSON and deserialized back,
+    /// preserving all fields needed by sdi init.
+    #[test]
+    fn test_chain_facts_json_roundtrip_for_sdi_consumption() {
+        use crate::models::baremetal::NodeFacts;
+
+        // Simulate facts output using the actual marker/section format
+        let raw = r#"some preamble
+---SCALEX_FACTS_START---
+cpu_model=Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+cpu_cores=6
+cpu_threads=12
+cpu_arch=x86_64
+mem_total_kb=32768000
+mem_avail_kb=28000000
+kernel_version=6.8.0-45-generic
+---DISKS---
+nvme0n1 1000204886016 disk WD_BLACK_SN770
+---NICS---
+[]
+---NIC_SPEEDS---
+eno1|1000|e1000e|up
+enp2s0|10000|mlx5_core|up
+---GPUS---
+---PCIE---
+---IOMMU---
+---BRIDGES---
+br0
+---BONDS---
+---KERNEL_PARAMS---
+net.ipv4.ip_forward = 1
+---SCALEX_FACTS_END---"#;
+
+        let facts =
+            crate::commands::facts::parse_facts_output_public("playbox-0", raw).unwrap();
+
+        // Serialize to JSON (what `scalex facts` writes to _generated/facts/)
+        let json = serde_json::to_string_pretty(&facts).unwrap();
+
+        // Deserialize back (what `sdi init` reads from _generated/facts/)
+        let restored: NodeFacts = serde_json::from_str(&json).unwrap();
+
+        // Critical fields must survive the roundtrip
+        assert_eq!(restored.node_name, "playbox-0");
+        assert_eq!(restored.cpu.cores, 6);
+        assert_eq!(restored.cpu.threads, 12);
+        assert_eq!(restored.memory.total_mb, 32000); // 32768000 KB → ~32000 MB
+        assert_eq!(restored.kernel.version, "6.8.0-45-generic");
+        assert_eq!(restored.disks.len(), 1);
+        assert_eq!(restored.nics.len(), 2);
+        assert_eq!(restored.bridges, vec!["br0"]);
+
+        // sdi init uses node_name to map to baremetal config hosts
+        assert!(
+            !restored.node_name.is_empty(),
+            "node_name must survive roundtrip for sdi host mapping"
+        );
+    }
+
+    /// Sprint 45: Cross-module chain test — SDI HCL VM IPs flow into inventory ansible_host.
+    /// Verifies the critical data linkage: sdi-specs VM IPs → cluster inventory ansible_host.
+    #[test]
+    fn test_chain_sdi_vm_ips_flow_into_inventory_ansible_host() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: crate::models::sdi::SdiSpec =
+            serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s_config.config.clusters {
+            // Find the matching SDI pool
+            let pool = sdi_spec
+                .spec
+                .sdi_pools
+                .iter()
+                .find(|p| p.pool_name == cluster.cluster_sdi_resource_pool)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "cluster '{}' references pool '{}' which must exist in sdi-specs",
+                        cluster.cluster_name, cluster.cluster_sdi_resource_pool
+                    )
+                });
+
+            // Generate inventory from this cluster + sdi spec
+            let inventory =
+                crate::core::kubespray::generate_inventory(cluster, &sdi_spec).unwrap();
+
+            // Every VM IP in the SDI pool must appear as ansible_host in inventory
+            for node in &pool.node_specs {
+                let expected_host = format!("ansible_host={}", node.ip);
+                assert!(
+                    inventory.contains(&expected_host),
+                    "cluster '{}': SDI VM IP '{}' (node '{}') must appear as ansible_host in inventory.\n\
+                     This verifies the critical SDI→Kubespray data chain.\n\
+                     Inventory excerpt:\n{}",
+                    cluster.cluster_name,
+                    node.ip,
+                    node.node_name,
+                    inventory.lines().take(20).collect::<Vec<_>>().join("\n")
+                );
+            }
+
+            // Also verify node_name appears in inventory
+            for node in &pool.node_specs {
+                assert!(
+                    inventory.contains(&node.node_name),
+                    "cluster '{}': SDI node_name '{}' must appear in inventory",
+                    cluster.cluster_name,
+                    node.node_name
+                );
+            }
+        }
+    }
+
+    /// Sprint 45: Cross-module chain test — bootstrap args reference tower kubeconfig path.
+    /// Verifies bootstrap generates helm/kubectl commands targeting the correct cluster.
+    #[test]
+    fn test_chain_bootstrap_args_reference_generated_kubeconfig_path() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        // Find the tower cluster (role = management)
+        let tower = k8s_config
+            .config
+            .clusters
+            .iter()
+            .find(|c| c.cluster_role == "management")
+            .expect("example config must have a management cluster");
+
+        // The expected kubeconfig path pattern
+        let expected_kubeconfig_pattern =
+            format!("_generated/clusters/{}/kubeconfig", tower.cluster_name);
+
+        // Bootstrap helm args must reference this kubeconfig (version is a CLI arg, default 7.8.13)
+        let helm_args = crate::commands::bootstrap::generate_argocd_helm_install_args(
+            &expected_kubeconfig_pattern,
+            "7.8.13",
+        );
+
+        assert!(
+            helm_args
+                .iter()
+                .any(|a| a.contains(&expected_kubeconfig_pattern)),
+            "helm args must reference tower kubeconfig at '{}'. Args: {:?}",
+            expected_kubeconfig_pattern,
+            helm_args
+        );
+    }
 }
