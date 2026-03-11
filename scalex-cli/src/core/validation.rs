@@ -5707,4 +5707,400 @@ config:
         assert!(names.contains(&"playbox-2"));
         assert!(names.contains(&"playbox-3"));
     }
+
+    // ── Sprint 19a: SOCKS5 proxy manifest & external access path verification ──
+
+    /// Sprint 19a: SOCKS5 proxy manifest must be valid K8s Deployment + Service
+    /// in `kube-tunnel` namespace with correct port 1080.
+    #[test]
+    fn test_socks5_manifest_structure() {
+        let manifest = include_str!("../../../gitops/tower/socks5-proxy/manifest.yaml");
+
+        // Must define both Deployment and Service
+        assert!(
+            manifest.contains("kind: Deployment"),
+            "SOCKS5 manifest must contain a Deployment"
+        );
+        assert!(
+            manifest.contains("kind: Service"),
+            "SOCKS5 manifest must contain a Service"
+        );
+
+        // Correct namespace
+        assert!(
+            manifest.contains("namespace: kube-tunnel"),
+            "SOCKS5 must be in kube-tunnel namespace"
+        );
+
+        // SOCKS5 standard port
+        assert!(manifest.contains("1080"), "SOCKS5 must use port 1080");
+
+        // Resource limits defined (production-ready)
+        assert!(
+            manifest.contains("resources:"),
+            "SOCKS5 must define resource requests/limits"
+        );
+        assert!(
+            manifest.contains("limits:"),
+            "SOCKS5 must define resource limits"
+        );
+
+        // ClusterIP (not exposed externally — internal only via kubectl port-forward)
+        assert!(
+            manifest.contains("type: ClusterIP"),
+            "SOCKS5 Service must be ClusterIP (not NodePort/LoadBalancer)"
+        );
+    }
+
+    /// Sprint 19a: SOCKS5 kustomization must reference the manifest.
+    #[test]
+    fn test_socks5_kustomization_references_manifest() {
+        let kustomization = include_str!("../../../gitops/tower/socks5-proxy/kustomization.yaml");
+
+        assert!(
+            kustomization.contains("manifest.yaml"),
+            "Kustomization must reference manifest.yaml"
+        );
+        assert!(
+            kustomization.contains("kind: Kustomization"),
+            "Must be a valid Kustomization resource"
+        );
+    }
+
+    /// Sprint 19a: Tower generator must include socks5-proxy in kube-tunnel namespace
+    /// at sync wave 3 (same as cloudflared-tunnel).
+    #[test]
+    fn test_tower_generator_includes_socks5() {
+        let generator = include_str!("../../../gitops/generators/tower/tower-generator.yaml");
+
+        assert!(
+            generator.contains("socks5-proxy"),
+            "Tower generator must include socks5-proxy app"
+        );
+
+        // Parse YAML to verify namespace and sync wave
+        let docs: Vec<serde_yaml::Value> = vec![serde_yaml::from_str(generator).unwrap()];
+
+        let app_set = &docs[0];
+        let elements = app_set["spec"]["generators"][0]["list"]["elements"]
+            .as_sequence()
+            .unwrap();
+
+        let socks5_entry = elements
+            .iter()
+            .find(|e| e["appName"].as_str() == Some("socks5-proxy"))
+            .expect("socks5-proxy must be in generator elements");
+
+        assert_eq!(
+            socks5_entry["namespace"].as_str().unwrap(),
+            "kube-tunnel",
+            "socks5-proxy must target kube-tunnel namespace"
+        );
+        assert_eq!(
+            socks5_entry["syncWave"].as_str().unwrap(),
+            "3",
+            "socks5-proxy must be sync wave 3"
+        );
+    }
+
+    /// Sprint 19a: External access paths must be documented:
+    /// 1) LAN direct, 2) Tailscale, 3) CF Tunnel (OIDC required).
+    /// SOCKS5 is for LAN/Tailscale path only.
+    #[test]
+    fn test_external_access_three_paths_documented() {
+        let readme = include_str!("../../../README.md");
+
+        // Path 1: LAN direct access
+        assert!(
+            readme.contains("LAN") || readme.contains("lan") || readme.contains("로컬"),
+            "README must document LAN direct access path"
+        );
+
+        // Path 2: Tailscale
+        assert!(
+            readme.contains("Tailscale") || readme.contains("tailscale"),
+            "README must document Tailscale access path"
+        );
+
+        // Path 3: Cloudflare Tunnel
+        assert!(
+            readme.contains("Cloudflare") || readme.contains("cloudflare"),
+            "README must document Cloudflare Tunnel access path"
+        );
+    }
+
+    /// Sprint 19a: ops-guide must document SOCKS5 usage with kubectl port-forward.
+    #[test]
+    fn test_ops_guide_socks5_port_forward_usage() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Must explain how to use SOCKS5 proxy
+        assert!(
+            ops_guide.contains("SOCKS5") || ops_guide.contains("socks5"),
+            "ops-guide must document SOCKS5 proxy usage"
+        );
+
+        // Must mention port-forward or kubectl as access method
+        assert!(
+            ops_guide.contains("port-forward") || ops_guide.contains("kubectl"),
+            "ops-guide must explain kubectl port-forward for SOCKS5"
+        );
+    }
+
+    // ── Sprint 19b: Directory structure verification (Checklist #12) ──
+
+    /// Sprint 19b: gitops/ must have the required multi-cluster structure:
+    /// common/, tower/, sandbox/, bootstrap/, generators/, projects/
+    #[test]
+    fn test_gitops_directory_structure() {
+        // Verify required directories exist via known files
+        let spread = include_str!("../../../gitops/bootstrap/spread.yaml");
+        assert!(
+            spread.contains("tower-root"),
+            "spread.yaml must define tower-root"
+        );
+
+        let tower_gen = include_str!("../../../gitops/generators/tower/tower-generator.yaml");
+        assert!(!tower_gen.is_empty(), "Tower generator must exist");
+
+        let sandbox_gen = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
+        assert!(!sandbox_gen.is_empty(), "Sandbox generator must exist");
+
+        // Common apps exist
+        let _cilium_res =
+            include_str!("../../../gitops/common/cilium-resources/kustomization.yaml");
+        let _cert_mgr = include_str!("../../../gitops/common/cert-manager/kustomization.yaml");
+
+        // Tower-specific apps exist
+        let _argocd = include_str!("../../../gitops/tower/argocd/kustomization.yaml");
+        let _cf_tunnel =
+            include_str!("../../../gitops/tower/cloudflared-tunnel/kustomization.yaml");
+        let _keycloak = include_str!("../../../gitops/tower/keycloak/kustomization.yaml");
+
+        // Sandbox-specific apps exist
+        let _rbac = include_str!("../../../gitops/sandbox/rbac/kustomization.yaml");
+    }
+
+    /// Sprint 19b: scalex-cli/ must be a Rust project with Cargo.toml and src/main.rs.
+    #[test]
+    fn test_scalex_cli_is_rust_project() {
+        let cargo_toml = include_str!("../../../scalex-cli/Cargo.toml");
+        assert!(
+            cargo_toml.contains("[package]"),
+            "Must have valid Cargo.toml"
+        );
+        assert!(
+            cargo_toml.contains("name = \"scalex\"")
+                || cargo_toml.contains("name = \"scalex-cli\""),
+            "Package name must be scalex or scalex-cli"
+        );
+    }
+
+    /// Sprint 19b: credentials/ must have .example templates for all required secrets.
+    #[test]
+    fn test_credentials_example_templates_exist() {
+        let baremetal = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        assert!(
+            baremetal.contains("targetNodes"),
+            "baremetal-init example must define targetNodes"
+        );
+
+        let env = include_str!("../../../credentials/.env.example");
+        assert!(
+            env.contains("PASSWORD") || env.contains("KEY"),
+            ".env example must reference passwords or keys"
+        );
+
+        let secrets = include_str!("../../../credentials/secrets.yaml.example");
+        assert!(
+            secrets.contains("argocd")
+                || secrets.contains("cloudflare")
+                || secrets.contains("keycloak"),
+            "secrets.yaml example must reference service credentials"
+        );
+    }
+
+    // ── Sprint 19c: 2-Layer template management verification (Checklist philosophy #6) ──
+
+    /// Sprint 19c: Layer 1 — SDI + K8s provisioning values must be in sdi-specs.yaml
+    /// and k8s-clusters.yaml (separate files for infra layer).
+    #[test]
+    fn test_two_layer_template_layer1_infra() {
+        let sdi = include_str!("../../../config/sdi-specs.yaml.example");
+        let k8s = include_str!("../../../config/k8s-clusters.yaml.example");
+
+        // sdi-specs.yaml defines VM pools (Layer 1a: virtualization)
+        assert!(
+            sdi.contains("sdi_pools") || sdi.contains("sdiPools"),
+            "sdi-specs must define SDI pools"
+        );
+
+        // k8s-clusters.yaml defines cluster provisioning (Layer 1b: Kubernetes)
+        assert!(
+            k8s.contains("clusters"),
+            "k8s-clusters must define clusters"
+        );
+        assert!(
+            k8s.contains("common"),
+            "k8s-clusters must have common config section"
+        );
+
+        // Cross-reference: k8s cluster must reference SDI pool
+        assert!(
+            k8s.contains("cluster_sdi_resource_pool") || k8s.contains("clusterSDIResourcePool"),
+            "k8s cluster must reference SDI pool for mapping"
+        );
+    }
+
+    /// Sprint 19c: Layer 2 — GitOps config for multi-cluster management must be in
+    /// gitops/ with ApplicationSets per cluster.
+    #[test]
+    fn test_two_layer_template_layer2_gitops() {
+        let tower_gen = include_str!("../../../gitops/generators/tower/tower-generator.yaml");
+        let sandbox_gen = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
+
+        // Both generators use ApplicationSet
+        assert!(
+            tower_gen.contains("kind: ApplicationSet"),
+            "Tower generator must be an ApplicationSet"
+        );
+        assert!(
+            sandbox_gen.contains("kind: ApplicationSet"),
+            "Sandbox generator must be an ApplicationSet"
+        );
+
+        // Each cluster has its own generator (not a single monolithic config)
+        assert!(
+            tower_gen.contains("tower-project"),
+            "Tower generator must reference tower-project"
+        );
+        assert!(
+            sandbox_gen.contains("sandbox-project"),
+            "Sandbox generator must reference sandbox-project"
+        );
+    }
+
+    // ── Sprint 19d: Single-node mode support verification (Checklist philosophy #1) ──
+
+    /// Sprint 19d: SDI spec must allow a single-node pool (1 node across 1 bare-metal).
+    #[test]
+    fn test_sdi_single_node_pool_support() {
+        use crate::models::sdi::*;
+
+        // Create a minimal single-node SDI spec matching real structure
+        let single_node_yaml = r#"
+resource_pool:
+  name: "single-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8"]
+
+os_image:
+  source: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+  format: "qcow2"
+
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id_ed25519.pub"
+  packages: [curl]
+
+spec:
+  sdi_pools:
+    - pool_name: "single-tower"
+      node_specs:
+        - node_name: "tower-cp-0"
+          host: "playbox-0"
+          ip: "192.168.88.100"
+          cpu: 4
+          mem_gb: 8
+          disk_gb: 80
+          roles:
+            - control-plane
+            - etcd
+            - worker
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(single_node_yaml).unwrap();
+        assert_eq!(spec.spec.sdi_pools.len(), 1);
+        assert_eq!(spec.spec.sdi_pools[0].node_specs.len(), 1);
+
+        // Single node must have all roles (control-plane + etcd + worker)
+        let roles = &spec.spec.sdi_pools[0].node_specs[0].roles;
+        assert!(
+            roles.contains(&"control-plane".to_string()),
+            "Single node must be control-plane"
+        );
+        assert!(
+            roles.contains(&"worker".to_string()),
+            "Single node must also be worker"
+        );
+    }
+
+    /// Sprint 19d: k8s-clusters config must support single-pool single-cluster mode.
+    #[test]
+    fn test_k8s_single_cluster_mode() {
+        let single_cluster_yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+    container_runtime: "containerd"
+    cni: "cilium"
+    cilium_version: "1.17.5"
+    kube_proxy_remove: true
+    cgroup_driver: "systemd"
+    helm_enabled: true
+    kube_apiserver_admission_plugins:
+      - NodeRestriction
+    firewalld_enabled: false
+    kube_vip_enabled: false
+    graceful_node_shutdown: true
+    graceful_node_shutdown_sec: 120
+    kubelet_custom_flags:
+      - "--node-ip={{ ip }}"
+    gateway_api_enabled: true
+    gateway_api_version: "1.3.0"
+    kubeconfig_localhost: true
+    kubectl_localhost: true
+    enable_nodelocaldns: true
+    kube_network_node_prefix: 24
+    ntp_enabled: true
+    etcd_deployment_type: "host"
+    dns_mode: "coredns"
+
+  clusters:
+    - cluster_name: "tower"
+      cluster_sdi_resource_pool: "single-tower"
+      cluster_role: "management"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+        dns_domain: "tower.local"
+      cilium:
+        cluster_id: 1
+        cluster_name: "tower"
+
+  argocd:
+    namespace: "argocd"
+    repo_url: "https://github.com/example/repo.git"
+    repo_branch: "main"
+    tower_manages: []
+
+  domains:
+    auth: "auth.example.dev"
+    argocd: "cd.example.dev"
+    k8s_api: "api.k8s.example.dev"
+"#;
+        let config: K8sClustersConfig = serde_yaml::from_str(single_cluster_yaml).unwrap();
+        assert_eq!(
+            config.config.clusters.len(),
+            1,
+            "Must support single-cluster configuration"
+        );
+        assert_eq!(config.config.clusters[0].cluster_name, "tower");
+        assert!(
+            config.config.argocd.unwrap().tower_manages.is_empty(),
+            "Single-cluster mode: tower manages no other clusters"
+        );
+    }
 }
