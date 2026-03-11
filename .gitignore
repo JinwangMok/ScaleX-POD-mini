@@ -12,5 +12,3 @@ credentials/*
 !credentials/*.example
 scalex-cli/target/
 DIRECTION.md
-PROMPT.md
-REQUEST-TO-USER.md
