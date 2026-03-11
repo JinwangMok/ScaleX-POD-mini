@@ -4,7 +4,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
-  name: playbox-root
+  name: scalex-root
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -30,7 +30,7 @@ metadata:
   name: tower-root
   namespace: argocd
 spec:
-  project: playbox-root
+  project: scalex-root
   source:
     repoURL: https://github.com/JinwangMok/ScaleX-POD-mini.git
     targetRevision: main
@@ -52,7 +52,7 @@ metadata:
   name: sandbox-root
   namespace: argocd
 spec:
-  project: playbox-root
+  project: scalex-root
   source:
     repoURL: https://github.com/JinwangMok/ScaleX-POD-mini.git
     targetRevision: main
@@ -74,7 +74,7 @@ metadata:
   name: cluster-projects
   namespace: argocd
 spec:
-  project: playbox-root
+  project: scalex-root
   source:
     repoURL: https://github.com/JinwangMok/ScaleX-POD-mini.git
     targetRevision: main

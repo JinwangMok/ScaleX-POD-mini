@@ -19,7 +19,7 @@
 | **C-3** | **HIGH** | Kubespray 경로 해결 버그 | `find_kubespray_dir()`가 `["kubespray", "../kubespray", "/opt/kubespray"]`를 검색하지만, 실제 서브모듈은 `kubespray/kubespray/` (중첩 경로). **런타임에 100% 실패**. |
 | **C-4** | **HIGH** | `sdi init` (no-flag) 불완전 | Checklist #8: "모든 베어메탈을 가상화하고 통합 리소스 풀로 구성"이지만, 현재 no-flag 모드는 호스트 준비(KVM/bridge/VFIO)만 수행. 실제 VM 생성이나 통합 리소스 풀 생성 없음. |
 | **C-5** | **RESOLVED** | 외부 sandbox kubectl 미지원 | 아키텍처 결정: Sandbox는 Tower ArgoCD 경유 관리. 직접 외부 노출 불필요. 디버깅용 3가지 접근법 문서화 완료 (ops-guide Section 5). |
-| **C-6** | **LOW** | Legacy 네이밍 | `spread.yaml`의 AppProject가 `playbox-root` — `scalex-root`로 통일 필요. |
+| **C-6** | **LOW** | Legacy 네이밍 | `spread.yaml`의 AppProject가 `scalex-root` — `scalex-root`로 통일 필요. |
 
 ### 이전 DASHBOARD "VERIFIED" 판정의 비판
 
@@ -191,7 +191,7 @@
 - [ ] 대안: sandbox API를 CF Tunnel에 추가 라우팅 (향후)
 
 ### Sprint 15f: Legacy 네이밍 정리 (C-6)
-- [ ] `spread.yaml`의 `playbox-root` → 일관된 네이밍
+- [ ] `spread.yaml`의 `scalex-root` → 일관된 네이밍
 
 ### Sprint 16: 실환경 E2E (물리 인프라 필요)
 - [ ] I-1: `scalex facts --all` 실행

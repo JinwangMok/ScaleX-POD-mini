@@ -5167,4 +5167,24 @@ config:
             "ops-guide must document at least 2 sandbox access methods (LAN/Tailscale/bastion)"
         );
     }
+
+    // ── Sprint 15f: Legacy Naming Cleanup (C-6) ──
+
+    /// C-6: spread.yaml must use `scalex-root` AppProject, not legacy `playbox-root`.
+    #[test]
+    fn test_spread_yaml_uses_scalex_root_naming() {
+        let spread = include_str!("../../../gitops/bootstrap/spread.yaml");
+
+        // Must NOT contain legacy playbox-root
+        assert!(
+            !spread.contains("playbox-root"),
+            "spread.yaml must not use legacy 'playbox-root' — use 'scalex-root' instead"
+        );
+
+        // Must contain scalex-root
+        assert!(
+            spread.contains("scalex-root"),
+            "spread.yaml must use 'scalex-root' as the root AppProject name"
+        );
+    }
 }
