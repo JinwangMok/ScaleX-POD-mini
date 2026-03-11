@@ -1,3 +1,4 @@
+use crate::models::baremetal::NodeFacts;
 use crate::models::cluster::{ClusterMode, K8sClustersConfig};
 use crate::models::sdi::SdiSpec;
 
@@ -495,6 +496,185 @@ pub fn check_prerequisites(command: &str) -> Result<(), String> {
             missing.join(", ")
         ))
     }
+}
+
+/// Workflow step dependency — what must exist before a command can run.
+#[derive(Debug, PartialEq)]
+pub struct WorkflowDep {
+    pub artifact_path: String,
+    pub description: String,
+    pub fix_command: String,
+}
+
+/// Check workflow dependencies for a command.
+///
+/// Given a command and the set of artifact paths that actually exist on disk,
+/// returns a list of missing dependencies with actionable fix instructions.
+///
+/// Pure function: caller resolves which paths exist; this function only computes the diff.
+pub fn check_workflow_dependencies(command: &str, existing_paths: &[&str]) -> Vec<WorkflowDep> {
+    let existing: std::collections::HashSet<&str> = existing_paths.iter().copied().collect();
+
+    let required: Vec<WorkflowDep> = match command {
+        "sdi-init" => vec![
+            WorkflowDep {
+                artifact_path: "credentials/.baremetal-init.yaml".to_string(),
+                description: "Bare-metal node inventory".to_string(),
+                fix_command: "cp credentials/.baremetal-init.yaml.example credentials/.baremetal-init.yaml && edit".to_string(),
+            },
+            WorkflowDep {
+                artifact_path: "credentials/.env".to_string(),
+                description: "SSH credentials (passwords/key paths)".to_string(),
+                fix_command: "cp credentials/.env.example credentials/.env && edit".to_string(),
+            },
+            WorkflowDep {
+                artifact_path: "_generated/facts/".to_string(),
+                description: "Hardware facts (gathered by `scalex facts`)".to_string(),
+                fix_command: "scalex facts --all".to_string(),
+            },
+        ],
+        "sdi-init-spec" => vec![
+            WorkflowDep {
+                artifact_path: "credentials/.baremetal-init.yaml".to_string(),
+                description: "Bare-metal node inventory".to_string(),
+                fix_command: "cp credentials/.baremetal-init.yaml.example credentials/.baremetal-init.yaml && edit".to_string(),
+            },
+            WorkflowDep {
+                artifact_path: "credentials/.env".to_string(),
+                description: "SSH credentials".to_string(),
+                fix_command: "cp credentials/.env.example credentials/.env && edit".to_string(),
+            },
+            WorkflowDep {
+                artifact_path: "_generated/facts/".to_string(),
+                description: "Hardware facts".to_string(),
+                fix_command: "scalex facts --all".to_string(),
+            },
+            WorkflowDep {
+                artifact_path: "config/sdi-specs.yaml".to_string(),
+                description: "SDI pool specification".to_string(),
+                fix_command: "cp config/sdi-specs.yaml.example config/sdi-specs.yaml && edit".to_string(),
+            },
+        ],
+        "cluster-init" => vec![
+            WorkflowDep {
+                artifact_path: "_generated/sdi-state.json".to_string(),
+                description: "SDI state (created by `scalex sdi init`)".to_string(),
+                fix_command: "scalex sdi init <sdi-specs.yaml>".to_string(),
+            },
+            WorkflowDep {
+                artifact_path: "config/k8s-clusters.yaml".to_string(),
+                description: "Kubernetes cluster configuration".to_string(),
+                fix_command: "cp config/k8s-clusters.yaml.example config/k8s-clusters.yaml && edit".to_string(),
+            },
+        ],
+        "bootstrap" => vec![
+            WorkflowDep {
+                artifact_path: "_generated/kubeconfigs/".to_string(),
+                description: "Kubeconfig files (created by `scalex cluster init`)".to_string(),
+                fix_command: "scalex cluster init <k8s-clusters.yaml>".to_string(),
+            },
+            WorkflowDep {
+                artifact_path: "credentials/secrets.yaml".to_string(),
+                description: "Secrets (ArgoCD, Keycloak, Cloudflare)".to_string(),
+                fix_command: "cp credentials/secrets.yaml.example credentials/secrets.yaml && edit".to_string(),
+            },
+        ],
+        _ => vec![],
+    };
+
+    required
+        .into_iter()
+        .filter(|dep| !existing.contains(dep.artifact_path.as_str()))
+        .collect()
+}
+
+/// Format workflow dependency errors into a user-friendly message.
+/// Pure function.
+pub fn format_workflow_errors(command: &str, missing: &[WorkflowDep]) -> String {
+    if missing.is_empty() {
+        return String::new();
+    }
+
+    let mut msg = format!(
+        "Cannot run `scalex {}` — missing prerequisites:\n\n",
+        command.replace('-', " ")
+    );
+
+    for (i, dep) in missing.iter().enumerate() {
+        msg.push_str(&format!(
+            "  {}. {} ({})\n     Fix: {}\n\n",
+            i + 1,
+            dep.description,
+            dep.artifact_path,
+            dep.fix_command
+        ));
+    }
+
+    msg.push_str("Tip: Run `scalex status` to see the current workflow state.");
+    msg
+}
+
+/// Validate that SDI VM resource allocations don't exceed physical host capacity.
+/// Compares per-host VM totals (CPU cores, memory) against facts data.
+/// Pure function: no I/O.
+pub fn validate_sdi_resource_allocation(spec: &SdiSpec, facts: &[NodeFacts]) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    // Collect all VMs per host
+    let mut host_cpu: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut host_mem: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+    for pool in &spec.spec.sdi_pools {
+        for node in &pool.node_specs {
+            // Determine host: explicit host field, or placement.hosts[0], or "unknown"
+            let host = node
+                .host
+                .clone()
+                .or_else(|| pool.placement.hosts.first().cloned())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            *host_cpu.entry(host.clone()).or_insert(0) += node.cpu;
+            *host_mem.entry(host.clone()).or_insert(0) += node.mem_gb;
+        }
+    }
+
+    // Compare against facts
+    for (host, allocated_cpu) in &host_cpu {
+        if host == "unknown" {
+            continue; // Can't validate spread placement without host assignment
+        }
+        match facts.iter().find(|f| f.node_name == *host) {
+            Some(host_facts) => {
+                let physical_cores = host_facts.cpu.cores;
+                if *allocated_cpu > physical_cores {
+                    errors.push(format!(
+                        "Host '{}': allocated CPU ({} vCPUs) exceeds physical capacity ({} cores). \
+                         Reduce VM CPU allocation or redistribute VMs across hosts.",
+                        host, allocated_cpu, physical_cores
+                    ));
+                }
+
+                let physical_mem_gb = (host_facts.memory.total_mb / 1024) as u32;
+                let allocated_mem = host_mem.get(host).copied().unwrap_or(0);
+                if allocated_mem > physical_mem_gb {
+                    errors.push(format!(
+                        "Host '{}': allocated memory ({} GB) exceeds physical capacity ({} GB). \
+                         Reduce VM memory allocation or redistribute VMs across hosts.",
+                        host, allocated_mem, physical_mem_gb
+                    ));
+                }
+            }
+            None => {
+                errors.push(format!(
+                    "Host '{}': no facts data available — cannot verify resource limits. \
+                     Run `scalex facts --host {}` first.",
+                    host, host
+                ));
+            }
+        }
+    }
+
+    errors
 }
 
 #[cfg(test)]
@@ -7988,5 +8168,273 @@ config:
     fn test_find_missing_prerequisites() {
         let missing = find_missing_prerequisites(&["ls", "definitely-not-a-real-tool-12345"]);
         assert_eq!(missing, vec!["definitely-not-a-real-tool-12345"]);
+    }
+
+    // ── A-3: Resource over-allocation detection (Sprint 41 TDD) ──
+
+    #[test]
+    fn test_validate_sdi_resource_allocation_within_limits() {
+        use crate::models::baremetal::*;
+        let facts = vec![NodeFacts {
+            node_name: "playbox-0".to_string(),
+            timestamp: "".to_string(),
+            cpu: CpuInfo {
+                model: "".to_string(),
+                cores: 16,
+                threads: 32,
+                architecture: "x86_64".to_string(),
+            },
+            memory: MemoryInfo {
+                total_mb: 65536,
+                available_mb: 60000,
+            },
+            disks: vec![],
+            nics: vec![],
+            gpus: vec![],
+            iommu_groups: vec![],
+            kernel: KernelInfo {
+                version: "6.8.0".to_string(),
+                params: std::collections::HashMap::new(),
+            },
+            bridges: vec![],
+            bonds: vec![],
+            pcie: vec![],
+        }];
+        let sdi_yaml = r#"
+resource_pool:
+  name: "test"
+  network: { management_bridge: "br0", management_cidr: "192.168.88.0/24", gateway: "192.168.88.1", nameservers: ["8.8.8.8"] }
+os_image: { source: "https://example.com/img", format: "qcow2" }
+cloud_init: { ssh_authorized_keys_file: "~/.ssh/id.pub" }
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      placement: { hosts: [playbox-0] }
+      node_specs:
+        - { node_name: "cp-0", ip: "192.168.88.100", cpu: 4, mem_gb: 8, disk_gb: 30, roles: [control-plane] }
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(sdi_yaml).unwrap();
+        let errors = validate_sdi_resource_allocation(&spec, &facts);
+        assert!(
+            errors.is_empty(),
+            "should pass when within limits: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_sdi_resource_allocation_cpu_exceeded() {
+        use crate::models::baremetal::*;
+        let facts = vec![NodeFacts {
+            node_name: "playbox-0".to_string(),
+            timestamp: "".to_string(),
+            cpu: CpuInfo {
+                model: "".to_string(),
+                cores: 4,
+                threads: 8,
+                architecture: "x86_64".to_string(),
+            },
+            memory: MemoryInfo {
+                total_mb: 65536,
+                available_mb: 60000,
+            },
+            disks: vec![],
+            nics: vec![],
+            gpus: vec![],
+            iommu_groups: vec![],
+            kernel: KernelInfo {
+                version: "6.8.0".to_string(),
+                params: std::collections::HashMap::new(),
+            },
+            bridges: vec![],
+            bonds: vec![],
+            pcie: vec![],
+        }];
+        let sdi_yaml = r#"
+resource_pool:
+  name: "test"
+  network: { management_bridge: "br0", management_cidr: "192.168.88.0/24", gateway: "192.168.88.1", nameservers: ["8.8.8.8"] }
+os_image: { source: "https://example.com/img", format: "qcow2" }
+cloud_init: { ssh_authorized_keys_file: "~/.ssh/id.pub" }
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      placement: { hosts: [playbox-0] }
+      node_specs:
+        - { node_name: "cp-0", ip: "192.168.88.100", cpu: 4, mem_gb: 8, disk_gb: 30, roles: [control-plane] }
+    - pool_name: "sandbox"
+      node_specs:
+        - { node_name: "w-0", ip: "192.168.88.110", cpu: 8, mem_gb: 16, disk_gb: 60, host: "playbox-0", roles: [worker] }
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(sdi_yaml).unwrap();
+        let errors = validate_sdi_resource_allocation(&spec, &facts);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("CPU") && e.contains("playbox-0") && e.contains("exceeds")),
+            "must detect CPU over-allocation: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_sdi_resource_allocation_mem_exceeded() {
+        use crate::models::baremetal::*;
+        let facts = vec![NodeFacts {
+            node_name: "playbox-0".to_string(),
+            timestamp: "".to_string(),
+            cpu: CpuInfo {
+                model: "".to_string(),
+                cores: 64,
+                threads: 128,
+                architecture: "x86_64".to_string(),
+            },
+            memory: MemoryInfo {
+                total_mb: 8192,
+                available_mb: 7000,
+            },
+            disks: vec![],
+            nics: vec![],
+            gpus: vec![],
+            iommu_groups: vec![],
+            kernel: KernelInfo {
+                version: "6.8.0".to_string(),
+                params: std::collections::HashMap::new(),
+            },
+            bridges: vec![],
+            bonds: vec![],
+            pcie: vec![],
+        }];
+        let sdi_yaml = r#"
+resource_pool:
+  name: "test"
+  network: { management_bridge: "br0", management_cidr: "192.168.88.0/24", gateway: "192.168.88.1", nameservers: ["8.8.8.8"] }
+os_image: { source: "https://example.com/img", format: "qcow2" }
+cloud_init: { ssh_authorized_keys_file: "~/.ssh/id.pub" }
+spec:
+  sdi_pools:
+    - pool_name: "overload"
+      placement: { hosts: [playbox-0] }
+      node_specs:
+        - { node_name: "vm-0", ip: "192.168.88.100", cpu: 2, mem_gb: 6, disk_gb: 30, roles: [worker] }
+        - { node_name: "vm-1", ip: "192.168.88.101", cpu: 2, mem_gb: 6, disk_gb: 30, roles: [worker] }
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(sdi_yaml).unwrap();
+        let errors = validate_sdi_resource_allocation(&spec, &facts);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("memory") && e.contains("playbox-0") && e.contains("exceeds")),
+            "must detect memory over-allocation (12 GB > 8 GB): {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_sdi_resource_allocation_no_facts_for_host() {
+        use crate::models::baremetal::*;
+        // Empty facts — host "playbox-0" not in facts
+        let facts: Vec<NodeFacts> = vec![];
+        let sdi_yaml = r#"
+resource_pool:
+  name: "test"
+  network: { management_bridge: "br0", management_cidr: "192.168.88.0/24", gateway: "192.168.88.1", nameservers: ["8.8.8.8"] }
+os_image: { source: "https://example.com/img", format: "qcow2" }
+cloud_init: { ssh_authorized_keys_file: "~/.ssh/id.pub" }
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      placement: { hosts: [playbox-0] }
+      node_specs:
+        - { node_name: "cp-0", ip: "192.168.88.100", cpu: 2, mem_gb: 3, disk_gb: 30, roles: [control-plane] }
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(sdi_yaml).unwrap();
+        let warnings = validate_sdi_resource_allocation(&spec, &facts);
+        assert!(
+            warnings
+                .iter()
+                .any(|e| e.contains("playbox-0") && e.contains("no facts")),
+            "must warn when host has no facts data: {:?}",
+            warnings
+        );
+    }
+
+    // ── A-6: Workflow dependency checks ──
+
+    #[test]
+    fn test_workflow_sdi_init_all_deps_present() {
+        let existing = vec![
+            "credentials/.baremetal-init.yaml",
+            "credentials/.env",
+            "_generated/facts/",
+        ];
+        let missing = check_workflow_dependencies("sdi-init", &existing);
+        assert!(missing.is_empty(), "All deps present → no missing");
+    }
+
+    #[test]
+    fn test_workflow_sdi_init_missing_facts() {
+        let existing = vec!["credentials/.baremetal-init.yaml", "credentials/.env"];
+        let missing = check_workflow_dependencies("sdi-init", &existing);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].artifact_path, "_generated/facts/");
+        assert!(missing[0].fix_command.contains("scalex facts"));
+    }
+
+    #[test]
+    fn test_workflow_sdi_init_spec_missing_all() {
+        let existing: Vec<&str> = vec![];
+        let missing = check_workflow_dependencies("sdi-init-spec", &existing);
+        assert_eq!(missing.len(), 4, "All 4 deps missing for sdi-init-spec");
+        let paths: Vec<&str> = missing.iter().map(|d| d.artifact_path.as_str()).collect();
+        assert!(paths.contains(&"credentials/.baremetal-init.yaml"));
+        assert!(paths.contains(&"credentials/.env"));
+        assert!(paths.contains(&"_generated/facts/"));
+        assert!(paths.contains(&"config/sdi-specs.yaml"));
+    }
+
+    #[test]
+    fn test_workflow_cluster_init_missing_sdi_state() {
+        let existing = vec!["config/k8s-clusters.yaml"];
+        let missing = check_workflow_dependencies("cluster-init", &existing);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].artifact_path, "_generated/sdi-state.json");
+        assert!(missing[0].fix_command.contains("scalex sdi init"));
+    }
+
+    #[test]
+    fn test_workflow_bootstrap_missing_both() {
+        let existing: Vec<&str> = vec![];
+        let missing = check_workflow_dependencies("bootstrap", &existing);
+        assert_eq!(missing.len(), 2);
+        let paths: Vec<&str> = missing.iter().map(|d| d.artifact_path.as_str()).collect();
+        assert!(paths.contains(&"_generated/kubeconfigs/"));
+        assert!(paths.contains(&"credentials/secrets.yaml"));
+    }
+
+    #[test]
+    fn test_workflow_unknown_command_no_deps() {
+        let missing = check_workflow_dependencies("unknown-cmd", &[]);
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn test_format_workflow_errors_empty() {
+        let msg = format_workflow_errors("sdi-init", &[]);
+        assert!(msg.is_empty(), "No missing deps → empty message");
+    }
+
+    #[test]
+    fn test_format_workflow_errors_has_structure() {
+        let missing = vec![WorkflowDep {
+            artifact_path: "_generated/facts/".to_string(),
+            description: "Hardware facts".to_string(),
+            fix_command: "scalex facts --all".to_string(),
+        }];
+        let msg = format_workflow_errors("sdi-init", &missing);
+        assert!(msg.contains("Cannot run `scalex sdi init`"));
+        assert!(msg.contains("Hardware facts"));
+        assert!(msg.contains("scalex facts --all"));
+        assert!(msg.contains("scalex status"));
     }
 }

@@ -205,10 +205,103 @@ pub fn validate_baremetal_config(config: &BaremetalInitConfig) -> Vec<String> {
                     ));
                 }
             }
+
+            // Self-reference check
+            if via.contains(&node.name) {
+                errors.push(format!(
+                    "{}: reachable_via references itself ('{}') — a node cannot be its own proxy hop",
+                    ctx, node.name
+                ));
+            }
+        }
+
+        // Conflicting: direct_reachable=true + reachable_via set
+        if node.direct_reachable && node.reachable_via.is_some() {
+            errors.push(format!(
+                "{}: direct_reachable is true but reachable_via is also set — \
+                 remove reachable_via or set direct_reachable to false",
+                ctx
+            ));
+        }
+
+        // IP format validation
+        if !node.node_ip.trim().is_empty() && !is_valid_ip(&node.node_ip) {
+            errors.push(format!(
+                "{}: node_ip '{}' is not a valid IP address",
+                ctx, node.node_ip
+            ));
+        }
+
+        // reachable_node_ip format validation
+        if let Some(ref rip) = node.reachable_node_ip {
+            if !is_valid_ip(rip) {
+                errors.push(format!(
+                    "{}: reachable_node_ip '{}' is not a valid IP address",
+                    ctx, rip
+                ));
+            }
+        }
+    }
+
+    // Circular reachable_via detection: find if any non-direct node can reach a root
+    let direct_nodes: std::collections::HashSet<&str> = config
+        .target_nodes
+        .iter()
+        .filter(|n| n.direct_reachable || n.reachable_node_ip.is_some())
+        .map(|n| n.name.as_str())
+        .collect();
+
+    for node in &config.target_nodes {
+        if node.direct_reachable || node.reachable_node_ip.is_some() {
+            continue; // Root nodes — always reachable
+        }
+        if node.reachable_via.is_none() {
+            continue; // Already reported as unreachable above
+        }
+        // Walk the chain to see if we reach a root node
+        let mut visited = std::collections::HashSet::new();
+        let mut current = node.name.as_str();
+        let mut found_root = false;
+        while visited.insert(current) {
+            if direct_nodes.contains(current) {
+                found_root = true;
+                break;
+            }
+            // Find the next hop
+            if let Some(hop_node) = config.target_nodes.iter().find(|n| n.name == current) {
+                if let Some(ref via) = hop_node.reachable_via {
+                    if let Some(next) = via.first() {
+                        current = next.as_str();
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if !found_root {
+            errors.push(format!(
+                "targetNodes '{}': circular or broken reachable_via chain — \
+                 no reachable root node found. Ensure the chain leads to a \
+                 direct_reachable or reachable_node_ip node.",
+                node.name
+            ));
         }
     }
 
     errors
+}
+
+/// Check if a string is a valid IPv4 address. Pure function.
+fn is_valid_ip(s: &str) -> bool {
+    let parts: Vec<&str> = s.trim().split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    parts.iter().all(|p| p.parse::<u8>().is_ok())
 }
 
 // ── Sprint 38: User-friendly config error helpers (pure functions) ──
@@ -703,6 +796,131 @@ targetNodes:
     fn test_format_validation_errors_empty() {
         let msg = format_validation_errors("SDI spec", &[]);
         assert!(msg.is_empty(), "no errors = no output");
+    }
+
+    // ── A-2: Enhanced baremetal validation tests (Sprint 41 TDD) ──
+
+    #[test]
+    fn test_validate_baremetal_config_reachable_via_self_reference() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: false
+    reachable_via: ["node-0"]
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(
+            errors.iter().any(|e| e.contains("references itself")),
+            "must detect self-reference in reachable_via: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_reachable_via_circular() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: false
+    reachable_via: ["node-1"]
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "node-1"
+    direct_reachable: false
+    reachable_via: ["node-0"]
+    node_ip: "10.0.0.2"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("circular") || e.contains("no reachable root")),
+            "must detect circular reachable_via chain: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_invalid_ip_format() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "not-an-ip"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(
+            errors.iter().any(|e| e.contains("valid IP")),
+            "must detect invalid IP format: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_invalid_reachable_node_ip() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: false
+    reachable_node_ip: "bad-ip"
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("valid IP") && e.contains("reachable_node_ip")),
+            "must detect invalid reachable_node_ip: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_baremetal_config_direct_reachable_with_reachable_via_warns() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    reachable_via: ["some-node"]
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id"
+  - name: "some-node"
+    direct_reachable: true
+    node_ip: "10.0.0.2"
+    adminUser: "admin"
+    sshAuthMode: "key"
+    sshKeyPath: "~/.ssh/id"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("direct_reachable is true") && e.contains("reachable_via")),
+            "must warn about conflicting direct_reachable + reachable_via: {:?}",
+            errors
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::models::sdi::SdiPoolState;
+use crate::models::sdi::{SdiNodeState, SdiPoolState};
 use std::collections::HashSet;
 
 /// Result of computing the diff between desired and current node sets.
@@ -128,6 +128,69 @@ pub fn has_management_cluster_conflict(conflicts: &[VmConflict], pools: &[SdiPoo
     conflicts
         .iter()
         .any(|c| classify_conflict_severity(c, pools) == ConflictSeverity::Critical)
+}
+
+/// Quorum risk for a specific pool when hosts are removed.
+#[derive(Debug, PartialEq)]
+#[allow(dead_code)] // Will be used by `scalex sdi sync` command handler
+pub struct QuorumRisk {
+    pub pool_name: String,
+    pub total_cp_nodes: usize,
+    pub surviving_cp_nodes: usize,
+    pub quorum_required: usize,
+    pub message: String,
+}
+
+/// Detect etcd quorum loss risk when removing hosts.
+///
+/// For each pool, counts control-plane nodes (name contains "-cp-" or "-master-")
+/// and checks whether removing the specified hosts would drop the surviving
+/// control-plane count below the majority quorum threshold (total/2 + 1).
+///
+/// Pure function: no I/O, no side effects.
+#[allow(dead_code)] // Will be used by `scalex sdi sync` command handler
+pub fn detect_quorum_loss_risk(
+    pools: &[SdiPoolState],
+    hosts_to_remove: &[String],
+) -> Vec<QuorumRisk> {
+    let remove_set: HashSet<&str> = hosts_to_remove.iter().map(|s| s.as_str()).collect();
+    let mut risks = Vec::new();
+
+    for pool in pools {
+        let cp_nodes: Vec<&SdiNodeState> = pool
+            .nodes
+            .iter()
+            .filter(|n| n.node_name.contains("-cp-") || n.node_name.contains("-master-"))
+            .collect();
+
+        let total_cp = cp_nodes.len();
+        if total_cp == 0 {
+            continue;
+        }
+
+        let affected_cp = cp_nodes
+            .iter()
+            .filter(|n| remove_set.contains(n.host.as_str()))
+            .count();
+        let surviving = total_cp - affected_cp;
+        let quorum_required = total_cp / 2 + 1;
+
+        if surviving < quorum_required {
+            risks.push(QuorumRisk {
+                pool_name: pool.pool_name.clone(),
+                total_cp_nodes: total_cp,
+                surviving_cp_nodes: surviving,
+                quorum_required,
+                message: format!(
+                    "Pool '{}': removing host(s) would leave {}/{} control-plane nodes — \
+                     below quorum threshold of {} (etcd requires strict majority)",
+                    pool.pool_name, surviving, total_cp, quorum_required
+                ),
+            });
+        }
+    }
+
+    risks
 }
 
 #[cfg(test)]
@@ -893,5 +956,270 @@ mod tests {
             "Without state: safety warning emitted even though --force may bypass it"
         );
         assert!(safety_warnings_no_state[0].contains("--force"));
+    }
+
+    // ── A-5: Etcd quorum loss detection ──
+
+    #[test]
+    fn test_quorum_loss_3cp_remove_2_hosts() {
+        // 3-node etcd cluster on 3 different hosts; removing 2 hosts loses quorum
+        let pools = vec![SdiPoolState {
+            pool_name: "sandbox".to_string(),
+            purpose: "workload".to_string(),
+            nodes: vec![
+                SdiNodeState {
+                    node_name: "sandbox-cp-0".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    host: "host-a".to_string(),
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 60,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                },
+                SdiNodeState {
+                    node_name: "sandbox-cp-1".to_string(),
+                    ip: "10.0.0.2".to_string(),
+                    host: "host-b".to_string(),
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 60,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                },
+                SdiNodeState {
+                    node_name: "sandbox-cp-2".to_string(),
+                    ip: "10.0.0.3".to_string(),
+                    host: "host-c".to_string(),
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 60,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                },
+            ],
+        }];
+
+        let risks = detect_quorum_loss_risk(&pools, &["host-b".to_string(), "host-c".to_string()]);
+        assert_eq!(risks.len(), 1);
+        assert_eq!(risks[0].pool_name, "sandbox");
+        assert_eq!(risks[0].total_cp_nodes, 3);
+        assert_eq!(risks[0].surviving_cp_nodes, 1);
+        assert_eq!(risks[0].quorum_required, 2);
+        assert!(risks[0].message.contains("below quorum"));
+    }
+
+    #[test]
+    fn test_quorum_safe_3cp_remove_1_host() {
+        // 3-node etcd cluster; removing 1 host leaves 2/3 = still has quorum
+        let pools = vec![SdiPoolState {
+            pool_name: "sandbox".to_string(),
+            purpose: "workload".to_string(),
+            nodes: vec![
+                SdiNodeState {
+                    node_name: "sandbox-cp-0".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    host: "host-a".to_string(),
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 60,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                },
+                SdiNodeState {
+                    node_name: "sandbox-cp-1".to_string(),
+                    ip: "10.0.0.2".to_string(),
+                    host: "host-b".to_string(),
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 60,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                },
+                SdiNodeState {
+                    node_name: "sandbox-cp-2".to_string(),
+                    ip: "10.0.0.3".to_string(),
+                    host: "host-c".to_string(),
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 60,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                },
+            ],
+        }];
+
+        let risks = detect_quorum_loss_risk(&pools, &["host-c".to_string()]);
+        assert!(risks.is_empty(), "2/3 CP nodes survive — quorum is safe");
+    }
+
+    #[test]
+    fn test_quorum_single_cp_removal_is_fatal() {
+        // Single CP node (tower pattern); removing its host = total quorum loss
+        let pools = vec![SdiPoolState {
+            pool_name: "tower".to_string(),
+            purpose: "management".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "tower-cp-0".to_string(),
+                ip: "10.0.0.100".to_string(),
+                host: "playbox-0".to_string(),
+                cpu: 2,
+                mem_gb: 3,
+                disk_gb: 30,
+                status: "running".to_string(),
+                gpu_passthrough: false,
+            }],
+        }];
+
+        let risks = detect_quorum_loss_risk(&pools, &["playbox-0".to_string()]);
+        assert_eq!(risks.len(), 1);
+        assert_eq!(risks[0].surviving_cp_nodes, 0);
+        assert_eq!(risks[0].quorum_required, 1);
+    }
+
+    #[test]
+    fn test_quorum_multiple_cp_on_same_host() {
+        // 3 CP nodes, but 2 share a host — removing that host kills 2 of 3
+        let pools = vec![SdiPoolState {
+            pool_name: "sandbox".to_string(),
+            purpose: "workload".to_string(),
+            nodes: vec![
+                SdiNodeState {
+                    node_name: "sandbox-cp-0".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    host: "host-a".to_string(),
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 60,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                },
+                SdiNodeState {
+                    node_name: "sandbox-cp-1".to_string(),
+                    ip: "10.0.0.2".to_string(),
+                    host: "host-a".to_string(), // same host!
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 60,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                },
+                SdiNodeState {
+                    node_name: "sandbox-cp-2".to_string(),
+                    ip: "10.0.0.3".to_string(),
+                    host: "host-b".to_string(),
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 60,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                },
+            ],
+        }];
+
+        let risks = detect_quorum_loss_risk(&pools, &["host-a".to_string()]);
+        assert_eq!(risks.len(), 1, "Removing host-a kills 2/3 CP nodes");
+        assert_eq!(risks[0].surviving_cp_nodes, 1);
+    }
+
+    #[test]
+    fn test_quorum_worker_only_pool_no_risk() {
+        // Pool with only worker nodes — no quorum concept
+        let pools = vec![SdiPoolState {
+            pool_name: "gpu-pool".to_string(),
+            purpose: "compute".to_string(),
+            nodes: vec![
+                SdiNodeState {
+                    node_name: "gpu-w-0".to_string(),
+                    ip: "10.0.0.50".to_string(),
+                    host: "host-x".to_string(),
+                    cpu: 16,
+                    mem_gb: 64,
+                    disk_gb: 200,
+                    status: "running".to_string(),
+                    gpu_passthrough: true,
+                },
+                SdiNodeState {
+                    node_name: "gpu-w-1".to_string(),
+                    ip: "10.0.0.51".to_string(),
+                    host: "host-y".to_string(),
+                    cpu: 16,
+                    mem_gb: 64,
+                    disk_gb: 200,
+                    status: "running".to_string(),
+                    gpu_passthrough: true,
+                },
+            ],
+        }];
+
+        let risks = detect_quorum_loss_risk(&pools, &["host-x".to_string()]);
+        assert!(
+            risks.is_empty(),
+            "Worker-only pool has no CP nodes — no quorum risk"
+        );
+    }
+
+    #[test]
+    fn test_quorum_multi_pool_independent_risk() {
+        // Two pools: tower (1 CP) and sandbox (3 CP).
+        // Removing playbox-0 affects tower's only CP but not sandbox's quorum
+        let pools = vec![
+            SdiPoolState {
+                pool_name: "tower".to_string(),
+                purpose: "management".to_string(),
+                nodes: vec![SdiNodeState {
+                    node_name: "tower-cp-0".to_string(),
+                    ip: "10.0.0.100".to_string(),
+                    host: "playbox-0".to_string(),
+                    cpu: 2,
+                    mem_gb: 3,
+                    disk_gb: 30,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                }],
+            },
+            SdiPoolState {
+                pool_name: "sandbox".to_string(),
+                purpose: "workload".to_string(),
+                nodes: vec![
+                    SdiNodeState {
+                        node_name: "sandbox-cp-0".to_string(),
+                        ip: "10.0.0.10".to_string(),
+                        host: "playbox-0".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 60,
+                        status: "running".to_string(),
+                        gpu_passthrough: false,
+                    },
+                    SdiNodeState {
+                        node_name: "sandbox-cp-1".to_string(),
+                        ip: "10.0.0.11".to_string(),
+                        host: "playbox-1".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 60,
+                        status: "running".to_string(),
+                        gpu_passthrough: false,
+                    },
+                    SdiNodeState {
+                        node_name: "sandbox-cp-2".to_string(),
+                        ip: "10.0.0.12".to_string(),
+                        host: "playbox-2".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 60,
+                        status: "running".to_string(),
+                        gpu_passthrough: false,
+                    },
+                ],
+            },
+        ];
+
+        let risks = detect_quorum_loss_risk(&pools, &["playbox-0".to_string()]);
+        // tower: 1 CP, 0 survive → quorum loss
+        // sandbox: 3 CP, 2 survive → safe (quorum=2)
+        assert_eq!(risks.len(), 1, "Only tower loses quorum");
+        assert_eq!(risks[0].pool_name, "tower");
     }
 }

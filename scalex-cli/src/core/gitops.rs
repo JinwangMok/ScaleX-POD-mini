@@ -1133,4 +1133,135 @@ spec:
             "generated missing syncPolicy.automated"
         );
     }
+
+    // ── A-4: Kustomization resource/valuesFile integrity (Sprint 41 TDD) ──
+
+    /// Verify every kustomization.yaml's `resources:` entries and `valuesFile:`
+    /// reference files that actually exist on disk. This catches broken references
+    /// that would cause ArgoCD sync failures.
+    #[test]
+    fn test_all_kustomization_file_references_exist() {
+        let project_root = env!("CARGO_MANIFEST_DIR")
+            .trim_end_matches("/scalex-cli")
+            .to_string();
+        let gitops_dir = format!("{}/gitops", project_root);
+
+        let mut errors: Vec<String> = Vec::new();
+
+        // Walk all kustomization.yaml files
+        for entry in walkdir(&gitops_dir) {
+            let path = entry.clone();
+            if !path.ends_with("kustomization.yaml") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).unwrap();
+            let parsed: serde_yaml::Value = serde_yaml::from_str(&content)
+                .unwrap_or_else(|e| panic!("Invalid YAML in {}: {}", path, e));
+            let kust_dir = std::path::Path::new(&path).parent().unwrap();
+
+            // Check resources: entries
+            if let Some(resources) = parsed.get("resources").and_then(|r| r.as_sequence()) {
+                for res in resources {
+                    if let Some(res_path) = res.as_str() {
+                        // Skip URLs
+                        if res_path.starts_with("http://") || res_path.starts_with("https://") {
+                            continue;
+                        }
+                        let full = kust_dir.join(res_path);
+                        if !full.exists() {
+                            errors.push(format!(
+                                "{}: resources entry '{}' not found at '{}'",
+                                path,
+                                res_path,
+                                full.display()
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Check helmCharts valuesFile entries
+            if let Some(charts) = parsed.get("helmCharts").and_then(|h| h.as_sequence()) {
+                for chart in charts {
+                    if let Some(vf) = chart.get("valuesFile").and_then(|v| v.as_str()) {
+                        let full = kust_dir.join(vf);
+                        if !full.exists() {
+                            errors.push(format!(
+                                "{}: helmCharts valuesFile '{}' not found at '{}'",
+                                path,
+                                vf,
+                                full.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            errors.is_empty(),
+            "Broken kustomization references found:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// Verify all GitOps YAML files are parseable (no syntax errors).
+    #[test]
+    fn test_all_gitops_yaml_files_parse() {
+        let project_root = env!("CARGO_MANIFEST_DIR")
+            .trim_end_matches("/scalex-cli")
+            .to_string();
+        let gitops_dir = format!("{}/gitops", project_root);
+
+        let mut errors: Vec<String> = Vec::new();
+
+        for path in walkdir(&gitops_dir) {
+            if !path.ends_with(".yaml") && !path.ends_with(".yml") {
+                continue;
+            }
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    errors.push(format!("{}: read error: {}", path, e));
+                    continue;
+                }
+            };
+            // Handle multi-document YAML (--- separators) common in K8s manifests
+            let mut doc_ok = true;
+            for doc in content.split("\n---") {
+                let trimmed = doc.trim();
+                if trimmed.is_empty() || trimmed == "---" {
+                    continue;
+                }
+                if let Err(e) = serde_yaml::from_str::<serde_yaml::Value>(trimmed) {
+                    errors.push(format!("{}: YAML parse error: {}", path, e));
+                    doc_ok = false;
+                    break;
+                }
+            }
+            let _ = doc_ok; // suppress unused warning
+        }
+
+        assert!(
+            errors.is_empty(),
+            "Invalid YAML files in gitops/:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// Helper: recursively list all files in a directory.
+    fn walkdir(dir: &str) -> Vec<String> {
+        let mut result = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    result.extend(walkdir(&path.to_string_lossy()));
+                } else {
+                    result.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+        result
+    }
 }
