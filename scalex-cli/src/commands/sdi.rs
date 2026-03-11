@@ -258,6 +258,24 @@ fn run_init(
         println!("[sdi] Phase 2: Generating OpenTofu from spec...");
         let spec = load_sdi_spec(spec_path)?;
 
+        // Validate SDI hosts reference known bare-metal nodes
+        let bm_node_names: Vec<String> = bm_config
+            .target_nodes
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        let host_errors = crate::core::validation::validate_sdi_hosts_exist(&spec, &bm_node_names);
+        if !host_errors.is_empty() {
+            eprintln!("[sdi] SDI host reference errors:");
+            for err in &host_errors {
+                eprintln!("  - {}", err);
+            }
+            anyhow::bail!(
+                "Fix {} host reference error(s) — SDI spec references hosts not in baremetal-init.yaml",
+                host_errors.len()
+            );
+        }
+
         std::fs::create_dir_all(&output_dir)?;
 
         // Generate main.tf — ssh_user from baremetal config (first node as default)

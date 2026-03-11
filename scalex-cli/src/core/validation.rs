@@ -141,6 +141,48 @@ pub fn validate_sdi_spec(spec: &SdiSpec) -> Vec<String> {
     errors
 }
 
+/// Validate that cluster names are unique across all clusters.
+/// Duplicate names cause kubeconfig path conflicts and ArgoCD resource collisions.
+/// Pure function.
+pub fn validate_unique_cluster_names(k8s_config: &K8sClustersConfig) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut errors = Vec::new();
+
+    for cluster in &k8s_config.config.clusters {
+        if !seen.insert(&cluster.cluster_name) {
+            errors.push(format!(
+                "Duplicate cluster_name '{}'. Each cluster must have a unique name \
+                 (used for kubeconfig paths, ArgoCD applications, and gitops generators).",
+                cluster.cluster_name
+            ));
+        }
+    }
+
+    errors
+}
+
+/// Validate that SDI node hosts reference known bare-metal nodes.
+/// Pure function: takes baremetal node names as input.
+pub fn validate_sdi_hosts_exist(spec: &SdiSpec, baremetal_node_names: &[String]) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for pool in &spec.spec.sdi_pools {
+        for node in &pool.node_specs {
+            if let Some(ref host) = node.host {
+                if !baremetal_node_names.contains(host) {
+                    errors.push(format!(
+                        "Pool '{}' VM '{}' references host '{}' which is not in baremetal-init.yaml. \
+                         Available hosts: {:?}",
+                        pool.pool_name, node.node_name, host, baremetal_node_names
+                    ));
+                }
+            }
+        }
+    }
+
+    errors
+}
+
 /// Validate bootstrap prerequisites. Pure function: checks if required files/state exist.
 /// Returns list of warnings (empty = all prerequisites met).
 pub fn validate_bootstrap_prerequisites(
@@ -6033,6 +6075,119 @@ spec:
         assert!(
             roles.contains(&"worker".to_string()),
             "Single node must also be worker"
+        );
+    }
+
+    // ── Sprint 21: Edge case validation — duplicate names, host references ──
+
+    /// Sprint 21: Duplicate cluster names must be detected.
+    #[test]
+    fn test_duplicate_cluster_names_detected() {
+        let yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+    container_runtime: "containerd"
+    cni: "cilium"
+    cilium_version: "1.17.5"
+    kube_proxy_remove: true
+    cgroup_driver: "systemd"
+    helm_enabled: true
+    kube_apiserver_admission_plugins: [NodeRestriction]
+    firewalld_enabled: false
+    kube_vip_enabled: false
+    graceful_node_shutdown: true
+    graceful_node_shutdown_sec: 120
+    kubelet_custom_flags: ["--node-ip={{ ip }}"]
+    gateway_api_enabled: true
+    gateway_api_version: "1.3.0"
+    kubeconfig_localhost: true
+    kubectl_localhost: true
+    enable_nodelocaldns: true
+    kube_network_node_prefix: 24
+    ntp_enabled: true
+    etcd_deployment_type: "host"
+    dns_mode: "coredns"
+  clusters:
+    - cluster_name: "tower"
+      cluster_sdi_resource_pool: "pool-a"
+      cluster_role: "management"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+        dns_domain: "tower.local"
+    - cluster_name: "tower"
+      cluster_sdi_resource_pool: "pool-b"
+      cluster_role: "workload"
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+        dns_domain: "sandbox.local"
+"#;
+        let config: K8sClustersConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_unique_cluster_names(&config);
+        assert!(!errors.is_empty(), "Must detect duplicate cluster names");
+        assert!(
+            errors[0].contains("tower"),
+            "Error must mention the duplicate name 'tower'"
+        );
+    }
+
+    /// Sprint 21: Unique cluster names must pass validation.
+    #[test]
+    fn test_unique_cluster_names_pass() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+        let errors = validate_unique_cluster_names(&config);
+        assert!(
+            errors.is_empty(),
+            "Example config must have unique cluster names: {:?}",
+            errors
+        );
+    }
+
+    /// Sprint 21: SDI node hosts must reference known bare-metal nodes.
+    #[test]
+    fn test_sdi_hosts_reference_unknown_baremetal() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        // Only 2 of the 4 playbox nodes are "known"
+        let known = vec!["playbox-0".to_string(), "playbox-1".to_string()];
+        let errors = validate_sdi_hosts_exist(&sdi, &known);
+
+        // SDI spec uses playbox-0 through playbox-3, so playbox-2 and playbox-3 should fail
+        assert!(
+            !errors.is_empty(),
+            "Must detect hosts not in baremetal-init"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("playbox-2") || e.contains("playbox-3")),
+            "Error must mention missing hosts: {:?}",
+            errors
+        );
+    }
+
+    /// Sprint 21: All SDI hosts in example match all 4 playbox nodes.
+    #[test]
+    fn test_sdi_hosts_all_known_passes() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let known = vec![
+            "playbox-0".to_string(),
+            "playbox-1".to_string(),
+            "playbox-2".to_string(),
+            "playbox-3".to_string(),
+        ];
+        let errors = validate_sdi_hosts_exist(&sdi, &known);
+        assert!(
+            errors.is_empty(),
+            "All example hosts should be known: {:?}",
+            errors
         );
     }
 

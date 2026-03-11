@@ -72,6 +72,18 @@ fn run_init(
     };
 
     // Step 2.5: Cross-config validation (pure functions)
+    let name_errors = validation::validate_unique_cluster_names(&k8s_config);
+    if !name_errors.is_empty() {
+        eprintln!("[cluster] Cluster name validation errors:");
+        for err in &name_errors {
+            eprintln!("  - {}", err);
+        }
+        anyhow::bail!(
+            "Fix {} cluster name error(s) before proceeding",
+            name_errors.len()
+        );
+    }
+
     let id_errors = validation::validate_unique_cluster_ids(&k8s_config);
     if !id_errors.is_empty() {
         eprintln!("[cluster] Cluster ID validation errors:");
