@@ -938,4 +938,174 @@ targetNodes:
         assert!(msg.contains("0 CPU cores"), "must include second error");
         assert!(msg.contains("2 error(s)"), "must show error count");
     }
+
+    // ── Sprint 43: Edge case tests ──
+
+    /// 3-node circular reachable_via chain: A→B→C→A must be detected.
+    #[test]
+    fn test_validate_baremetal_config_reachable_via_3node_circular() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: false
+    reachable_via: ["node-2"]
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "node-1"
+    direct_reachable: false
+    reachable_via: ["node-0"]
+    node_ip: "10.0.0.2"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "node-2"
+    direct_reachable: false
+    reachable_via: ["node-1"]
+    node_ip: "10.0.0.3"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        // All 3 nodes should be flagged (none reaches a root)
+        let circular_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| e.contains("circular") || e.contains("no reachable root"))
+            .collect();
+        assert_eq!(
+            circular_errors.len(),
+            3,
+            "All 3 nodes in a circular chain must be flagged: {:?}",
+            errors
+        );
+    }
+
+    /// Valid 3-hop chain: node-0 (direct) → node-1 → node-2 → node-3.
+    /// Must NOT produce errors — transitive reachability is valid.
+    #[test]
+    fn test_validate_baremetal_config_reachable_via_3hop_chain_valid() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: true
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "node-1"
+    direct_reachable: false
+    reachable_via: ["node-0"]
+    node_ip: "10.0.0.2"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "node-2"
+    direct_reachable: false
+    reachable_via: ["node-1"]
+    node_ip: "10.0.0.3"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "node-3"
+    direct_reachable: false
+    reachable_via: ["node-2"]
+    node_ip: "10.0.0.4"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        let chain_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| e.contains("circular") || e.contains("no reachable root"))
+            .collect();
+        assert!(
+            chain_errors.is_empty(),
+            "Valid 3-hop chain must not produce chain errors: {:?}",
+            chain_errors
+        );
+    }
+
+    /// Fan-out: 3 nodes all depend on same gateway node.
+    /// Valid topology but tests stress on the walker algorithm.
+    #[test]
+    fn test_validate_baremetal_config_reachable_via_fan_out() {
+        let yaml = r#"
+targetNodes:
+  - name: "gateway"
+    direct_reachable: true
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "worker-1"
+    direct_reachable: false
+    reachable_via: ["gateway"]
+    node_ip: "10.0.0.2"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "worker-2"
+    direct_reachable: false
+    reachable_via: ["gateway"]
+    node_ip: "10.0.0.3"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "worker-3"
+    direct_reachable: false
+    reachable_via: ["gateway"]
+    node_ip: "10.0.0.4"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        let chain_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| e.contains("circular") || e.contains("no reachable root"))
+            .collect();
+        assert!(
+            chain_errors.is_empty(),
+            "Fan-out topology must be valid: {:?}",
+            chain_errors
+        );
+    }
+
+    /// All nodes non-direct with no reachable root — detect "island" topology.
+    #[test]
+    fn test_validate_baremetal_config_no_direct_reachable_root() {
+        let yaml = r#"
+targetNodes:
+  - name: "node-0"
+    direct_reachable: false
+    reachable_via: ["node-1"]
+    node_ip: "10.0.0.1"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+  - name: "node-1"
+    direct_reachable: false
+    node_ip: "10.0.0.2"
+    adminUser: "admin"
+    sshAuthMode: "password"
+    sshPassword: "PASS"
+"#;
+        let config: BaremetalInitConfig = serde_yaml::from_str(yaml).unwrap();
+        let errors = validate_baremetal_config(&config);
+        // node-1 has no reachable_via and is not direct_reachable — it's an island
+        // node-0 depends on node-1 which is an island — chain is broken
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("circular") || e.contains("no reachable root")),
+            "Must detect broken chain when no direct_reachable root exists: {:?}",
+            errors
+        );
+    }
 }

@@ -8865,4 +8865,178 @@ config:
             "Baremetal inventory must contain node IP"
         );
     }
+
+    // ── Sprint 43: CIDR edge case tests ──
+
+    /// /32 (single IP) within /24 must be detected as overlapping.
+    #[test]
+    fn test_cidrs_overlap_32_within_24() {
+        assert!(
+            cidrs_overlap("10.233.0.1/32", "10.233.0.0/24"),
+            "/32 inside /24 must overlap"
+        );
+        assert!(
+            cidrs_overlap("10.233.0.0/24", "10.233.0.1/32"),
+            "symmetric: /24 contains /32 must overlap"
+        );
+    }
+
+    /// /31 (point-to-point) overlapping with /24.
+    #[test]
+    fn test_cidrs_overlap_31_within_24() {
+        assert!(
+            cidrs_overlap("10.233.0.0/31", "10.233.0.0/24"),
+            "/31 inside /24 must overlap"
+        );
+    }
+
+    /// /0 (all IPs) must overlap with anything.
+    #[test]
+    fn test_cidrs_overlap_0_catches_all() {
+        assert!(
+            cidrs_overlap("0.0.0.0/0", "10.233.0.0/24"),
+            "/0 must overlap with any CIDR"
+        );
+        assert!(
+            cidrs_overlap("10.96.0.0/16", "0.0.0.0/0"),
+            "Any CIDR must overlap with /0"
+        );
+    }
+
+    /// Two identical /32s must overlap.
+    #[test]
+    fn test_cidrs_overlap_identical_32() {
+        assert!(
+            cidrs_overlap("10.0.0.1/32", "10.0.0.1/32"),
+            "Same /32 must overlap"
+        );
+    }
+
+    /// Adjacent /32s must NOT overlap.
+    #[test]
+    fn test_cidrs_no_overlap_adjacent_32() {
+        assert!(
+            !cidrs_overlap("10.0.0.1/32", "10.0.0.2/32"),
+            "Adjacent /32s must not overlap"
+        );
+    }
+
+    /// Node IP at CIDR boundary: first usable IP in pod_cidr must be caught.
+    #[test]
+    fn test_ip_in_cidr_boundary_first_ip() {
+        assert!(
+            ip_in_cidr("10.233.0.0", "10.233.0.0/24"),
+            "Network address must be in CIDR"
+        );
+        assert!(
+            ip_in_cidr("10.233.0.255", "10.233.0.0/24"),
+            "Broadcast address must be in CIDR"
+        );
+        assert!(
+            !ip_in_cidr("10.233.1.0", "10.233.0.0/24"),
+            "First IP of next subnet must not be in CIDR"
+        );
+    }
+
+    /// Node IP exactly at /16 boundary.
+    #[test]
+    fn test_ip_in_cidr_boundary_16() {
+        assert!(ip_in_cidr("10.233.0.1", "10.233.0.0/16"));
+        assert!(ip_in_cidr("10.233.255.254", "10.233.0.0/16"));
+        assert!(!ip_in_cidr("10.234.0.1", "10.233.0.0/16"));
+    }
+
+    /// Single-node SDI: all VMs on one host, both clusters.
+    /// Validates 2-layer consistency with max density deployment.
+    #[test]
+    fn test_single_node_sdi_two_clusters_two_layer_consistency() {
+        let sdi_yaml = r#"
+resource_pool:
+  name: "mini-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "https://example.com/img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id.pub"
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      purpose: "management"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 2
+          mem_gb: 4
+          disk_gb: 30
+          roles: [control-plane, worker]
+    - pool_name: "sandbox"
+      purpose: "workload"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "sandbox-cp-0"
+          ip: "192.168.88.110"
+          cpu: 2
+          mem_gb: 4
+          disk_gb: 30
+          host: "playbox-0"
+          roles: [control-plane, worker]
+"#;
+        let k8s_yaml = r#"
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+  clusters:
+    - cluster_name: "tower"
+      cluster_sdi_resource_pool: "tower"
+      cluster_role: "management"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+        dns_domain: "tower.local"
+    - cluster_name: "sandbox"
+      cluster_sdi_resource_pool: "sandbox"
+      cluster_role: "workload"
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+        dns_domain: "sandbox.local"
+"#;
+        let sdi: SdiSpec = serde_yaml::from_str(sdi_yaml).unwrap();
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_yaml).unwrap();
+
+        // Cross-config: pool mapping must work
+        let mapping_errors = validate_cluster_sdi_pool_mapping(&k8s, &sdi);
+        assert!(mapping_errors.is_empty(), "Single-node pool mapping must be valid: {:?}", mapping_errors);
+
+        // 2-layer consistency: no errors expected
+        let (errors, _warnings) = validate_two_layer_consistency(&k8s, &sdi);
+        assert!(errors.is_empty(), "Single-node 2-layer must have no errors: {:?}", errors);
+
+        // Network overlap must not exist
+        let network_errors = validate_cluster_network_overlap(&k8s);
+        assert!(network_errors.is_empty(), "CIDRs must not overlap: {:?}", network_errors);
+
+        // Both clusters should get valid inventories
+        for cluster in &k8s.config.clusters {
+            let inv = crate::core::kubespray::generate_inventory(cluster, &sdi)
+                .expect("Inventory generation must succeed");
+            assert!(!inv.is_empty(), "Inventory for '{}' must not be empty", cluster.cluster_name);
+        }
+
+        // Total resources: 4 CPU, 8 GB RAM across 2 VMs on single host
+        let total_cpu: u32 = sdi.spec.sdi_pools.iter()
+            .flat_map(|p| &p.node_specs)
+            .map(|n| n.cpu)
+            .sum();
+        assert_eq!(total_cpu, 4, "Single-node total CPU must be 2+2=4");
+    }
 }
