@@ -1314,10 +1314,7 @@ spec:
                 let kust_path = format!("{}/{}/kustomization.yaml", repo_root, resolved);
 
                 if !std::path::Path::new(&kust_path).exists() {
-                    missing.push(format!(
-                        "{} -> {}/kustomization.yaml",
-                        gen_name, resolved
-                    ));
+                    missing.push(format!("{} -> {}/kustomization.yaml", gen_name, resolved));
                 }
             }
         }

@@ -8624,7 +8624,8 @@ cloudflare:
         );
 
         // 5. Namespace must match kustomization.yaml
-        let kustomization = include_str!("../../../gitops/tower/cloudflared-tunnel/kustomization.yaml");
+        let kustomization =
+            include_str!("../../../gitops/tower/cloudflared-tunnel/kustomization.yaml");
         let ns_line = kustomization
             .lines()
             .find(|l| l.trim().starts_with("namespace:"))
@@ -8651,13 +8652,15 @@ cloudflare:
                 assert!(
                     hcl.contains(&node.node_name),
                     "Generated HCL must contain VM '{}' from pool '{}'",
-                    node.node_name, pool.pool_name
+                    node.node_name,
+                    pool.pool_name
                 );
                 // IP must appear in cloud-init network config
                 assert!(
                     hcl.contains(&node.ip),
                     "Generated HCL must contain IP '{}' for VM '{}'",
-                    node.ip, node.node_name
+                    node.ip,
+                    node.node_name
                 );
             }
         }
@@ -8706,21 +8709,27 @@ cloudflare:
                 });
 
             // Generate inventory
-            let inventory =
-                crate::core::kubespray::generate_inventory(cluster, &sdi_spec)
-                    .unwrap_or_else(|e| panic!("Inventory generation failed for '{}': {}", cluster.cluster_name, e));
+            let inventory = crate::core::kubespray::generate_inventory(cluster, &sdi_spec)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Inventory generation failed for '{}': {}",
+                        cluster.cluster_name, e
+                    )
+                });
 
             // Every node from the pool must appear in the inventory
             for node in &pool.node_specs {
                 assert!(
                     inventory.contains(&node.node_name),
                     "Inventory for '{}' must contain node '{}'",
-                    cluster.cluster_name, node.node_name
+                    cluster.cluster_name,
+                    node.node_name
                 );
                 assert!(
                     inventory.contains(&node.ip),
                     "Inventory for '{}' must contain IP '{}'",
-                    cluster.cluster_name, node.ip
+                    cluster.cluster_name,
+                    node.ip
                 );
             }
 
@@ -8748,7 +8757,8 @@ cloudflare:
                 assert!(
                     inventory.contains(wn),
                     "Worker '{}' must be in inventory for '{}'",
-                    wn, cluster.cluster_name
+                    wn,
+                    cluster.cluster_name
                 );
             }
         }
@@ -8770,7 +8780,8 @@ cloudflare:
             assert!(
                 vars.contains(&common.kubernetes_version),
                 "Cluster vars for '{}' must contain kubernetes_version '{}'",
-                cluster.cluster_name, common.kubernetes_version
+                cluster.cluster_name,
+                common.kubernetes_version
             );
 
             // CNI must be referenced
@@ -8784,14 +8795,16 @@ cloudflare:
             assert!(
                 vars.contains(&cluster.network.pod_cidr),
                 "Cluster vars for '{}' must contain pod_cidr '{}'",
-                cluster.cluster_name, cluster.network.pod_cidr
+                cluster.cluster_name,
+                cluster.network.pod_cidr
             );
 
             // Service CIDR must appear
             assert!(
                 vars.contains(&cluster.network.service_cidr),
                 "Cluster vars for '{}' must contain service_cidr '{}'",
-                cluster.cluster_name, cluster.network.service_cidr
+                cluster.cluster_name,
+                cluster.network.service_cidr
             );
 
             // If OIDC is enabled, apiserver args must include OIDC flags
@@ -9015,25 +9028,44 @@ config:
 
         // Cross-config: pool mapping must work
         let mapping_errors = validate_cluster_sdi_pool_mapping(&k8s, &sdi);
-        assert!(mapping_errors.is_empty(), "Single-node pool mapping must be valid: {:?}", mapping_errors);
+        assert!(
+            mapping_errors.is_empty(),
+            "Single-node pool mapping must be valid: {:?}",
+            mapping_errors
+        );
 
         // 2-layer consistency: no errors expected
         let (errors, _warnings) = validate_two_layer_consistency(&k8s, &sdi);
-        assert!(errors.is_empty(), "Single-node 2-layer must have no errors: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "Single-node 2-layer must have no errors: {:?}",
+            errors
+        );
 
         // Network overlap must not exist
         let network_errors = validate_cluster_network_overlap(&k8s);
-        assert!(network_errors.is_empty(), "CIDRs must not overlap: {:?}", network_errors);
+        assert!(
+            network_errors.is_empty(),
+            "CIDRs must not overlap: {:?}",
+            network_errors
+        );
 
         // Both clusters should get valid inventories
         for cluster in &k8s.config.clusters {
             let inv = crate::core::kubespray::generate_inventory(cluster, &sdi)
                 .expect("Inventory generation must succeed");
-            assert!(!inv.is_empty(), "Inventory for '{}' must not be empty", cluster.cluster_name);
+            assert!(
+                !inv.is_empty(),
+                "Inventory for '{}' must not be empty",
+                cluster.cluster_name
+            );
         }
 
         // Total resources: 4 CPU, 8 GB RAM across 2 VMs on single host
-        let total_cpu: u32 = sdi.spec.sdi_pools.iter()
+        let total_cpu: u32 = sdi
+            .spec
+            .sdi_pools
+            .iter()
             .flat_map(|p| &p.node_specs)
             .map(|n| n.cpu)
             .sum();
