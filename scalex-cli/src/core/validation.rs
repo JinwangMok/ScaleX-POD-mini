@@ -2112,8 +2112,8 @@ spec:
     fn test_clean_operations_plan_covers_all_branches() {
         use crate::commands::sdi::{plan_clean_operations, CleanOperation};
 
-        // Full hard clean with everything present
-        let full = plan_clean_operations(true, true, true, Some(4));
+        // Full hard clean with everything present (no host-infra)
+        let full = plan_clean_operations(true, true, true, false, Some(4));
         assert_eq!(full.len(), 3);
         assert!(matches!(full[0], CleanOperation::TofuDestroy));
         assert!(matches!(
@@ -2123,14 +2123,20 @@ spec:
         assert!(matches!(full[2], CleanOperation::RemoveStateDir));
 
         // Soft clean (no --hard) should only destroy tofu
-        let soft = plan_clean_operations(false, true, true, Some(4));
+        let soft = plan_clean_operations(false, true, true, false, Some(4));
         assert_eq!(soft.len(), 1);
         assert!(matches!(soft[0], CleanOperation::TofuDestroy));
 
         // No state at all
-        let empty = plan_clean_operations(true, false, false, Some(4));
+        let empty = plan_clean_operations(true, false, false, false, Some(4));
         assert_eq!(empty.len(), 1);
         assert!(matches!(empty[0], CleanOperation::NoState));
+
+        // Hard clean with host-infra — should destroy host-infra first, then main
+        let with_hi = plan_clean_operations(true, true, true, true, Some(4));
+        assert_eq!(with_hi.len(), 4);
+        assert!(matches!(with_hi[0], CleanOperation::TofuDestroyHostInfra));
+        assert!(matches!(with_hi[1], CleanOperation::TofuDestroy));
     }
 
     // ========================================================================
@@ -2990,6 +2996,62 @@ spec:
         assert!(
             sdi_rs.contains("format_resource_pool_table"),
             "sdi init must display the resource pool table in the no-spec path"
+        );
+    }
+
+    /// Sprint 16b (G-2): Spec-based `sdi init` must also generate resource-pool-summary.json.
+    /// The resource pool summary must be generated BEFORE the spec-based VM creation,
+    /// so the unified resource pool view is always available.
+    #[test]
+    fn test_sdi_init_spec_path_also_generates_resource_pool_summary() {
+        let sdi_rs = include_str!("../commands/sdi.rs");
+
+        // The common path (before spec/no-spec branch) must generate resource pool summary
+        // Verify the summary is generated in a section that runs regardless of spec_file
+        assert!(
+            sdi_rs.contains("// Step 4: Generate resource pool summary (always, regardless of spec)"),
+            "sdi init must generate resource-pool-summary.json in the common path (before spec/no-spec branch)"
+        );
+
+        // The no-spec else branch should NOT have its own resource pool summary generation
+        // (it should rely on the common path)
+        let else_block_start = sdi_rs.find("No spec file: set up host-level").unwrap();
+        let else_block = &sdi_rs[else_block_start..];
+        assert!(
+            !else_block.contains("generate_resource_pool_summary"),
+            "no-spec path must NOT have duplicate resource pool summary — it's in the common path now"
+        );
+    }
+
+    /// Sprint 16c (G-3): `sdi init <spec>` must cache the spec file as `sdi-spec-cache.yaml`
+    /// so that `cluster init` can auto-discover it without requiring `--sdi-spec`.
+    #[test]
+    fn test_sdi_init_spec_caches_spec_file_for_cluster_init() {
+        let sdi_rs = include_str!("../commands/sdi.rs");
+
+        // sdi.rs must write sdi-spec-cache.yaml in the spec-file path
+        assert!(
+            sdi_rs.contains("sdi-spec-cache.yaml"),
+            "sdi init must cache spec file as sdi-spec-cache.yaml for cluster init workflow"
+        );
+
+        // The cache must be written in the spec-file branch (not the no-spec branch)
+        let spec_branch_marker = "Save pool state for `scalex get sdi-pools`";
+        let spec_branch_start = sdi_rs
+            .find(spec_branch_marker)
+            .expect("spec branch marker must exist");
+        let spec_branch = &sdi_rs[spec_branch_start..];
+
+        // Find the else branch to bound the spec section
+        let else_marker = "No spec file: set up host-level";
+        let else_offset = spec_branch
+            .find(else_marker)
+            .expect("else branch marker must exist");
+        let spec_section = &spec_branch[..else_offset];
+
+        assert!(
+            spec_section.contains("sdi-spec-cache.yaml"),
+            "sdi-spec-cache.yaml must be written in the spec-file branch (between pool state save and else)"
         );
     }
 

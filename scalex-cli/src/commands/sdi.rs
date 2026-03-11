@@ -232,7 +232,28 @@ fn run_init(
         }
     }
 
-    // Step 4: If spec file provided, generate and apply OpenTofu
+    // Step 4: Generate resource pool summary (always, regardless of spec)
+    // Checklist requirement: unified resource pool view must be generated before VM creation
+    if !all_facts.is_empty() {
+        let summary = resource_pool::generate_resource_pool_summary(&all_facts);
+        let table = resource_pool::format_resource_pool_table(&summary);
+        println!("{}", table);
+
+        std::fs::create_dir_all(&output_dir)?;
+        let summary_path = output_dir.join("resource-pool-summary.json");
+        let json = serde_json::to_string_pretty(&summary)?;
+        if dry_run {
+            println!("[dry-run] Would write {}", summary_path.display());
+        } else {
+            std::fs::write(&summary_path, &json)?;
+            println!(
+                "[sdi] Saved resource pool summary to {}",
+                summary_path.display()
+            );
+        }
+    }
+
+    // Step 5: If spec file provided, generate and apply OpenTofu
     if let Some(ref spec_path) = spec_file {
         println!("[sdi] Phase 2: Generating OpenTofu from spec...");
         let spec = load_sdi_spec(spec_path)?;
@@ -291,6 +312,16 @@ fn run_init(
             println!("[sdi] Saved pool state to {}", state_path.display());
         }
 
+        // Cache spec file for cluster init workflow (sdi-spec-cache.yaml)
+        let spec_cache_path = output_dir.join("sdi-spec-cache.yaml");
+        if dry_run {
+            println!("[dry-run] Would write {}", spec_cache_path.display());
+        } else {
+            let spec_yaml = std::fs::read_to_string(spec_file.as_ref().unwrap())?;
+            std::fs::write(&spec_cache_path, &spec_yaml)?;
+            println!("[sdi] Cached spec file to {}", spec_cache_path.display());
+        }
+
         // Run tofu init + apply
         if !dry_run {
             println!("[sdi] Running OpenTofu init...");
@@ -305,29 +336,9 @@ fn run_init(
     } else {
         // No spec file: set up host-level libvirt infrastructure via OpenTofu
         println!("[sdi] Phase 2: Setting up host-level libvirt infrastructure via OpenTofu...");
-        let all_facts = load_all_facts(&facts_dir)?;
         if all_facts.is_empty() {
             println!("[sdi] No facts available. Run `scalex facts --all` first.");
         } else {
-            // Generate resource pool summary
-            let summary = resource_pool::generate_resource_pool_summary(&all_facts);
-            let table = resource_pool::format_resource_pool_table(&summary);
-            println!("{}", table);
-
-            // Save summary JSON
-            std::fs::create_dir_all(&output_dir)?;
-            let summary_path = output_dir.join("resource-pool-summary.json");
-            let json = serde_json::to_string_pretty(&summary)?;
-            if dry_run {
-                println!("[dry-run] Would write {}", summary_path.display());
-            } else {
-                std::fs::write(&summary_path, &json)?;
-                println!(
-                    "[sdi] Saved resource pool summary to {}",
-                    summary_path.display()
-                );
-            }
-
             // Generate OpenTofu HCL for host-level libvirt infra (storage pools)
             let host_inputs = build_host_infra_inputs(&bm_config.target_nodes);
 
@@ -392,6 +403,19 @@ fn run_clean(hard: bool, confirm: bool, output_dir: PathBuf, dry_run: bool) -> a
         return Ok(());
     }
 
+    // Destroy host-infra tofu resources first (created by `sdi init` no-flag path)
+    let host_infra_dir = output_dir.join("host-infra");
+    let host_infra_tf = host_infra_dir.join("main.tf");
+    if host_infra_tf.exists() {
+        if dry_run {
+            println!("[dry-run] Would run: tofu destroy -auto-approve (host-infra)");
+        } else {
+            println!("[sdi] Destroying host-infra OpenTofu resources...");
+            run_tofu_command(&host_infra_dir, &["destroy", "-auto-approve"])?;
+        }
+    }
+
+    // Destroy main tofu resources (created by `sdi init <spec>`)
     let main_tf = output_dir.join("main.tf");
     if main_tf.exists() {
         if dry_run {
@@ -789,6 +813,8 @@ pub enum CleanOperation {
     NoState,
     /// Destroy OpenTofu resources (main.tf exists)
     TofuDestroy,
+    /// Destroy host-infra OpenTofu resources (host-infra/main.tf exists)
+    TofuDestroyHostInfra,
     /// Run node cleanup scripts via SSH (hard mode, baremetal config exists)
     NodeCleanup { node_count: usize },
     /// Skip node cleanup (hard mode, but no baremetal config)
@@ -804,6 +830,7 @@ pub fn plan_clean_operations(
     hard: bool,
     output_dir_exists: bool,
     main_tf_exists: bool,
+    host_infra_main_tf_exists: bool,
     bm_config_node_count: Option<usize>,
 ) -> Vec<CleanOperation> {
     let mut ops = Vec::new();
@@ -811,6 +838,10 @@ pub fn plan_clean_operations(
     if !output_dir_exists {
         ops.push(CleanOperation::NoState);
         return ops;
+    }
+
+    if host_infra_main_tf_exists {
+        ops.push(CleanOperation::TofuDestroyHostInfra);
     }
 
     if main_tf_exists {
@@ -1193,25 +1224,25 @@ mod tests {
 
     #[test]
     fn test_plan_clean_no_state_dir() {
-        let ops = plan_clean_operations(false, false, false, None);
+        let ops = plan_clean_operations(false, false, false, false, None);
         assert_eq!(ops, vec![CleanOperation::NoState]);
     }
 
     #[test]
     fn test_plan_clean_soft_with_main_tf() {
-        let ops = plan_clean_operations(false, true, true, Some(4));
+        let ops = plan_clean_operations(false, true, true, false, Some(4));
         assert_eq!(ops, vec![CleanOperation::TofuDestroy]);
     }
 
     #[test]
     fn test_plan_clean_soft_without_main_tf() {
-        let ops = plan_clean_operations(false, true, false, Some(4));
+        let ops = plan_clean_operations(false, true, false, false, Some(4));
         assert!(ops.is_empty(), "soft clean with no main.tf should be no-op");
     }
 
     #[test]
     fn test_plan_clean_hard_with_main_tf_and_bm_config() {
-        let ops = plan_clean_operations(true, true, true, Some(4));
+        let ops = plan_clean_operations(true, true, true, false, Some(4));
         assert_eq!(
             ops,
             vec![
@@ -1224,7 +1255,7 @@ mod tests {
 
     #[test]
     fn test_plan_clean_hard_without_bm_config() {
-        let ops = plan_clean_operations(true, true, true, None);
+        let ops = plan_clean_operations(true, true, true, false, None);
         assert_eq!(
             ops,
             vec![
@@ -1237,7 +1268,7 @@ mod tests {
 
     #[test]
     fn test_plan_clean_hard_no_main_tf_with_bm_config() {
-        let ops = plan_clean_operations(true, true, false, Some(2));
+        let ops = plan_clean_operations(true, true, false, false, Some(2));
         assert_eq!(
             ops,
             vec![
@@ -1250,8 +1281,51 @@ mod tests {
     #[test]
     fn test_plan_clean_hard_no_state_dir_short_circuits() {
         // Even with hard mode, no state dir means nothing to do
-        let ops = plan_clean_operations(true, false, false, Some(4));
+        let ops = plan_clean_operations(true, false, false, false, Some(4));
         assert_eq!(ops, vec![CleanOperation::NoState]);
+    }
+
+    // --- Sprint 16a: host-infra tofu destroy (G-1) ---
+
+    #[test]
+    fn test_plan_clean_soft_with_host_infra_only() {
+        // No main.tf but host-infra/main.tf exists → should destroy host-infra
+        let ops = plan_clean_operations(false, true, false, true, Some(4));
+        assert_eq!(
+            ops,
+            vec![CleanOperation::TofuDestroyHostInfra],
+            "soft clean must destroy host-infra tofu resources when host-infra/main.tf exists"
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_hard_with_both_main_tf_and_host_infra() {
+        // Both main.tf and host-infra/main.tf exist → destroy both
+        let ops = plan_clean_operations(true, true, true, true, Some(4));
+        assert_eq!(
+            ops,
+            vec![
+                CleanOperation::TofuDestroyHostInfra,
+                CleanOperation::TofuDestroy,
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ],
+            "hard clean must destroy host-infra BEFORE main tofu (dependency order)"
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_hard_host_infra_only_no_main_tf() {
+        // host-infra/main.tf exists but no main.tf → destroy host-infra + hard clean
+        let ops = plan_clean_operations(true, true, false, true, Some(2));
+        assert_eq!(
+            ops,
+            vec![
+                CleanOperation::TofuDestroyHostInfra,
+                CleanOperation::NodeCleanup { node_count: 2 },
+                CleanOperation::RemoveStateDir,
+            ]
+        );
     }
 
     // --- dir_is_empty tests ---
