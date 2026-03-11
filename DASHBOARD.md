@@ -138,6 +138,20 @@ bootstrap args → helm/kubectl 명령 형식 → ✅ test_chain_bootstrap_args_
 
 ### Sprint 48+: 실환경 E2E (인프라 필요)
 
+### Sprint 47: 문서 갭 수정 + Sandbox GitOps name-based addressing → ✅ 완료
+
+**목표**: README Step 2 문서 갭 수정 + 아키텍처 분석에서 발견된 critical 이슈 해결
+**테스트**: 604 → 598 (placeholder 테스트 11개 제거, name-based 테스트 5개 추가)
+
+- [x] **47-1**: README Step 2에 secrets.yaml, cloudflare-tunnel.json 섹션 추가 (6개 파일 완전 안내)
+- [x] **47-2**: Sandbox GitOps destination `server: "https://sandbox-api:6443"` → `name: sandbox` (ArgoCD name-based addressing)
+- [x] **47-3**: README Step 0에 `helm`, `argocd` CLI 추가
+- [x] **47-4**: Bootstrap ArgoCD Helm 기본 버전 7.8.13 → 8.1.1 (GitOps와 일치)
+- [x] **47-5**: Rust CLI에서 placeholder 교체 로직 제거 (cluster.rs, gitops.rs, validation.rs)
+- [ ] **47-P0**: `gitops/sandbox/cilium/values.yaml`의 `k8sServiceHost: "PLACEHOLDER_SANDBOX_CP_IP"` → 실제 sandbox control-plane IP로 교체 필요 (Cilium CNI 미작동 원인)
+
+> **P0 잔여 이슈**: sandbox Cilium values에 플레이스홀더 IP가 남아있어 sandbox 클러스터의 CNI가 작동하지 않음. 다음 세션에서 반드시 수정 필요.
+
 > 이하 Sprint는 실제 베어메탈 노드(playbox-0~3)에 대한 접근이 필요하다.
 
 - [ ] **48-1**: `scalex facts --all` → 4노드 실 SSH → JSON 수집
