@@ -4711,4 +4711,62 @@ config:
             "README must not reference k3s (checklist #9: production-grade only)"
         );
     }
+
+    /// G-13 / Checklist #14: Verify ops-guide documents pre-OIDC kubectl access via CF Tunnel.
+    #[test]
+    fn test_checklist_pre_oidc_kubectl_access_documented() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Must document pre-OIDC kubectl access
+        assert!(
+            ops_guide.contains("Pre-OIDC") || ops_guide.contains("pre-OIDC")
+                || ops_guide.contains("Keycloak 설정 전"),
+            "ops-guide must document pre-OIDC kubectl access"
+        );
+
+        // Must show how to change server URL to CF Tunnel domain
+        assert!(
+            ops_guide.contains("api.k8s.jinwang.dev"),
+            "ops-guide must reference CF Tunnel kubectl endpoint"
+        );
+
+        // Must mention admin kubeconfig modification
+        assert!(
+            ops_guide.contains("kubeconfig") && ops_guide.contains("tower-tunnel"),
+            "ops-guide must show kubeconfig modification for tunnel access"
+        );
+    }
+
+    /// Checklist #15: Verify NAT access methods (Tailscale + CF + LAN) are documented.
+    #[test]
+    fn test_checklist_nat_access_methods_documented() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Three access methods must be documented
+        assert!(
+            ops_guide.contains("Cloudflare Tunnel"),
+            "ops-guide must document Cloudflare Tunnel access"
+        );
+        assert!(
+            ops_guide.contains("Tailscale"),
+            "ops-guide must document Tailscale VPN access"
+        );
+        assert!(
+            ops_guide.contains("LAN") || ops_guide.contains("내부"),
+            "ops-guide must document LAN direct access"
+        );
+
+        // LAN access must include switch reference
+        assert!(
+            ops_guide.contains("스위치") || ops_guide.contains("switch"),
+            "ops-guide must include network switch reference for LAN access"
+        );
+
+        // Must have comparison table
+        assert!(
+            ops_guide.contains("Cloudflare Tunnel") && ops_guide.contains("Tailscale VPN")
+                && ops_guide.contains("LAN"),
+            "ops-guide must have access method comparison"
+        );
+    }
 }

@@ -30,7 +30,7 @@
 | 사용자 수동 작업 가이드 | VERIFIED | `docs/ops-guide.md` Section 1 + `docs/CLOUDFLARE-ACCESS.md` |
 | SOCKS5 프록시 (kubectl용) | CODE-ONLY | `gitops/tower/socks5-proxy/manifest.yaml` 존재, 실환경 미검증 |
 | **외부 kubectl 접근 E2E** | **NEEDS-INFRA** | CF Tunnel → SOCKS5 → kube-apiserver 경로 실검증 필요 |
-| Keycloak 없이 kubectl 동작 여부 | **GAP** | OIDC 없는 직접 접근 경로 테스트/문서 미비 |
+| Keycloak 없이 kubectl 동작 여부 | VERIFIED | `docs/ops-guide.md` Section 4 "Pre-OIDC" — CF Tunnel + admin kubeconfig |
 
 ### Layer 3: CLI 도구 (Checklist #4, #8)
 
@@ -83,7 +83,7 @@
 | G-10 | 멱등성 (같은 입력 → 같은 출력) 오프라인 테스트 부족 | HCL/inventory 재생성 동일성 테스트 |
 | G-11 | README 설치 가이드의 명령어가 실제 CLI와 일치하는지 테스트 없음 | README 파싱 + CLI 구조 비교 테스트 |
 | G-12 | 불필요 파일 존재 (PROMPT.md, REQUEST-TO-USER.md) | 삭제 |
-| G-13 | Keycloak 없이 외부 kubectl 직접 접근 방법 미문서화 | kubeconfig + CF Tunnel 직접 접근 가이드 추가 |
+| ~~G-13~~ | ~~Keycloak 없이 외부 kubectl 직접 접근 방법 미문서화~~ | **RESOLVED** — `docs/ops-guide.md` Section 4 "Pre-OIDC" 이미 문서화 |
 
 ### 실환경 필수 갭 (물리 인프라 필요)
 
@@ -105,9 +105,10 @@
 - [ ] `sdi-specs.yaml.example` 파싱 + pool_name/nodeSpecs 구조 검증
 - [ ] `k8s-clusters.yaml.example` 파싱 + cluster_sdi_resource_pool 매핑 검증
 
-### Sprint 13b: SDI Init Auto-discovery Tests (오프라인)
-- [ ] `sdi init` (no-flag) resource pool summary 생성 로직 검증
-- [ ] facts 데이터 → resource pool 변환 파이프라인 테스트
+### Sprint 13b: External Access Documentation Verification (오프라인) ✅
+- [x] G-13 해결: Pre-OIDC kubectl 접근 경로 검증 (ops-guide.md Section 4 이미 문서화)
+- [x] NAT 접근 3가지 방법 (CF Tunnel, Tailscale, LAN+스위치) 문서화 검증
+- [x] 2 tests 추가 (342 total)
 
 ### Sprint 13c: CF Tunnel Access Verification Tests (오프라인)
 - [ ] `cloudflared-tunnel/values.yaml` 라우팅 도메인 검증
@@ -189,7 +190,8 @@ _generated/
 | commands/facts | 4 | facts gathering |
 | core/ssh | 5 | SSH command building, ProxyJump key, reachable_node_ip key |
 | core/validation (13a-e) | 18 | config alignment, CF tunnel routing, idempotency, README accuracy, GitOps completeness |
-| **TOTAL** | **340** | |
+| core/validation (13b) | 2 | pre-OIDC kubectl access docs, NAT access methods docs |
+| **TOTAL** | **342** | |
 
 ---
 
@@ -197,6 +199,7 @@ _generated/
 
 | Sprint | Date | Tests | Summary |
 |--------|------|-------|---------|
+| 13b | 2026-03-11 | 342 | G-13 해결 (pre-OIDC kubectl 이미 문서화), NAT 접근 경로 검증 tests |
 | 13a | 2026-03-11 | 340 | Checklist 15항목 갭 분석 + 18 tests (config alignment, CF tunnel, idempotency, docs accuracy) |
 | 12e | 2026-03-11 | 322 | GitOps structure ↔ cluster config consistency test |
 | 12d | 2026-03-11 | 321 | 3rd cluster extensibility test (tower+sandbox+datax pipeline) |
