@@ -546,4 +546,230 @@ net.ipv4.ip_forward = 1
         // Network
         assert!(!facts.nics.is_empty(), "nics must be populated");
     }
+
+    // --- Sprint 32b: facts module edge case tests ---
+
+    #[test]
+    fn test_parse_facts_output_missing_start_marker() {
+        let raw = "no markers here\n---SCALEX_FACTS_END---";
+        let result = parse_facts_output("node", raw);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("start marker") || err_msg.contains("No start"));
+    }
+
+    #[test]
+    fn test_parse_facts_output_missing_end_marker() {
+        let raw = "---SCALEX_FACTS_START---\ncpu_model=Test\n";
+        let result = parse_facts_output("node", raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_facts_output_empty_sections() {
+        // All sections present but empty — should parse without panic
+        let raw = r#"---SCALEX_FACTS_START---
+cpu_model=
+cpu_cores=0
+cpu_threads=0
+cpu_arch=
+mem_total_kb=0
+mem_avail_kb=0
+kernel_version=
+---DISKS---
+---NICS---
+[]
+---NIC_SPEEDS---
+---GPUS---
+---PCIE---
+---IOMMU---
+---BRIDGES---
+---BONDS---
+---KERNEL_PARAMS---
+---SCALEX_FACTS_END---"#;
+        let facts = parse_facts_output("empty-node", raw).unwrap();
+        assert_eq!(facts.cpu.cores, 0);
+        assert!(facts.disks.is_empty());
+        assert!(facts.nics.is_empty());
+        assert!(facts.gpus.is_empty());
+        assert!(facts.pcie.is_empty());
+        assert!(facts.iommu_groups.is_empty());
+        assert!(facts.bridges.is_empty());
+        assert!(facts.kernel.params.is_empty());
+    }
+
+    #[test]
+    fn test_parse_section_missing_markers() {
+        let body = "no markers here";
+        // start_marker not found => start=0, end_marker not found => end=body.len()
+        let result = parse_section(body, "---NOPE1---", "---NOPE2---");
+        assert_eq!(result, "no markers here");
+    }
+
+    #[test]
+    fn test_parse_section_start_after_end() {
+        // end marker appears before start marker => empty string
+        let body = "---END---\nstuff\n---START---\nmore";
+        let result = parse_section(body, "---START---", "---END---");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_nic_speed_formatting_boundaries() {
+        // 10000 Mbit -> 10G, 1000 Mbit -> 1000M (not 1G since threshold is 10000)
+        let raw = r#"---SCALEX_FACTS_START---
+cpu_model=T
+cpu_cores=1
+cpu_threads=1
+cpu_arch=x86_64
+mem_total_kb=1024
+mem_avail_kb=512
+kernel_version=6.0
+---DISKS---
+---NICS---
+[]
+---NIC_SPEEDS---
+eth0|10000|mlx5|up
+eth1|1000|e1000e|up
+eth2|100|realtek|up
+eth3|-1|veth|down
+eth4|25000|mlx5|up
+---GPUS---
+---PCIE---
+---IOMMU---
+---BRIDGES---
+---BONDS---
+---KERNEL_PARAMS---
+---SCALEX_FACTS_END---"#;
+        let facts = parse_facts_output("nic-test", raw).unwrap();
+        assert_eq!(facts.nics.len(), 5);
+        assert_eq!(facts.nics[0].speed, "10G");   // 10000 >= 10000
+        assert_eq!(facts.nics[1].speed, "1000M");  // 1000 > 0 but < 10000
+        assert_eq!(facts.nics[2].speed, "100M");    // 100 > 0
+        assert_eq!(facts.nics[3].speed, "unknown"); // -1
+        assert_eq!(facts.nics[4].speed, "25G");     // 25000 >= 10000
+    }
+
+    #[test]
+    fn test_gpu_vendor_detection_amd_and_unknown() {
+        let raw = r#"---SCALEX_FACTS_START---
+cpu_model=T
+cpu_cores=1
+cpu_threads=1
+cpu_arch=x86_64
+mem_total_kb=1024
+mem_avail_kb=512
+kernel_version=6.0
+---DISKS---
+---NICS---
+[]
+---NIC_SPEEDS---
+---GPUS---
+01:00.0 VGA compatible controller: AMD/ATI Radeon RX 7900 XTX
+02:00.0 3D controller: SomeVendor Unknown GPU
+---PCIE---
+---IOMMU---
+---BRIDGES---
+---BONDS---
+---KERNEL_PARAMS---
+---SCALEX_FACTS_END---"#;
+        let facts = parse_facts_output("gpu-test", raw).unwrap();
+        assert_eq!(facts.gpus.len(), 2);
+        assert_eq!(facts.gpus[0].vendor, "amd");
+        assert_eq!(facts.gpus[1].vendor, "unknown");
+    }
+
+    #[test]
+    fn test_iommu_group_parsing_with_multiple_devices() {
+        let raw = r#"---SCALEX_FACTS_START---
+cpu_model=T
+cpu_cores=1
+cpu_threads=1
+cpu_arch=x86_64
+mem_total_kb=1024
+mem_avail_kb=512
+kernel_version=6.0
+---DISKS---
+---NICS---
+[]
+---NIC_SPEEDS---
+---GPUS---
+---PCIE---
+---IOMMU---
+group_0: 0000:00:00.0
+group_1: 0000:01:00.0 0000:01:00.1 0000:01:00.2
+NO_IOMMU
+---BRIDGES---
+---BONDS---
+---KERNEL_PARAMS---
+---SCALEX_FACTS_END---"#;
+        let facts = parse_facts_output("iommu-test", raw).unwrap();
+        assert_eq!(facts.iommu_groups.len(), 2);
+        assert_eq!(facts.iommu_groups[0].id, 0);
+        assert_eq!(facts.iommu_groups[0].devices.len(), 1);
+        assert_eq!(facts.iommu_groups[1].id, 1);
+        assert_eq!(facts.iommu_groups[1].devices.len(), 3);
+    }
+
+    #[test]
+    fn test_kernel_params_both_formats() {
+        // sysctl uses " = " separator, but some systems may use "="
+        let raw = r#"---SCALEX_FACTS_START---
+cpu_model=T
+cpu_cores=1
+cpu_threads=1
+cpu_arch=x86_64
+mem_total_kb=1024
+mem_avail_kb=512
+kernel_version=6.0
+---DISKS---
+---NICS---
+[]
+---NIC_SPEEDS---
+---GPUS---
+---PCIE---
+---IOMMU---
+---BRIDGES---
+---BONDS---
+---KERNEL_PARAMS---
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables=0
+---SCALEX_FACTS_END---"#;
+        let facts = parse_facts_output("kp-test", raw).unwrap();
+        assert_eq!(facts.kernel.params.get("net.ipv4.ip_forward").unwrap(), "1");
+        assert_eq!(
+            facts.kernel.params.get("net.bridge.bridge-nf-call-iptables").unwrap(),
+            "0"
+        );
+    }
+
+    #[test]
+    fn test_disk_size_conversion_bytes_to_gb() {
+        let raw = r#"---SCALEX_FACTS_START---
+cpu_model=T
+cpu_cores=1
+cpu_threads=1
+cpu_arch=x86_64
+mem_total_kb=1024
+mem_avail_kb=512
+kernel_version=6.0
+---DISKS---
+nvme0n1 1000204886016 disk WD_BLACK SN770
+sda 0 disk TinyDisk
+---NICS---
+[]
+---NIC_SPEEDS---
+---GPUS---
+---PCIE---
+---IOMMU---
+---BRIDGES---
+---BONDS---
+---KERNEL_PARAMS---
+---SCALEX_FACTS_END---"#;
+        let facts = parse_facts_output("disk-test", raw).unwrap();
+        assert_eq!(facts.disks.len(), 2);
+        assert_eq!(facts.disks[0].size_gb, 931); // ~931 GB
+        assert_eq!(facts.disks[0].model, "WD_BLACK SN770");
+        assert_eq!(facts.disks[1].size_gb, 0); // 0 bytes
+    }
 }

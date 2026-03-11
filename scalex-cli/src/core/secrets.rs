@@ -300,6 +300,96 @@ keycloak:
         assert!(result.is_err());
     }
 
+    // --- Sprint 32c: secrets edge case tests ---
+
+    #[test]
+    fn test_secrets_for_unknown_role_returns_empty() {
+        let secrets = make_secrets();
+        assert!(secrets_for_cluster("staging", &secrets).is_empty());
+        assert!(secrets_for_cluster("", &secrets).is_empty());
+        assert!(secrets_for_cluster("MANAGEMENT", &secrets).is_empty()); // case-sensitive
+    }
+
+    #[test]
+    fn test_generate_k8s_secret_yaml_empty_data() {
+        let spec = K8sSecretSpec {
+            name: "empty-secret".to_string(),
+            namespace: "default".to_string(),
+            data: vec![],
+        };
+        let yaml = generate_k8s_secret_yaml(&spec);
+        assert!(yaml.contains("stringData:"));
+        // Valid YAML even with no data entries
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert!(parsed.is_mapping());
+    }
+
+    #[test]
+    fn test_generate_k8s_secret_yaml_json_value() {
+        // Cloudflare credentials are JSON strings stored as secret values
+        let spec = K8sSecretSpec {
+            name: "cf-creds".to_string(),
+            namespace: "kube-tunnel".to_string(),
+            data: vec![(
+                "credentials.json".to_string(),
+                r#"{"AccountTag":"abc","TunnelSecret":"s3c","TunnelID":"123"}"#.to_string(),
+            )],
+        };
+        let yaml = generate_k8s_secret_yaml(&spec);
+        assert!(yaml.contains("credentials.json:"));
+        assert!(yaml.contains("AccountTag"));
+    }
+
+    #[test]
+    fn test_parse_secrets_config_extra_fields_ignored() {
+        // Forward compatibility: extra unknown fields should not break parsing
+        let yaml = r#"
+keycloak:
+  admin_password: "pass"
+  db_password: "db"
+  extra_field: "ignored"
+argocd:
+  repo_pat: "pat"
+  unknown: true
+cloudflare:
+  credentials_file: "creds"
+  cert_file: ""
+  future_field: 42
+"#;
+        // serde_yaml with default derives will fail on unknown fields
+        // unless deny_unknown_fields is NOT set — verify our structs handle this
+        let result = parse_secrets_config(yaml);
+        // This tests the actual behavior — if it fails, we need #[serde(deny_unknown_fields)]
+        // to be removed (which is the default, so it should pass)
+        assert!(result.is_ok(), "extra fields should be silently ignored");
+    }
+
+    #[test]
+    fn test_generate_all_manifests_management_with_cloudflare() {
+        let yaml = r#"
+keycloak:
+  admin_password: "admin"
+  db_password: "db"
+cloudflare:
+  credentials_file: '{"AccountTag":"x","TunnelSecret":"y","TunnelID":"z"}'
+"#;
+        let result = generate_all_secrets_manifests(yaml, "management").unwrap();
+        let docs: Vec<&str> = result.split("---").filter(|s| !s.trim().is_empty()).collect();
+        assert_eq!(docs.len(), 3, "management + cloudflare = 3 secrets");
+        assert!(result.contains("cloudflared-tunnel-credentials"));
+    }
+
+    #[test]
+    fn test_parse_secrets_config_missing_required_field() {
+        // keycloak.admin_password is required
+        let yaml = r#"
+keycloak:
+  db_password: "db"
+"#;
+        let result = parse_secrets_config(yaml);
+        assert!(result.is_err(), "missing admin_password should fail");
+    }
+
     /// Verify the example file content can be parsed
     #[test]
     fn test_parse_secrets_example_content() {

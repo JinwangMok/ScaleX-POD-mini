@@ -797,7 +797,20 @@ fn load_sdi_spec(path: &str) -> anyhow::Result<SdiSpec> {
     Ok(spec)
 }
 
-fn check_gpu_passthrough_needed(_host_name: &str, spec_path: Option<&str>) -> bool {
+/// Pure function: checks if any VM on `host_name` requires GPU passthrough.
+fn spec_needs_gpu_passthrough(spec: &SdiSpec, host_name: &str) -> bool {
+    spec.spec.sdi_pools.iter().any(|p| {
+        p.node_specs.iter().any(|n| {
+            let on_host = n
+                .host
+                .as_deref()
+                .or(p.placement.hosts.first().map(|s| s.as_str()));
+            on_host == Some(host_name) && n.devices.as_ref().is_some_and(|d| d.gpu_passthrough)
+        })
+    })
+}
+
+fn check_gpu_passthrough_needed(host_name: &str, spec_path: Option<&str>) -> bool {
     let Some(path) = spec_path else {
         return false;
     };
@@ -807,15 +820,7 @@ fn check_gpu_passthrough_needed(_host_name: &str, spec_path: Option<&str>) -> bo
     let Ok(spec) = serde_yaml::from_str::<SdiSpec>(&raw) else {
         return false;
     };
-    spec.spec.sdi_pools.iter().any(|p| {
-        p.node_specs.iter().any(|n| {
-            let on_host = n
-                .host
-                .as_deref()
-                .or(p.placement.hosts.first().map(|s| s.as_str()));
-            on_host == Some(_host_name) && n.devices.as_ref().is_some_and(|d| d.gpu_passthrough)
-        })
-    })
+    spec_needs_gpu_passthrough(&spec, host_name)
 }
 
 fn run_facts_collection(
@@ -1820,5 +1825,136 @@ mod tests {
             gateway: "192.168.88.1".to_string(),
         };
         assert_eq!(extract_cidr_prefix(&fallback.cidr), 24);
+    }
+
+    // --- Sprint 32a: spec_needs_gpu_passthrough pure function tests ---
+
+    fn stub_sdi_spec(pools: Vec<SdiPool>) -> SdiSpec {
+        SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "test-pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec { sdi_pools: pools },
+        }
+    }
+
+    fn make_gpu_pool(host: Option<&str>, placement_hosts: Vec<&str>, gpu: bool) -> SdiPool {
+        SdiPool {
+            pool_name: "test-pool".to_string(),
+            purpose: "test".to_string(),
+            placement: PlacementConfig {
+                hosts: placement_hosts.into_iter().map(|s| s.to_string()).collect(),
+                spread: false,
+            },
+            node_specs: vec![NodeSpec {
+                node_name: "vm-0".to_string(),
+                ip: "10.0.0.10".to_string(),
+                cpu: 4,
+                mem_gb: 8,
+                disk_gb: 50,
+                host: host.map(|s| s.to_string()),
+                roles: vec!["worker".to_string()],
+                devices: if gpu {
+                    Some(DeviceConfig { gpu_passthrough: true })
+                } else {
+                    None
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn test_spec_needs_gpu_passthrough_explicit_host_match() {
+        let spec = stub_sdi_spec(vec![make_gpu_pool(Some("playbox-0"), vec!["playbox-0"], true)]);
+        assert!(spec_needs_gpu_passthrough(&spec, "playbox-0"));
+    }
+
+    #[test]
+    fn test_spec_needs_gpu_passthrough_explicit_host_no_match() {
+        let spec = stub_sdi_spec(vec![make_gpu_pool(Some("playbox-0"), vec!["playbox-0"], true)]);
+        assert!(!spec_needs_gpu_passthrough(&spec, "playbox-1"));
+    }
+
+    #[test]
+    fn test_spec_needs_gpu_passthrough_falls_back_to_placement_host() {
+        let spec = stub_sdi_spec(vec![make_gpu_pool(None, vec!["playbox-2"], true)]);
+        assert!(spec_needs_gpu_passthrough(&spec, "playbox-2"));
+        assert!(!spec_needs_gpu_passthrough(&spec, "playbox-0"));
+    }
+
+    #[test]
+    fn test_spec_needs_gpu_passthrough_no_devices() {
+        let spec = stub_sdi_spec(vec![make_gpu_pool(Some("playbox-0"), vec!["playbox-0"], false)]);
+        assert!(!spec_needs_gpu_passthrough(&spec, "playbox-0"));
+    }
+
+    #[test]
+    fn test_spec_needs_gpu_passthrough_empty_pools() {
+        let spec = stub_sdi_spec(vec![]);
+        assert!(!spec_needs_gpu_passthrough(&spec, "any-host"));
+    }
+
+    #[test]
+    fn test_spec_needs_gpu_passthrough_empty_placement_and_no_host() {
+        let spec = stub_sdi_spec(vec![make_gpu_pool(None, vec![], true)]);
+        assert!(!spec_needs_gpu_passthrough(&spec, "playbox-0"));
+    }
+
+    #[test]
+    fn test_spec_needs_gpu_passthrough_multi_pool_mixed() {
+        let spec = stub_sdi_spec(vec![
+            SdiPool {
+                pool_name: "pool-a".to_string(),
+                purpose: "compute".to_string(),
+                placement: PlacementConfig {
+                    hosts: vec!["playbox-0".to_string()],
+                    spread: false,
+                },
+                node_specs: vec![NodeSpec {
+                    node_name: "vm-a".to_string(),
+                    ip: "10.0.0.1".to_string(),
+                    cpu: 2,
+                    mem_gb: 4,
+                    disk_gb: 20,
+                    host: None,
+                    roles: vec!["worker".to_string()],
+                    devices: None,
+                }],
+            },
+            SdiPool {
+                pool_name: "pool-b".to_string(),
+                purpose: "gpu".to_string(),
+                placement: PlacementConfig {
+                    hosts: vec!["playbox-0".to_string()],
+                    spread: false,
+                },
+                node_specs: vec![NodeSpec {
+                    node_name: "vm-b".to_string(),
+                    ip: "10.0.0.2".to_string(),
+                    cpu: 4,
+                    mem_gb: 8,
+                    disk_gb: 50,
+                    host: None,
+                    roles: vec!["worker".to_string()],
+                    devices: Some(DeviceConfig { gpu_passthrough: true }),
+                }],
+            },
+        ]);
+        assert!(spec_needs_gpu_passthrough(&spec, "playbox-0"));
+        assert!(!spec_needs_gpu_passthrough(&spec, "playbox-1"));
     }
 }

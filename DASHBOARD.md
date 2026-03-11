@@ -348,29 +348,55 @@ tests/                ✅ run-tests.sh
 - [x] README.md 테스트 카운트 업데이트
 - [x] CLAUDE.md 테스트 카운트 업데이트
 
-### Sprint 32: 실환경 E2E 준비 (⬜ 인프라 필요)
+### Sprint 32: 순수 함수 리팩토링 + 테스트 보강 ✅ DONE (459 → 482 tests)
 
-#### 32a — SDI 가상화 E2E
+#### 32a — `check_gpu_passthrough_needed` 순수 함수 분리 (+7 tests)
+- [x] `spec_needs_gpu_passthrough()` 순수 함수 추출 (I/O 분리)
+- [x] `_host_name` → `host_name` 네이밍 수정
+- [x] explicit host match, no match, placement fallback, no devices
+- [x] empty pools, empty placement + no host, multi-pool mixed GPU
+
+#### 32b — facts 모듈 테스트 강화 (+10 tests, 4→14)
+- [x] parse error paths: missing start/end markers
+- [x] empty sections — 빈 노드 파싱 무장애 확인
+- [x] `parse_section` edge cases: missing markers, start > end
+- [x] NIC speed formatting boundaries (10G/1000M/100M/unknown/25G)
+- [x] GPU vendor detection (AMD, unknown)
+- [x] IOMMU group multi-device 파싱
+- [x] kernel params 두 포맷 (" = " vs "=")
+- [x] disk size bytes→GB 변환
+
+#### 32c — secrets 모듈 엣지 케이스 (+6 tests, 13→19)
+- [x] unknown/empty/case-sensitive cluster role → empty
+- [x] empty data vec in K8sSecretSpec
+- [x] JSON value in secret (Cloudflare credentials)
+- [x] extra unknown YAML fields → forward compatibility
+- [x] management + cloudflare = 3 secrets
+- [x] missing required field → parse error
+
+### Sprint 33: 실환경 E2E 준비 (⬜ 인프라 필요)
+
+#### 33a — SDI 가상화 E2E
 - [ ] `scalex facts --all` → 4노드 SSH 접근 + JSON 수집
 - [ ] `scalex sdi init config/sdi-specs.yaml` → VM 5개 생성
 - [ ] `scalex get sdi-pools` → 2개 풀 확인
 - [ ] `scalex sdi clean --hard --yes-i-really-want-to` → 완전 초기화
 - [ ] 재실행 (멱등성 검증)
 
-#### 32b — Kubespray + ArgoCD E2E
+#### 33b — Kubespray + ArgoCD E2E
 - [ ] `scalex cluster init` → tower + sandbox 클러스터 생성
 - [ ] `kubectl get nodes` (tower/sandbox) → 정상 응답
 - [ ] `scalex secrets apply` → K8s secrets 생성
 - [ ] `scalex bootstrap` → ArgoCD 설치 + spread.yaml 적용
 - [ ] `kubectl -n argocd get applications` → 모든 앱 Synced/Healthy
 
-#### 32c — 외부 접근 E2E
+#### 33c — 외부 접근 E2E
 - [ ] Tailscale IP로 tower kubectl 접근
 - [ ] Keycloak Realm/Client 설정 (사용자 수동)
 - [ ] CF Tunnel 경유 OIDC kubectl 접근
 - [ ] `https://cd.jinwang.dev` ArgoCD UI 접근
 
-### Sprint 33: 확장성 검증 (⬜ 인프라 필요)
+### Sprint 34: 확장성 검증 (⬜ 인프라 필요)
 
 - [ ] 단일 노드 모드: 모든 VM을 1개 호스트에 배치
 - [ ] 3rd 클러스터 추가: sdi-specs + k8s-clusters + gitops/generators 확장
@@ -450,19 +476,19 @@ _generated/
 | core/validation | 95+ | pool mapping, cluster IDs/names, CIDR overlap, DNS, bootstrap, E2E pipeline |
 | core/gitops | 39 | ApplicationSet, kustomization, sync waves, Cilium, ClusterMesh |
 | core/kubespray | 32+ | inventory (SDI + baremetal), cluster vars, OIDC, Cilium, single-node |
-| commands/sdi | 24 | network resolve, host infra, pool state, clean validation, CIDR |
+| commands/sdi | 31 | network resolve, host infra, pool state, clean validation, CIDR, GPU passthrough |
 | commands/status | 21 | platform status reporting |
 | commands/get | 18 | facts row, config status, SDI pools, clusters |
 | core/config | 15 | baremetal config, semantic validation, camelCase |
 | core/kernel | 14 | kernel-tune recommendations |
 | commands/bootstrap | 14+ | ArgoCD helm, cluster add, kubectl apply, pipeline |
 | core/sync | 13 | sync diff, VM conflict, severity, add+remove |
-| core/secrets | 12 | K8s secret generation |
+| core/secrets | 18 | K8s secret generation, edge cases, forward compat |
 | core/host_prepare | 12 | KVM, bridge, VFIO |
 | core/tofu | 12 | HCL gen, SSH URI, VFIO, single-node, host-infra |
 | commands/cluster | 11 | cluster init, SDI/baremetal, gitops |
 | models/* | 8 | parse/serialize |
 | core/resource_pool | 7 | aggregation, table, disk_gb |
 | core/ssh | 5 | SSH command building, ProxyJump key |
-| commands/facts | 4 | facts gathering |
+| commands/facts | 14 | facts gathering, parse edge cases, NIC/GPU/IOMMU/disk |
 | **TOTAL** | **459** | **순수 함수 테스트만 — 실행 경로(I/O) 미포함** |
