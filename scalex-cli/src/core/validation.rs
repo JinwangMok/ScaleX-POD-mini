@@ -3975,10 +3975,7 @@ targetNodes:
         // Case 2: External IP (Tailscale)
         let n1 = &config.target_nodes[1];
         assert!(!n1.direct_reachable);
-        assert_eq!(
-            n1.reachable_node_ip.as_deref(),
-            Some("100.64.0.1")
-        );
+        assert_eq!(n1.reachable_node_ip.as_deref(), Some("100.64.0.1"));
         assert_eq!(n1.ssh_auth_mode, SshAuthMode::Password);
 
         // Case 3a: ProxyJump with password
@@ -4266,11 +4263,7 @@ config:
         let cf_values = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
 
         // Required domains per checklist #14
-        let required_routes = [
-            "api.k8s.jinwang.dev",
-            "auth.jinwang.dev",
-            "cd.jinwang.dev",
-        ];
+        let required_routes = ["api.k8s.jinwang.dev", "auth.jinwang.dev", "cd.jinwang.dev"];
 
         for domain in &required_routes {
             assert!(
@@ -4469,16 +4462,12 @@ spec:
         let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_yaml).unwrap();
         let sdi_spec: crate::models::sdi::SdiSpec = serde_yaml::from_str(sdi_yaml).unwrap();
 
-        let inv_1 = crate::core::kubespray::generate_inventory(
-            &k8s_config.config.clusters[0],
-            &sdi_spec,
-        )
-        .unwrap();
-        let inv_2 = crate::core::kubespray::generate_inventory(
-            &k8s_config.config.clusters[0],
-            &sdi_spec,
-        )
-        .unwrap();
+        let inv_1 =
+            crate::core::kubespray::generate_inventory(&k8s_config.config.clusters[0], &sdi_spec)
+                .unwrap();
+        let inv_2 =
+            crate::core::kubespray::generate_inventory(&k8s_config.config.clusters[0], &sdi_spec)
+                .unwrap();
         assert_eq!(
             inv_1, inv_2,
             "Kubespray inventory generation must be idempotent"
@@ -4517,10 +4506,7 @@ config:
             &k8s_config.config.clusters[0],
             &k8s_config.config.common,
         );
-        assert_eq!(
-            vars_1, vars_2,
-            "Cluster vars generation must be idempotent"
-        );
+        assert_eq!(vars_1, vars_2, "Cluster vars generation must be idempotent");
     }
 
     // =========================================================================
@@ -4564,14 +4550,7 @@ config:
 
         // Must have all installation steps
         let steps = [
-            "Step 0",
-            "Step 1",
-            "Step 2",
-            "Step 3",
-            "Step 4",
-            "Step 5",
-            "Step 6",
-            "Step 7",
+            "Step 0", "Step 1", "Step 2", "Step 3", "Step 4", "Step 5", "Step 6", "Step 7",
             "Step 8",
         ];
 
@@ -4601,11 +4580,7 @@ config:
         ];
 
         for doc in &expected_docs {
-            assert!(
-                readme.contains(doc),
-                "README.md must reference '{}'",
-                doc
-            );
+            assert!(readme.contains(doc), "README.md must reference '{}'", doc);
         }
     }
 
@@ -4654,12 +4629,16 @@ config:
     /// G-11: Verify common generators exist for both tower and sandbox.
     #[test]
     fn test_checklist_common_generators_both_clusters() {
-        let tower_common =
-            include_str!("../../../gitops/generators/tower/common-generator.yaml");
+        let tower_common = include_str!("../../../gitops/generators/tower/common-generator.yaml");
         let sandbox_common =
             include_str!("../../../gitops/generators/sandbox/common-generator.yaml");
 
-        let common_apps = ["cert-manager", "cilium-resources", "kyverno", "kyverno-policies"];
+        let common_apps = [
+            "cert-manager",
+            "cilium-resources",
+            "kyverno",
+            "kyverno-policies",
+        ];
 
         for app in &common_apps {
             assert!(
@@ -4719,7 +4698,8 @@ config:
 
         // Must document pre-OIDC kubectl access
         assert!(
-            ops_guide.contains("Pre-OIDC") || ops_guide.contains("pre-OIDC")
+            ops_guide.contains("Pre-OIDC")
+                || ops_guide.contains("pre-OIDC")
                 || ops_guide.contains("Keycloak 설정 전"),
             "ops-guide must document pre-OIDC kubectl access"
         );
@@ -4764,7 +4744,8 @@ config:
 
         // Must have comparison table
         assert!(
-            ops_guide.contains("Cloudflare Tunnel") && ops_guide.contains("Tailscale VPN")
+            ops_guide.contains("Cloudflare Tunnel")
+                && ops_guide.contains("Tailscale VPN")
                 && ops_guide.contains("LAN"),
             "ops-guide must have access method comparison"
         );
@@ -4794,7 +4775,12 @@ config:
         for line in k8s_clusters.lines() {
             if let Some(pool_ref) = line.trim().strip_prefix("cluster_sdi_resource_pool:") {
                 // Strip inline YAML comment, then trim quotes
-                let pool_ref = pool_ref.split('#').next().unwrap_or("").trim().trim_matches('"');
+                let pool_ref = pool_ref
+                    .split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"');
                 assert!(
                     sdi_pool_names.contains(&pool_ref),
                     "k8s-clusters references pool '{}' not defined in sdi-specs (available: {:?})",
@@ -4867,19 +4853,37 @@ config:
         let creds_readme = include_str!("../../../credentials/README.md");
 
         // .baremetal-init.yaml.example must cover all 3 SSH modes
-        assert!(baremetal.contains("direct_reachable: true"), "must show Case 1 (direct)");
-        assert!(baremetal.contains("reachable_node_ip"), "must show Case 2 (external IP)");
-        assert!(baremetal.contains("reachable_via"), "must show Case 3 (ProxyJump)");
-        assert!(baremetal.contains("networkDefaults"), "must include network defaults");
+        assert!(
+            baremetal.contains("direct_reachable: true"),
+            "must show Case 1 (direct)"
+        );
+        assert!(
+            baremetal.contains("reachable_node_ip"),
+            "must show Case 2 (external IP)"
+        );
+        assert!(
+            baremetal.contains("reachable_via"),
+            "must show Case 3 (ProxyJump)"
+        );
+        assert!(
+            baremetal.contains("networkDefaults"),
+            "must include network defaults"
+        );
 
         // .env.example must have password and key variables
-        assert!(env.contains("PLAYBOX_0_PASSWORD"), "must have playbox-0 password var");
+        assert!(
+            env.contains("PLAYBOX_0_PASSWORD"),
+            "must have playbox-0 password var"
+        );
         assert!(env.contains("SSH_KEY_PATH"), "must have SSH key path var");
 
         // secrets.yaml.example must have keycloak + argocd + cloudflare
         assert!(secrets.contains("keycloak"), "must have keycloak section");
         assert!(secrets.contains("argocd"), "must have argocd section");
-        assert!(secrets.contains("cloudflare"), "must have cloudflare section");
+        assert!(
+            secrets.contains("cloudflare"),
+            "must have cloudflare section"
+        );
 
         // cloudflare-tunnel.json.example must have required fields
         assert!(cf_tunnel.contains("AccountTag"), "must have AccountTag");
@@ -4887,7 +4891,10 @@ config:
         assert!(cf_tunnel.contains("TunnelID"), "must have TunnelID");
 
         // credentials/README.md must exist and explain the directory
-        assert!(!creds_readme.is_empty(), "credentials/README.md must not be empty");
+        assert!(
+            !creds_readme.is_empty(),
+            "credentials/README.md must not be empty"
+        );
     }
 
     #[test]
