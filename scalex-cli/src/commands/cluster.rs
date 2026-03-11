@@ -942,4 +942,149 @@ kubespray_version: "v2.30.0"
         let scp_target = args.iter().find(|a| a.contains('@')).unwrap();
         assert!(scp_target.starts_with("root@"), "default must be root@");
     }
+
+    // ===== Sprint 33c: Cluster Pipeline Integration Tests =====
+
+    #[test]
+    fn test_sprint33c_example_configs_inventory_generation_e2e() {
+        // cluster init: sdi-specs + k8s-clusters → generate_inventory for each cluster
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s_config.config.clusters {
+            let inventory = crate::core::kubespray::generate_inventory(cluster, &sdi_spec)
+                .unwrap_or_else(|e| panic!(
+                    "generate_inventory must succeed for cluster '{}': {}",
+                    cluster.cluster_name, e
+                ));
+
+            // Must contain [all], [kube_control_plane], [etcd], [kube_node], [k8s_cluster:children]
+            assert!(inventory.contains("[all]"), "{}: missing [all]", cluster.cluster_name);
+            assert!(inventory.contains("[kube_control_plane]"), "{}: missing [kube_control_plane]", cluster.cluster_name);
+            assert!(inventory.contains("[etcd]"), "{}: missing [etcd]", cluster.cluster_name);
+            assert!(inventory.contains("[kube_node]"), "{}: missing [kube_node]", cluster.cluster_name);
+            assert!(inventory.contains("[k8s_cluster:children]"), "{}: missing [k8s_cluster:children]", cluster.cluster_name);
+        }
+    }
+
+    #[test]
+    fn test_sprint33c_two_cluster_inventories_no_ip_overlap() {
+        // tower and sandbox inventories must not share any IPs
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let mut all_ips: Vec<(String, String)> = Vec::new(); // (cluster, ip)
+
+        for cluster in &k8s_config.config.clusters {
+            let inventory = crate::core::kubespray::generate_inventory(cluster, &sdi_spec).unwrap();
+            // Extract IPs from ansible_host=<ip> entries
+            for line in inventory.lines() {
+                if let Some(ip_part) = line.split("ansible_host=").nth(1) {
+                    let ip = ip_part.split_whitespace().next().unwrap_or("");
+                    all_ips.push((cluster.cluster_name.clone(), ip.to_string()));
+                }
+            }
+        }
+
+        // Check for duplicates across clusters
+        for i in 0..all_ips.len() {
+            for j in (i + 1)..all_ips.len() {
+                if all_ips[i].0 != all_ips[j].0 && all_ips[i].1 == all_ips[j].1 {
+                    panic!(
+                        "IP overlap between clusters: {} ({}) and {} ({})",
+                        all_ips[i].0, all_ips[i].1, all_ips[j].0, all_ips[j].1
+                    );
+                }
+            }
+        }
+
+        assert!(all_ips.len() >= 2, "Must have IPs from at least 2 clusters");
+    }
+
+    #[test]
+    fn test_sprint33c_control_plane_ip_to_cilium_values_pipeline() {
+        // find_control_plane_ip → generate_cilium_values: data flows correctly
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s_config.config.clusters {
+            let cp_ip = find_control_plane_ip(cluster, Some(&sdi_spec));
+            assert!(
+                cp_ip.is_some(),
+                "Cluster '{}' must have a control-plane IP",
+                cluster.cluster_name
+            );
+
+            let ip = cp_ip.unwrap();
+            let values = crate::core::gitops::generate_cilium_values(&ip, 6443);
+
+            // values.yaml must contain the exact CP IP
+            assert!(
+                values.contains(&ip),
+                "Cilium values for '{}' must contain CP IP '{}' — got:\n{}",
+                cluster.cluster_name, ip, values
+            );
+            assert!(
+                values.contains("k8sServiceHost"),
+                "Cilium values must contain k8sServiceHost"
+            );
+            assert!(
+                values.contains("6443"),
+                "Cilium values must contain port 6443"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sprint33c_cluster_vars_generation_e2e() {
+        // generate_cluster_vars must produce valid YAML-like output for each cluster
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s_config.config.clusters {
+            let vars = crate::core::kubespray::generate_cluster_vars(
+                cluster,
+                &k8s_config.config.common,
+            );
+
+            // Must contain critical Kubespray variables
+            assert!(
+                vars.contains("kube_version"),
+                "{}: must contain kube_version",
+                cluster.cluster_name
+            );
+            assert!(
+                vars.contains("container_manager:") && vars.contains("containerd"),
+                "{}: must use containerd runtime",
+                cluster.cluster_name
+            );
+            assert!(
+                vars.contains(&cluster.network.pod_cidr),
+                "{}: must contain pod_cidr {}",
+                cluster.cluster_name,
+                cluster.network.pod_cidr
+            );
+            assert!(
+                vars.contains(&cluster.network.service_cidr),
+                "{}: must contain service_cidr {}",
+                cluster.cluster_name,
+                cluster.network.service_cidr
+            );
+            assert!(
+                vars.contains(&cluster.network.dns_domain),
+                "{}: must contain dns_domain {}",
+                cluster.cluster_name,
+                cluster.network.dns_domain
+            );
+        }
+    }
 }

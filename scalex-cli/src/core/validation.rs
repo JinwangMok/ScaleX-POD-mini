@@ -6942,4 +6942,200 @@ config:
             errors[0]
         );
     }
+
+    // ===== Sprint 33a: Config Example Round-trip Tests =====
+    // These tests verify that the shipped example config files parse correctly
+    // and that cross-references between them are consistent.
+
+    #[test]
+    fn test_sprint33a_sdi_specs_example_roundtrip() {
+        // sdi-specs.yaml.example must parse into SdiSpec with correct structure
+        let content = include_str!("../../../config/sdi-specs.yaml.example");
+        let spec: SdiSpec = serde_yaml::from_str(content)
+            .expect("sdi-specs.yaml.example must parse as valid SdiSpec");
+
+        // Must have exactly 2 pools: tower and sandbox
+        assert_eq!(
+            spec.spec.sdi_pools.len(),
+            2,
+            "Example must define 2 SDI pools (tower + sandbox)"
+        );
+        assert_eq!(spec.spec.sdi_pools[0].pool_name, "tower");
+        assert_eq!(spec.spec.sdi_pools[1].pool_name, "sandbox");
+
+        // Tower: 1 node (control-plane + worker)
+        assert_eq!(
+            spec.spec.sdi_pools[0].node_specs.len(),
+            1,
+            "Tower pool must have 1 node"
+        );
+        assert!(
+            spec.spec.sdi_pools[0].node_specs[0]
+                .roles
+                .contains(&"control-plane".to_string()),
+            "Tower node must have control-plane role"
+        );
+
+        // Sandbox: 4 nodes (1 CP + 3 workers)
+        assert_eq!(
+            spec.spec.sdi_pools[1].node_specs.len(),
+            4,
+            "Sandbox pool must have 4 nodes (1 CP + 3 workers)"
+        );
+
+        // Resource pool network config
+        assert!(!spec.resource_pool.name.is_empty());
+        assert!(!spec.resource_pool.network.management_cidr.is_empty());
+    }
+
+    #[test]
+    fn test_sprint33a_k8s_clusters_example_roundtrip() {
+        // k8s-clusters.yaml.example must parse into K8sClustersConfig with correct structure
+        let content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let config: K8sClustersConfig = serde_yaml::from_str(content)
+            .expect("k8s-clusters.yaml.example must parse as valid K8sClustersConfig");
+
+        // Must have exactly 2 clusters
+        assert_eq!(
+            config.config.clusters.len(),
+            2,
+            "Example must define 2 clusters (tower + sandbox)"
+        );
+
+        let tower = &config.config.clusters[0];
+        let sandbox = &config.config.clusters[1];
+
+        assert_eq!(tower.cluster_name, "tower");
+        assert_eq!(tower.cluster_role, "management");
+        assert_eq!(tower.cluster_mode, ClusterMode::Sdi);
+
+        assert_eq!(sandbox.cluster_name, "sandbox");
+        assert_eq!(sandbox.cluster_role, "workload");
+        assert_eq!(sandbox.cluster_mode, ClusterMode::Sdi);
+
+        // Common config must have essential fields
+        assert!(!config.config.common.kubernetes_version.is_empty());
+        assert_eq!(config.config.common.cni, "cilium");
+
+        // Network CIDRs must be non-empty and distinct
+        assert_ne!(
+            tower.network.pod_cidr, sandbox.network.pod_cidr,
+            "Clusters must have different Pod CIDRs"
+        );
+        assert_ne!(
+            tower.network.service_cidr, sandbox.network.service_cidr,
+            "Clusters must have different Service CIDRs"
+        );
+        assert_ne!(
+            tower.network.dns_domain, sandbox.network.dns_domain,
+            "Clusters must have different DNS domains"
+        );
+    }
+
+    #[test]
+    fn test_sprint33a_baremetal_init_example_roundtrip() {
+        // .baremetal-init.yaml.example must parse (with mock env vars)
+        let content = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let config: crate::core::config::BaremetalInitConfig =
+            serde_yaml::from_str(content)
+                .expect(".baremetal-init.yaml.example must parse as valid BaremetalInitConfig");
+
+        // Must have 4 target nodes (playbox-0 through playbox-3)
+        assert_eq!(
+            config.target_nodes.len(),
+            4,
+            "Example must define 4 target nodes"
+        );
+
+        // Verify all 3 SSH access patterns are represented
+        let _direct_count = config
+            .target_nodes
+            .iter()
+            .filter(|n| n.direct_reachable)
+            .count();
+        let external_ip_count = config
+            .target_nodes
+            .iter()
+            .filter(|n| !n.direct_reachable && n.reachable_node_ip.is_some())
+            .count();
+        let proxy_jump_count = config
+            .target_nodes
+            .iter()
+            .filter(|n| !n.direct_reachable && n.reachable_via.is_some())
+            .count();
+
+        // playbox-0 uses external IP (Tailscale), playbox-1/2/3 use ProxyJump
+        assert_eq!(
+            external_ip_count, 1,
+            "Must have 1 node with external IP access (Tailscale bastion)"
+        );
+        assert_eq!(
+            proxy_jump_count, 3,
+            "Must have 3 nodes with ProxyJump access"
+        );
+
+        // NetworkDefaults must be present
+        assert!(
+            config.network_defaults.is_some(),
+            "Example must include networkDefaults for SDI host-infra"
+        );
+
+        // All nodes must have admin user
+        for node in &config.target_nodes {
+            assert!(!node.admin_user.is_empty(), "Node {} must have adminUser", node.name);
+        }
+    }
+
+    #[test]
+    fn test_sprint33a_cross_config_sdi_pool_mapping() {
+        // The pool_name values in sdi-specs.yaml must match cluster_sdi_resource_pool in k8s-clusters.yaml
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        // Cross-validate using the actual validation function
+        let errors = validate_cluster_sdi_pool_mapping(&k8s_config, &sdi_spec);
+        assert!(
+            errors.is_empty(),
+            "Example configs must have consistent SDI pool mapping. Errors: {:?}",
+            errors
+        );
+
+        // Also verify pool names match explicitly
+        let sdi_pool_names: Vec<&str> = sdi_spec
+            .spec
+            .sdi_pools
+            .iter()
+            .map(|p| p.pool_name.as_str())
+            .collect();
+        for cluster in &k8s_config.config.clusters {
+            if cluster.cluster_mode == ClusterMode::Sdi {
+                assert!(
+                    sdi_pool_names.contains(&cluster.cluster_sdi_resource_pool.as_str()),
+                    "Cluster '{}' references pool '{}' which must exist in sdi-specs. Available: {:?}",
+                    cluster.cluster_name,
+                    cluster.cluster_sdi_resource_pool,
+                    sdi_pool_names
+                );
+            }
+        }
+
+        // Verify network overlap validation also passes
+        let net_errors = validate_cluster_network_overlap(&k8s_config);
+        assert!(
+            net_errors.is_empty(),
+            "Example configs must not have network overlaps. Errors: {:?}",
+            net_errors
+        );
+
+        // Verify SDI spec validation passes
+        let spec_errors = validate_sdi_spec(&sdi_spec);
+        assert!(
+            spec_errors.is_empty(),
+            "Example SDI spec must pass validation. Errors: {:?}",
+            spec_errors
+        );
+    }
 }

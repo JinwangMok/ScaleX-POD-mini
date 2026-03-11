@@ -1957,4 +1957,188 @@ mod tests {
         assert!(spec_needs_gpu_passthrough(&spec, "playbox-0"));
         assert!(!spec_needs_gpu_passthrough(&spec, "playbox-1"));
     }
+
+    // ===== Sprint 33b: SDI Pipeline Integration Tests =====
+    // These tests verify data flows correctly between SDI modules end-to-end.
+
+    #[test]
+    fn test_sprint33b_no_flag_pipeline_host_infra_e2e() {
+        // sdi init no-flag: baremetal config → build_host_infra_inputs → generate_tofu_host_infra
+        // Verify the data flows correctly through the entire pipeline.
+        use crate::core::config::{NodeConnectionConfig, SshAuthMode};
+
+        let nodes = vec![
+            NodeConnectionConfig {
+                name: "playbox-0".to_string(),
+                direct_reachable: false,
+                node_ip: "192.168.88.8".to_string(),
+                reachable_node_ip: Some("100.64.0.1".to_string()),
+                reachable_via: None,
+                admin_user: "jinwang".to_string(),
+                ssh_auth_mode: SshAuthMode::Password,
+                ssh_password: Some("secret".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+            NodeConnectionConfig {
+                name: "playbox-1".to_string(),
+                direct_reachable: false,
+                node_ip: "192.168.88.9".to_string(),
+                reachable_node_ip: None,
+                reachable_via: Some(vec!["playbox-0".to_string()]),
+                admin_user: "jinwang".to_string(),
+                ssh_auth_mode: SshAuthMode::Password,
+                ssh_password: Some("secret".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+        ];
+
+        // Step 1: build_host_infra_inputs (pure transform)
+        let inputs = build_host_infra_inputs(&nodes);
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].name, "playbox-0");
+        assert_eq!(inputs[0].ip, "192.168.88.8");
+        assert_eq!(inputs[0].ssh_user, "jinwang");
+        assert_eq!(inputs[1].name, "playbox-1");
+
+        // Step 2: resolve network config from baremetal defaults
+        let bm_network = NetworkDefaults {
+            bridge: "br0".to_string(),
+            cidr: "192.168.88.0/24".to_string(),
+            gateway: "192.168.88.1".to_string(),
+        };
+        let net = resolve_network_config(None, Some(&bm_network)).unwrap();
+
+        // Step 3: generate_tofu_host_infra with pipeline output
+        let hcl = crate::core::tofu::generate_tofu_host_infra(
+            &inputs, &net.bridge, &net.cidr, &net.gateway,
+        );
+
+        // Verify HCL contains both hosts with correct connection info
+        assert!(hcl.contains("playbox-0"), "HCL must contain playbox-0");
+        assert!(hcl.contains("playbox-1"), "HCL must contain playbox-1");
+        assert!(hcl.contains("jinwang@192.168.88.8"), "HCL must contain correct SSH URI for playbox-0");
+        assert!(hcl.contains("jinwang@192.168.88.9"), "HCL must contain correct SSH URI for playbox-1");
+        assert!(hcl.contains("scalex-pool"), "HCL must create storage pool on each host");
+    }
+
+    #[test]
+    fn test_sprint33b_spec_pipeline_tofu_to_pool_state() {
+        // sdi init <spec>: SdiSpec → generate_tofu_main() → build_pool_state()
+        // Verify pool state reflects spec accurately.
+        let content = include_str!("../../../config/sdi-specs.yaml.example");
+        let spec: SdiSpec = serde_yaml::from_str(content).unwrap();
+
+        // Step 1: Generate HCL from spec
+        let hcl = crate::core::tofu::generate_tofu_main(&spec, "jinwang");
+
+        // Verify HCL contains all nodes from both pools
+        assert!(hcl.contains("tower-cp-0"), "HCL must contain tower CP node");
+        assert!(hcl.contains("sandbox-cp-0"), "HCL must contain sandbox CP node");
+        assert!(hcl.contains("sandbox-w-0"), "HCL must contain sandbox worker 0");
+        assert!(hcl.contains("sandbox-w-1"), "HCL must contain sandbox worker 1");
+        assert!(hcl.contains("sandbox-w-2"), "HCL must contain sandbox worker 2");
+
+        // Step 2: Build pool state from same spec
+        let pool_states = build_pool_state(&spec);
+        assert_eq!(pool_states.len(), 2, "Must have 2 pools");
+
+        // Tower pool
+        assert_eq!(pool_states[0].pool_name, "tower");
+        assert_eq!(pool_states[0].nodes.len(), 1);
+        assert_eq!(pool_states[0].nodes[0].node_name, "tower-cp-0");
+        assert_eq!(pool_states[0].nodes[0].ip, "192.168.88.100");
+
+        // Sandbox pool
+        assert_eq!(pool_states[1].pool_name, "sandbox");
+        assert_eq!(pool_states[1].nodes.len(), 4);
+
+        // Verify all node IPs in pool_state appear in the HCL
+        for pool in &pool_states {
+            for node in &pool.nodes {
+                assert!(
+                    hcl.contains(&node.ip),
+                    "HCL must contain IP {} from pool state node {}",
+                    node.ip,
+                    node.node_name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_sprint33b_sdi_to_cluster_spec_cache_continuity() {
+        // Verify that sdi-spec-cache.yaml (written by sdi init) can be re-read by cluster init.
+        // This tests the serialization round-trip: SdiSpec → YAML → SdiSpec.
+        let content = include_str!("../../../config/sdi-specs.yaml.example");
+        let original: SdiSpec = serde_yaml::from_str(content).unwrap();
+
+        // Simulate what sdi init does: serialize to YAML (sdi-spec-cache.yaml)
+        let cached_yaml = serde_yaml::to_string(&original)
+            .expect("SdiSpec must be serializable to YAML");
+
+        // Simulate what cluster init does: deserialize from cache
+        let restored: SdiSpec = serde_yaml::from_str(&cached_yaml)
+            .expect("Cached SdiSpec YAML must be parseable back");
+
+        // Verify structural equivalence
+        assert_eq!(
+            original.spec.sdi_pools.len(),
+            restored.spec.sdi_pools.len(),
+            "Pool count must survive round-trip"
+        );
+        for (orig_pool, rest_pool) in original.spec.sdi_pools.iter().zip(restored.spec.sdi_pools.iter()) {
+            assert_eq!(orig_pool.pool_name, rest_pool.pool_name);
+            assert_eq!(orig_pool.node_specs.len(), rest_pool.node_specs.len());
+            for (orig_node, rest_node) in orig_pool.node_specs.iter().zip(rest_pool.node_specs.iter()) {
+                assert_eq!(orig_node.node_name, rest_node.node_name);
+                assert_eq!(orig_node.ip, rest_node.ip);
+                assert_eq!(orig_node.cpu, rest_node.cpu);
+                assert_eq!(orig_node.mem_gb, rest_node.mem_gb);
+                assert_eq!(orig_node.disk_gb, rest_node.disk_gb);
+                assert_eq!(orig_node.roles, rest_node.roles);
+            }
+        }
+        assert_eq!(
+            original.resource_pool.network.management_cidr,
+            restored.resource_pool.network.management_cidr,
+            "Network config must survive round-trip"
+        );
+    }
+
+    #[test]
+    fn test_sprint33b_pool_state_to_get_sdi_pools_format() {
+        // Verify build_pool_state output can be consumed by get sdi-pools display.
+        let content = include_str!("../../../config/sdi-specs.yaml.example");
+        let spec: SdiSpec = serde_yaml::from_str(content).unwrap();
+
+        let pool_states = build_pool_state(&spec);
+
+        // Verify each pool state has required fields for table display
+        for pool in &pool_states {
+            assert!(!pool.pool_name.is_empty(), "pool_name required for display");
+            assert!(!pool.purpose.is_empty(), "purpose required for display");
+            for node in &pool.nodes {
+                assert!(!node.node_name.is_empty(), "node_name required for display");
+                assert!(!node.ip.is_empty(), "ip required for display");
+                assert!(!node.host.is_empty(), "host must be resolved (not empty)");
+                assert!(node.cpu > 0, "cpu must be > 0");
+                assert!(node.mem_gb > 0, "mem_gb must be > 0");
+                assert!(node.disk_gb > 0, "disk_gb must be > 0");
+            }
+        }
+
+        // Verify GPU passthrough is correctly tracked
+        let sandbox = &pool_states[1];
+        let gpu_node = sandbox.nodes.iter().find(|n| n.node_name == "sandbox-w-2");
+        assert!(
+            gpu_node.is_some(),
+            "sandbox-w-2 (GPU node) must exist in pool state"
+        );
+        assert!(
+            gpu_node.unwrap().gpu_passthrough,
+            "sandbox-w-2 must have gpu_passthrough=true"
+        );
+    }
 }
