@@ -339,6 +339,22 @@ tests/                ✅ run-tests.sh
 ### Sprint 32: 순수 함수 리팩토링 (459 → 482 tests)
 - GPU passthrough 순수 함수 분리, facts 파서 엣지 케이스, secrets 엣지 케이스
 
+### Sprint 33: 모듈 간 Integration 테스트 + DASHBOARD 비판적 재작성 (482 → 497 tests)
+- Config example round-trip (sdi-specs, k8s-clusters, baremetal-init, cross-config mapping)
+- SDI pipeline integration (host-infra e2e, tofu→pool-state, cache continuity, display format)
+- Cluster pipeline integration (inventory gen, IP overlap, cilium values, cluster vars)
+- `scalex get config-files` 완전성 (9 필수 경로, missing/invalid YAML)
+- DASHBOARD.md 비판적 분석 및 재작성
+
+### Sprint 34: SOCKS5/GitOps/문서 검증 (497 → 505 tests)
+- SOCKS5 proxy manifest 구조 (Deployment+Service, sync wave 3, ClusterIP 1080)
+- External access 문서 정합성 (4가지 접근 방법, Pre-OIDC 가이드)
+- README Installation Guide 완전성 (파일 참조, CLI 서브커맨드, 디렉토리 구조)
+
+### Sprint 35: sdi sync 복합 시나리오 + 멱등성 (505 → 512 tests)
+- 복합 상태 전이 (add+remove+conflict, severity escalation, --force, pool 재계산)
+- 멱등성 파이프라인 (generate_tofu_main, generate_inventory, generate_cluster_vars)
+
 ---
 
 ## Architecture
