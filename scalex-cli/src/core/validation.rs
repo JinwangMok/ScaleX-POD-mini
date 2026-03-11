@@ -3056,19 +3056,17 @@ spec:
 
     // --- Sprint 9a: GitOps YAML validation tests ---
 
-    /// Sandbox generator must have a placeholder URL that gets replaced after cluster init.
-    /// This test ensures the placeholder is detectable so CLI can find & replace it.
+    /// Sandbox generator must use ArgoCD name-based cluster addressing.
     #[test]
-    fn test_sandbox_generator_has_detectable_placeholder_url() {
+    fn test_sandbox_generator_uses_name_based_destination() {
         let content = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
-        // The placeholder URL must be present (not yet replaced with real cluster URL)
-        // OR if replaced, it must be a valid https:// URL
-        let has_placeholder = content.contains("https://sandbox-api:6443");
-        let has_real_url = content.contains("https://") && !content.contains("sandbox-api:6443");
         assert!(
-            has_placeholder || has_real_url,
-            "sandbox-generator.yaml must have either placeholder 'https://sandbox-api:6443' \
-             or a real cluster URL. Got neither."
+            content.contains("name: sandbox"),
+            "sandbox-generator.yaml must use 'name: sandbox' for ArgoCD cluster addressing"
+        );
+        assert!(
+            !content.contains("sandbox-api:6443"),
+            "sandbox-generator.yaml must not contain legacy placeholder URL"
         );
 
         // Verify the YAML structure is valid

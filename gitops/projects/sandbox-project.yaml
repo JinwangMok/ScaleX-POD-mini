@@ -11,8 +11,7 @@ spec:
     - "https://charts.jetstack.io"
     - "https://kyverno.github.io/kyverno/"
   destinations:
-    # Update with actual Sandbox cluster server after registration
-    - server: "https://sandbox-api:6443"
+    - name: sandbox
       namespace: "*"
   clusterResourceWhitelist:
     - group: ""

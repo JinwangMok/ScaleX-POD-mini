@@ -218,26 +218,6 @@ fn run_init(
         }
     }
 
-    // Step 5: Update GitOps sandbox server URLs from collected kubeconfigs
-    for cluster in &k8s_config.config.clusters {
-        if cluster.cluster_role != "management" {
-            let kc_path = output_dir
-                .join(&cluster.cluster_name)
-                .join("kubeconfig.yaml");
-            if kc_path.exists() {
-                if let Ok(kc_content) = std::fs::read_to_string(&kc_path) {
-                    if let Some(server_url) = gitops::extract_server_from_kubeconfig(&kc_content) {
-                        println!(
-                            "[cluster] Updating gitops sandbox URLs with: {}",
-                            server_url
-                        );
-                        update_gitops_sandbox_urls(&server_url, dry_run)?;
-                    }
-                }
-            }
-        }
-    }
-
     // Summary
     println!("\n[cluster] Kubeconfig files:");
     for cluster in &k8s_config.config.clusters {
@@ -340,26 +320,6 @@ fn find_kubespray_dir() -> anyhow::Result<String> {
         "kubespray directory not found. Expected cluster.yml in one of: {:?}",
         candidates
     );
-}
-
-fn update_gitops_sandbox_urls(server_url: &str, dry_run: bool) -> anyhow::Result<()> {
-    let gitops_dir = std::path::Path::new("gitops");
-    for rel_path in gitops::gitops_files_needing_replacement() {
-        let full_path = gitops_dir.join(rel_path);
-        if full_path.exists() {
-            let content = std::fs::read_to_string(&full_path)?;
-            if gitops::has_sandbox_placeholder(&content) {
-                let updated = gitops::replace_sandbox_server_url(&content, server_url);
-                if dry_run {
-                    println!("[dry-run] Would update {} with server URL", rel_path);
-                } else {
-                    std::fs::write(&full_path, &updated)?;
-                    println!("[cluster] Updated {} with sandbox server URL", rel_path);
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Update gitops Cilium values.yaml for a cluster with the correct control-plane IP.

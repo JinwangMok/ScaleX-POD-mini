@@ -28,7 +28,7 @@ curl -fsSL https://get.opentofu.org/install-opentofu.sh | sudo bash -s -- --inst
 1. Go to Cloudflare Zero Trust dashboard
 2. Create a tunnel named `playbox-admin-static`
 3. Download credentials JSON file
-4. Save to `credentials/cloudflare-tunnel.json`
+4. Save to `credentials/cloudflare-tunnel.json` (or copy from `credentials/cloudflare-tunnel.json.example` and fill in values)
 5. See `docs/ops-guide.md` Section 1 for detailed setup
 
 ## Configuration

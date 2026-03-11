@@ -1,5 +1,4 @@
 # Common apps deployed to Sandbox cluster (remote)
-# NOTE: Update destinationServer after registering Sandbox in ArgoCD
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -34,8 +33,7 @@ spec:
         targetRevision: main
         path: "gitops/common/{{.appName}}"
       destination:
-        # Replace with actual Sandbox cluster server URL after ArgoCD registration
-        server: "https://sandbox-api:6443"
+        name: sandbox
         namespace: "{{.namespace}}"
       syncPolicy:
         automated:

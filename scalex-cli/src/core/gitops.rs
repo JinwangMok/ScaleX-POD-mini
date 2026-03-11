@@ -1,42 +1,9 @@
 //! Pure functions for GitOps YAML manipulation.
 //! No I/O — returns transformed strings.
 
-const SANDBOX_SERVER_PLACEHOLDER: &str = "https://sandbox-api:6443";
-
-/// Replace sandbox server URL placeholder in a YAML string.
-/// Pure function: takes content string, returns transformed string.
-pub fn replace_sandbox_server_url(content: &str, actual_url: &str) -> String {
-    content.replace(SANDBOX_SERVER_PLACEHOLDER, actual_url)
-}
-
-/// Check if a YAML string still contains the sandbox placeholder.
-/// Pure function.
-pub fn has_sandbox_placeholder(content: &str) -> bool {
-    content.contains(SANDBOX_SERVER_PLACEHOLDER)
-}
-
-/// Given a list of (path, content) tuples, return only those that contain
-/// the sandbox placeholder, with the placeholder replaced.
-/// Pure function.
-#[cfg(test)]
-pub fn replace_all_sandbox_urls(
-    files: &[(String, String)],
-    actual_url: &str,
-) -> Vec<(String, String)> {
-    files
-        .iter()
-        .filter(|(_, content)| has_sandbox_placeholder(content))
-        .map(|(path, content)| {
-            (
-                path.clone(),
-                replace_sandbox_server_url(content, actual_url),
-            )
-        })
-        .collect()
-}
-
 /// Extract the server URL from a kubeconfig YAML string.
 /// Pure function: parses the first cluster's server field.
+#[cfg(test)]
 pub fn extract_server_from_kubeconfig(kubeconfig_content: &str) -> Option<String> {
     let value: serde_yaml::Value = serde_yaml::from_str(kubeconfig_content).ok()?;
     value
@@ -47,16 +14,6 @@ pub fn extract_server_from_kubeconfig(kubeconfig_content: &str) -> Option<String
         .get("server")?
         .as_str()
         .map(|s| s.to_string())
-}
-
-/// Collect gitops YAML file paths that need sandbox URL replacement.
-/// Returns paths relative to the gitops directory.
-pub fn gitops_files_needing_replacement() -> Vec<&'static str> {
-    vec![
-        "generators/sandbox/common-generator.yaml",
-        "generators/sandbox/sandbox-generator.yaml",
-        "projects/sandbox-project.yaml",
-    ]
 }
 
 /// Generate a cluster-config ConfigMap manifest for a specific cluster.
@@ -442,51 +399,66 @@ mod tests {
     }
 
     #[test]
-    fn test_sandbox_generators_contain_placeholder_url() {
+    fn test_sandbox_generators_use_name_not_server_url() {
         let common = include_str!("../../../gitops/generators/sandbox/common-generator.yaml");
         let specific = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
-        assert!(
-            has_sandbox_placeholder(common),
-            "sandbox common-generator must contain placeholder URL"
-        );
-        assert!(
-            has_sandbox_placeholder(specific),
-            "sandbox-generator must contain placeholder URL"
-        );
+        for (name, content) in [
+            ("common-generator", common),
+            ("sandbox-generator", specific),
+        ] {
+            assert!(
+                content.contains("name: sandbox"),
+                "{} must use 'name: sandbox' destination",
+                name
+            );
+            assert!(
+                !content.contains("sandbox-api:6443"),
+                "{} must not contain legacy placeholder URL",
+                name
+            );
+        }
     }
 
     #[test]
-    fn test_tower_generators_do_not_contain_placeholder_url() {
+    fn test_tower_generators_use_kubernetes_default_svc() {
         let common = include_str!("../../../gitops/generators/tower/common-generator.yaml");
         let specific = include_str!("../../../gitops/generators/tower/tower-generator.yaml");
-        assert!(
-            !has_sandbox_placeholder(common),
-            "tower common-generator must NOT contain sandbox placeholder"
-        );
-        assert!(
-            !has_sandbox_placeholder(specific),
-            "tower-generator must NOT contain sandbox placeholder"
-        );
+        for (name, content) in [("common-generator", common), ("tower-generator", specific)] {
+            assert!(
+                content.contains("server: https://kubernetes.default.svc"),
+                "{} must use in-cluster server URL",
+                name
+            );
+        }
     }
 
     #[test]
-    fn test_replace_sandbox_url_on_actual_generator_files() {
+    fn test_sandbox_generators_use_name_based_destination() {
         let common = include_str!("../../../gitops/generators/sandbox/common-generator.yaml");
         let specific = include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml");
-        let actual_url = "https://192.168.88.110:6443";
+        let project = include_str!("../../../gitops/projects/sandbox-project.yaml");
 
-        let replaced_common = replace_sandbox_server_url(common, actual_url);
-        let replaced_specific = replace_sandbox_server_url(specific, actual_url);
+        // All sandbox files must use name-based cluster addressing
+        for (name, content) in [
+            ("common-generator", common),
+            ("sandbox-generator", specific),
+            ("sandbox-project", project),
+        ] {
+            assert!(
+                content.contains("name: sandbox"),
+                "{} must use 'name: sandbox' for ArgoCD cluster addressing",
+                name
+            );
+            assert!(
+                !content.contains("sandbox-api:6443"),
+                "{} must not contain placeholder URL",
+                name
+            );
+        }
 
-        // Placeholder gone
-        assert!(!has_sandbox_placeholder(&replaced_common));
-        assert!(!has_sandbox_placeholder(&replaced_specific));
-        // Actual URL present
-        assert!(replaced_common.contains(actual_url));
-        assert!(replaced_specific.contains(actual_url));
-        // Structure preserved
-        let v: serde_yaml::Value = serde_yaml::from_str(&replaced_common)
-            .expect("replaced common-generator must still be valid YAML");
+        // Verify YAML structure is valid
+        let v: serde_yaml::Value =
+            serde_yaml::from_str(common).expect("common-generator must be valid YAML");
         assert_eq!(v["kind"].as_str().unwrap(), "ApplicationSet");
     }
 
@@ -564,53 +536,6 @@ mod tests {
     // ── Original unit tests ──
 
     #[test]
-    fn test_replace_sandbox_server_url() {
-        let yaml = r#"
-      destination:
-        server: "https://sandbox-api:6443"
-        namespace: kube-system
-"#;
-        let result = replace_sandbox_server_url(yaml, "https://192.168.88.110:6443");
-        assert!(result.contains("https://192.168.88.110:6443"));
-        assert!(!result.contains("sandbox-api"));
-    }
-
-    #[test]
-    fn test_has_sandbox_placeholder() {
-        assert!(has_sandbox_placeholder(
-            "server: \"https://sandbox-api:6443\""
-        ));
-        assert!(!has_sandbox_placeholder(
-            "server: \"https://192.168.88.110:6443\""
-        ));
-    }
-
-    #[test]
-    fn test_replace_all_sandbox_urls() {
-        let files = vec![
-            (
-                "generators/sandbox/common-generator.yaml".to_string(),
-                "server: \"https://sandbox-api:6443\"".to_string(),
-            ),
-            (
-                "generators/tower/tower-generator.yaml".to_string(),
-                "server: \"https://kubernetes.default.svc\"".to_string(),
-            ),
-            (
-                "projects/sandbox-project.yaml".to_string(),
-                "server: \"https://sandbox-api:6443\"".to_string(),
-            ),
-        ];
-        let result = replace_all_sandbox_urls(&files, "https://10.0.0.5:6443");
-        // Only 2 files should be returned (those with placeholder)
-        assert_eq!(result.len(), 2);
-        assert!(result[0].1.contains("https://10.0.0.5:6443"));
-        assert!(result[1].1.contains("https://10.0.0.5:6443"));
-        // Tower generator should NOT be in result
-        assert!(result.iter().all(|(p, _)| !p.contains("tower-generator")));
-    }
-
-    #[test]
     fn test_extract_server_from_kubeconfig() {
         let kubeconfig = r#"
 apiVersion: v1
@@ -634,102 +559,6 @@ contexts:
     fn test_extract_server_from_empty_kubeconfig() {
         assert_eq!(extract_server_from_kubeconfig("{}"), None);
         assert_eq!(extract_server_from_kubeconfig("invalid"), None);
-    }
-
-    #[test]
-    fn test_replace_preserves_non_placeholder_content() {
-        let yaml = r#"apiVersion: argoproj.io/v1alpha1
-kind: ApplicationSet
-metadata:
-  name: sandbox-common
-spec:
-  template:
-    spec:
-      destination:
-        server: "https://sandbox-api:6443"
-        namespace: "{{.namespace}}"
-      syncPolicy:
-        automated:
-          prune: true
-"#;
-        let result = replace_sandbox_server_url(yaml, "https://192.168.88.110:6443");
-        assert!(result.contains("kind: ApplicationSet"));
-        assert!(result.contains("sandbox-common"));
-        assert!(result.contains("prune: true"));
-        assert!(result.contains("https://192.168.88.110:6443"));
-    }
-
-    // ── Sprint 3 (new session): Placeholder replacement completeness ──
-
-    /// Verify gitops_files_needing_replacement() lists exactly the files
-    /// that actually contain the sandbox-api placeholder on disk.
-    #[test]
-    fn test_replacement_list_matches_actual_placeholder_files() {
-        let all_generator_files = [
-            (
-                "generators/tower/common-generator.yaml",
-                include_str!("../../../gitops/generators/tower/common-generator.yaml"),
-            ),
-            (
-                "generators/tower/tower-generator.yaml",
-                include_str!("../../../gitops/generators/tower/tower-generator.yaml"),
-            ),
-            (
-                "generators/sandbox/common-generator.yaml",
-                include_str!("../../../gitops/generators/sandbox/common-generator.yaml"),
-            ),
-            (
-                "generators/sandbox/sandbox-generator.yaml",
-                include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml"),
-            ),
-            (
-                "projects/sandbox-project.yaml",
-                include_str!("../../../gitops/projects/sandbox-project.yaml"),
-            ),
-            (
-                "projects/tower-project.yaml",
-                include_str!("../../../gitops/projects/tower-project.yaml"),
-            ),
-        ];
-
-        let files_with_placeholder: Vec<&str> = all_generator_files
-            .iter()
-            .filter(|(_, content)| has_sandbox_placeholder(content))
-            .map(|(path, _)| *path)
-            .collect();
-
-        let expected = gitops_files_needing_replacement();
-        assert_eq!(
-            files_with_placeholder, expected,
-            "gitops_files_needing_replacement() must match actual files containing placeholder"
-        );
-    }
-
-    /// Verify each placeholder file remains valid YAML after URL replacement.
-    #[test]
-    fn test_replacement_produces_valid_yaml_for_all_files() {
-        let files = [
-            include_str!("../../../gitops/generators/sandbox/common-generator.yaml"),
-            include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml"),
-            include_str!("../../../gitops/projects/sandbox-project.yaml"),
-        ];
-        let replacement_url = "https://10.0.0.100:6443";
-
-        for (i, content) in files.iter().enumerate() {
-            let replaced = replace_sandbox_server_url(content, replacement_url);
-            let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&replaced);
-            assert!(
-                parsed.is_ok(),
-                "File index {} produced invalid YAML after replacement: {:?}",
-                i,
-                parsed.err()
-            );
-            assert!(
-                !has_sandbox_placeholder(&replaced),
-                "File index {} still has placeholder after replacement",
-                i
-            );
-        }
     }
 
     /// Verify every app referenced in generators has a corresponding directory.
@@ -907,7 +736,7 @@ spec:
     /// Verify no placeholder URL remains in tower generator files (they should
     /// point to the local cluster, not sandbox).
     #[test]
-    fn test_tower_files_never_contain_sandbox_placeholder() {
+    fn test_tower_files_never_reference_sandbox_cluster() {
         let tower_files = [
             include_str!("../../../gitops/generators/tower/common-generator.yaml"),
             include_str!("../../../gitops/generators/tower/tower-generator.yaml"),
@@ -915,8 +744,8 @@ spec:
         ];
         for content in &tower_files {
             assert!(
-                !has_sandbox_placeholder(content),
-                "Tower file unexpectedly contains sandbox placeholder"
+                !content.contains("sandbox-api:6443"),
+                "Tower file must not reference sandbox cluster URL"
             );
         }
     }

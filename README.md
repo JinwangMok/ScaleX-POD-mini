@@ -113,11 +113,20 @@ curl -fsSL https://get.opentofu.org/install-opentofu.sh | sudo bash -s -- --inst
 curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
+# Helm (ArgoCD 부트스트랩에 필요)
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# ArgoCD CLI (클러스터 등록에 필요)
+curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+sudo install -m 555 argocd /usr/local/bin/argocd && rm argocd
+
 # 설치 확인
 cargo --version          # Rust 도구 체인
 ansible --version        # Ansible 자동화
 tofu --version           # OpenTofu (Terraform 호환)
 kubectl version --client # Kubernetes CLI
+helm version             # Helm 패키지 매니저
+argocd version --client  # ArgoCD CLI
 ```
 
 ### Step 0.5: 레포지토리 클론 및 서브모듈 초기화
@@ -164,7 +173,7 @@ ssh jinwang@<TAILSCALE_BASTION_IP> 'virsh version 2>/dev/null && echo "libvirt O
 
 ### Step 2: 사용자 설정 파일 준비
 
-4개의 설정 파일을 example에서 복사한 뒤 실제 값을 입력합니다.
+6개의 설정 파일을 example에서 복사한 뒤 실제 값을 입력합니다.
 
 **2-1. 베어메탈 노드 접근 정보** (`credentials/.baremetal-init.yaml`)
 
@@ -203,7 +212,30 @@ PLAYBOX_3_PASSWORD="실제비밀번호"
 SSH_KEY_PATH="~/.ssh/id_ed25519"
 ```
 
-**2-3. SDI 가상화 스펙** (`config/sdi-specs.yaml`)
+**2-3. 클러스터 시크릿** (`credentials/secrets.yaml`)
+
+```bash
+cp credentials/secrets.yaml.example credentials/secrets.yaml
+```
+
+편집 포인트:
+- `keycloak.admin_password`: Keycloak 관리자 비밀번호
+- `keycloak.db_password`: Keycloak DB 비밀번호
+- `argocd.repo_pat`: GitHub Personal Access Token (private repo일 경우만)
+
+**2-4. Cloudflare Tunnel 인증** (`credentials/cloudflare-tunnel.json`)
+
+[Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/)에서 터널을 생성하고 credentials JSON을 다운로드합니다.
+
+```bash
+# Cloudflare에서 다운로드한 파일을 저장
+# 또는 example에서 복사 후 실제 값 입력:
+cp credentials/cloudflare-tunnel.json.example credentials/cloudflare-tunnel.json
+```
+
+> Cloudflare Tunnel을 사용하지 않는다면 이 파일은 스킵 가능합니다. 상세: [docs/ops-guide.md](docs/ops-guide.md)
+
+**2-5. SDI 가상화 스펙** (`config/sdi-specs.yaml`)
 
 ```bash
 cp config/sdi-specs.yaml.example config/sdi-specs.yaml
@@ -214,7 +246,7 @@ cp config/sdi-specs.yaml.example config/sdi-specs.yaml
 - `spec.sdi_pools[].node_specs[].ip`: VM에 할당할 IP (LAN 대역 내, 물리 IP와 겹치지 않게)
 - `spec.sdi_pools[].node_specs[].host`: VM이 실행될 물리 노드 이름
 
-**2-4. K8s 클러스터 설정** (`config/k8s-clusters.yaml`)
+**2-6. K8s 클러스터 설정** (`config/k8s-clusters.yaml`)
 
 ```bash
 cp config/k8s-clusters.yaml.example config/k8s-clusters.yaml
@@ -229,7 +261,7 @@ cp config/k8s-clusters.yaml.example config/k8s-clusters.yaml
 **검증**
 
 ```bash
-# 4개 파일의 존재 여부 + YAML 유효성 검증
+# 6개 파일의 존재 여부 + YAML 유효성 검증
 scalex get config-files
 # 모든 항목이 OK 또는 Present이면 통과
 ```

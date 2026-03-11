@@ -22,7 +22,7 @@ pub struct BootstrapArgs {
     clusters_dir: PathBuf,
 
     /// ArgoCD Helm chart version
-    #[arg(long, default_value = "7.8.13")]
+    #[arg(long, default_value = "8.1.1")]
     argocd_version: String,
 
     /// Dry run — show what would be done
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_helm_args_contain_namespace_argocd() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "7.8.13");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
         let joined = args.join(" ");
         assert!(
             joined.contains("--namespace argocd"),
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn test_helm_args_contain_create_namespace() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "7.8.13");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
         assert!(
             args.contains(&"--create-namespace".to_string()),
             "Must create namespace if not exists"
@@ -262,21 +262,21 @@ mod tests {
 
     #[test]
     fn test_helm_args_use_provided_kubeconfig() {
-        let args = generate_argocd_helm_install_args("/my/kubeconfig.yaml", "7.8.13");
+        let args = generate_argocd_helm_install_args("/my/kubeconfig.yaml", "8.1.1");
         let kc_idx = args.iter().position(|a| a == "--kubeconfig").unwrap();
         assert_eq!(args[kc_idx + 1], "/my/kubeconfig.yaml");
     }
 
     #[test]
     fn test_helm_args_use_correct_chart_version() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "7.8.13");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
         let ver_idx = args.iter().position(|a| a == "--version").unwrap();
-        assert_eq!(args[ver_idx + 1], "7.8.13");
+        assert_eq!(args[ver_idx + 1], "8.1.1");
     }
 
     #[test]
     fn test_helm_args_use_upgrade_install_for_idempotency() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "7.8.13");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
         assert_eq!(
             args[0], "upgrade",
             "Must use 'upgrade --install' for idempotency"
@@ -286,14 +286,14 @@ mod tests {
 
     #[test]
     fn test_helm_args_use_official_argo_helm_repo() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "7.8.13");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
         let repo_idx = args.iter().position(|a| a == "--repo").unwrap();
         assert_eq!(args[repo_idx + 1], "https://argoproj.github.io/argo-helm");
     }
 
     #[test]
     fn test_helm_args_wait_for_readiness() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "7.8.13");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
         assert!(
             args.contains(&"--wait".to_string()),
             "Must wait for ArgoCD to be ready before proceeding"
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn test_bootstrap_pipeline_order_helm_then_register_then_apply() {
         // Verify the 3-phase pipeline produces correct commands in order
-        let helm = generate_argocd_helm_install_args("/tower/kube.yaml", "7.8.13");
+        let helm = generate_argocd_helm_install_args("/tower/kube.yaml", "8.1.1");
         let register =
             generate_argocd_cluster_add_args("sandbox", "/tower/kube.yaml", "/sandbox/kube.yaml");
         let apply = generate_kubectl_apply_args("/tower/kube.yaml", "gitops/bootstrap/spread.yaml");
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn test_bootstrap_all_commands_target_tower_kubeconfig() {
         let tower_kc = "/clusters/tower/kubeconfig.yaml";
-        let helm = generate_argocd_helm_install_args(tower_kc, "7.8.13");
+        let helm = generate_argocd_helm_install_args(tower_kc, "8.1.1");
         let register = generate_argocd_cluster_add_args("sandbox", tower_kc, "/sandbox/kube.yaml");
         let apply = generate_kubectl_apply_args(tower_kc, "spread.yaml");
 
