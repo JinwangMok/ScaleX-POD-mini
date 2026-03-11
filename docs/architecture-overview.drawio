@@ -129,7 +129,7 @@
         </mxCell>
 
         <!-- Tailscale Bastion -->
-        <mxCell id="tailscale" value="Tailscale Bastion&#xa;(100.64.0.1)&#xa;openclaw-vm → playbox-0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=2;" vertex="1" parent="lan-group">
+        <mxCell id="tailscale" value="Tailscale Bastion&#xa;(<TAILSCALE_BASTION_IP>)&#xa;openclaw-vm → playbox-0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=2;" vertex="1" parent="lan-group">
           <mxGeometry x="20" y="490" width="200" height="60" as="geometry" />
         </mxCell>
 

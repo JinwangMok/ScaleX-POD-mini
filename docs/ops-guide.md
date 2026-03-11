@@ -230,7 +230,7 @@ Pre-OIDC 상태에서 외부 kubectl 접근은 **Tailscale 경유만 가능**합
 ```bash
 # Tailscale 경유 Tower kubectl (client certificate 인증 사용 — 정상 동작)
 cp _generated/clusters/tower/kubeconfig.yaml ~/.kube/tower-tailscale.yaml
-sed -i 's|server: https://.*:6443|server: https://100.64.0.1:6443|' ~/.kube/tower-tailscale.yaml
+sed -i 's|server: https://.*:6443|server: https://<TAILSCALE_BASTION_IP>:6443|' ~/.kube/tower-tailscale.yaml
 export KUBECONFIG=~/.kube/tower-tailscale.yaml
 kubectl get nodes
 ```
@@ -268,23 +268,23 @@ sudo tailscale up
 
 # 3. 할당된 Tailscale IP 확인
 tailscale ip -4
-# 예시 출력: 100.64.0.1
+# 예시 출력: <TAILSCALE_BASTION_IP>
 ```
 
 ##### Tailscale을 통한 SSH 접근
 ```bash
 # bastion 노드에 직접 SSH (Tailscale IP 사용)
-ssh jinwang@100.64.0.1
+ssh jinwang@<TAILSCALE_BASTION_IP>
 
 # bastion 경유로 다른 노드 접근
-ssh -J jinwang@100.64.0.1 jinwang@192.168.88.9
+ssh -J jinwang@<TAILSCALE_BASTION_IP> jinwang@192.168.88.9
 ```
 
 ##### Tailscale을 통한 kubectl 접근
 ```bash
 # kubeconfig의 server를 Tailscale IP로 변경
 cp _generated/clusters/tower/kubeconfig.yaml ~/.kube/tower-tailscale.yaml
-sed -i 's|server: https://192.168.88.100:6443|server: https://100.64.0.1:6443|' ~/.kube/tower-tailscale.yaml
+sed -i 's|server: https://192.168.88.100:6443|server: https://<TAILSCALE_BASTION_IP>:6443|' ~/.kube/tower-tailscale.yaml
 export KUBECONFIG=~/.kube/tower-tailscale.yaml
 kubectl get nodes
 ```
@@ -385,7 +385,7 @@ kubectl get pods -A
 
 ```bash
 # bastion(playbox-0)에 Tailscale로 SSH 접속 후 Sandbox kubectl 실행
-ssh jinwang@100.64.0.1  # Tailscale IP
+ssh jinwang@<TAILSCALE_BASTION_IP>  # Tailscale IP
 export KUBECONFIG=~/ScaleX-POD-mini/_generated/clusters/sandbox/kubeconfig.yaml
 kubectl get nodes
 ```
@@ -394,7 +394,7 @@ kubectl get nodes
 
 ```bash
 # Tower에서 Sandbox API로 SSH 터널
-ssh -L 6444:<sandbox-api-ip>:6443 jinwang@100.64.0.1
+ssh -L 6444:<sandbox-api-ip>:6443 jinwang@<TAILSCALE_BASTION_IP>
 # 별도 터미널에서:
 kubectl --server=https://localhost:6444 --insecure-skip-tls-verify get nodes
 ```

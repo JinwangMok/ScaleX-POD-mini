@@ -14,3 +14,4 @@ scalex-cli/target/
 DIRECTION.md
 config/sdi-specs.yaml
 config/k8s-clusters.yaml
+.env
