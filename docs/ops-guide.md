@@ -308,7 +308,71 @@ kubectl get nodes
 
 ---
 
-## 5. Kyverno Placement Decision
+## 5. Sandbox Access Architecture (C-5)
+
+### 설계 결정: Sandbox API는 CF Tunnel에 노출하지 않음
+
+Sandbox 클러스터는 Tower ArgoCD를 통해 GitOps로 관리됩니다.
+일반 운영 시 Sandbox에 직접 kubectl 접근할 필요가 없습니다:
+
+- **애플리케이션 배포**: Tower ArgoCD가 Sandbox에 자동 배포 (ApplicationSet)
+- **상태 모니터링**: ArgoCD UI (`cd.jinwang.dev`)에서 Sandbox 앱 상태 확인
+- **로그/이벤트**: 향후 중앙 모니터링 스택(Grafana/Loki) 배포 예정
+
+### Sandbox API가 CF Tunnel에 없는 이유
+
+1. **보안**: 워크로드 클러스터 API를 외부에 노출하면 공격 표면이 증가
+2. **아키텍처**: Tower가 유일한 관리 진입점 — 역할 분리 원칙
+3. **간소화**: CF Tunnel 라우팅은 관리 도구(ArgoCD, Keycloak)만 대상
+
+### Sandbox kubectl 접근 방법 (디버깅/긴급 시)
+
+일반 운영에서는 불필요하지만, 디버깅이나 긴급 상황에서 Sandbox에 직접 접근할 수 있습니다.
+
+#### 방법 1: LAN 내부 직접 접근
+
+```bash
+# Sandbox kubeconfig 사용 (LAN 내부)
+export KUBECONFIG=_generated/clusters/sandbox/kubeconfig.yaml
+kubectl get nodes
+kubectl get pods -A
+```
+
+#### 방법 2: Tailscale 경유 (외부)
+
+```bash
+# bastion(playbox-0)에 Tailscale로 SSH 접속 후 Sandbox kubectl 실행
+ssh jinwang@100.64.0.1  # Tailscale IP
+export KUBECONFIG=~/ScaleX-POD-mini/_generated/clusters/sandbox/kubeconfig.yaml
+kubectl get nodes
+```
+
+#### 방법 3: Tower에서 bastion 경유 포트포워딩
+
+```bash
+# Tower에서 Sandbox API로 SSH 터널
+ssh -L 6444:<sandbox-api-ip>:6443 jinwang@100.64.0.1
+# 별도 터미널에서:
+kubectl --server=https://localhost:6444 --insecure-skip-tls-verify get nodes
+```
+
+### 향후 확장: Sandbox 외부 접근 (선택적)
+
+필요 시 CF Tunnel에 Sandbox API를 추가할 수 있습니다:
+
+```yaml
+# gitops/tower/cloudflared-tunnel/ 설정에 추가
+- hostname: "api.sandbox.k8s.jinwang.dev"
+  service: "https://<sandbox-api-ip>:6443"
+  originRequest:
+    noTLSVerify: true
+```
+
+> **주의**: 이 경우 Sandbox API가 외부에 노출되므로, OIDC 인증(Keycloak) 설정 완료 후에만 권장합니다.
+
+---
+
+## 6. Kyverno Placement Decision
 
 **결정: `common/` (모든 클러스터에 배포)**
 

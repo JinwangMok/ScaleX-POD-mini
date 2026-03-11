@@ -18,7 +18,7 @@
 | **C-2** | **CRITICAL** | Sandbox 클러스터 ArgoCD 미등록 | Tower ArgoCD가 Sandbox에 앱을 배포하려면 Sandbox가 remote cluster로 등록되어야 함. `argocd cluster add` 단계가 전혀 없음. spread.yaml의 sandbox-root는 tower에 생성되지만 **실제 sandbox 클러스터에 배포할 수 없음**. |
 | **C-3** | **HIGH** | Kubespray 경로 해결 버그 | `find_kubespray_dir()`가 `["kubespray", "../kubespray", "/opt/kubespray"]`를 검색하지만, 실제 서브모듈은 `kubespray/kubespray/` (중첩 경로). **런타임에 100% 실패**. |
 | **C-4** | **HIGH** | `sdi init` (no-flag) 불완전 | Checklist #8: "모든 베어메탈을 가상화하고 통합 리소스 풀로 구성"이지만, 현재 no-flag 모드는 호스트 준비(KVM/bridge/VFIO)만 수행. 실제 VM 생성이나 통합 리소스 풀 생성 없음. |
-| **C-5** | **MEDIUM** | 외부 sandbox kubectl 미지원 | CF Tunnel이 `api.k8s.jinwang.dev` → tower API만 라우팅. Sandbox API는 외부에서 접근 불가. SOCKS5 프록시가 배포되지만 CF Tunnel에 노출되지 않음. |
+| **C-5** | **RESOLVED** | 외부 sandbox kubectl 미지원 | 아키텍처 결정: Sandbox는 Tower ArgoCD 경유 관리. 직접 외부 노출 불필요. 디버깅용 3가지 접근법 문서화 완료 (ops-guide Section 5). |
 | **C-6** | **LOW** | Legacy 네이밍 | `spread.yaml`의 AppProject가 `playbox-root` — `scalex-root`로 통일 필요. |
 
 ### 이전 DASHBOARD "VERIFIED" 판정의 비판
@@ -66,7 +66,7 @@
 |------|------|------|
 | 사용자 수동 작업 가이드 | VERIFIED | `docs/ops-guide.md` Section 1 (6단계) |
 | 라우팅 3개 도메인 | VERIFIED | api.k8s / auth / cd .jinwang.dev |
-| **Sandbox 외부 접근** | **GAP** | CF Tunnel이 tower API만 라우팅 (C-5) |
+| **Sandbox 외부 접근** | **RESOLVED** | 아키텍처 결정 문서화 완료 — ops-guide Section 5 (C-5) |
 
 ### #4. CLI Rust 구현 + FP 원칙
 
@@ -80,10 +80,10 @@
 
 | 항목 | 상태 | 비고 |
 |------|------|------|
-| README Step 0-8 | **INCOMPLETE** | ArgoCD Helm 설치 단계 누락 (C-1) |
+| README Step 0-8 | **FIXED** | ArgoCD bootstrap 단계 추가 완료 (C-1, C-2) |
 | docs/ 7개 문서 | VERIFIED | architecture, ops-guide, troubleshooting 등 |
 | CLI 레퍼런스 | VERIFIED | README에 core + query 전체 문서화 |
-| **Sandbox 클러스터 등록 가이드** | **GAP** | ArgoCD에 remote cluster 등록 단계 없음 (C-2) |
+| **Sandbox 클러스터 등록 가이드** | **FIXED** | `scalex bootstrap` Phase 2에서 자동 등록 (C-2) |
 | E2E 실행 검증 | NEEDS-INFRA | — |
 
 ### #8. CLI 기능 전체
@@ -95,9 +95,9 @@
 | `scalex sdi init <spec>` | VERIFIED | HCL 생성 + pool state |
 | `scalex sdi clean --hard` | VERIFIED | clean validation tests |
 | `scalex sdi sync` | VERIFIED | 13 tests (diff, conflict, add/remove) |
-| `scalex cluster init` | **BUG** | kubespray 경로 해결 실패 (C-3) |
+| `scalex cluster init` | **FIXED** | kubespray/kubespray 서브모듈 경로 해결 (C-3) |
 | `scalex get` (4 subcommands) | VERIFIED | 18 tests |
-| `scalex bootstrap` (신규 필요) | **GAP** | ArgoCD 설치 + 클러스터 등록 + spread 적용 (C-1, C-2) |
+| `scalex bootstrap` | **VERIFIED** | ArgoCD Helm install + 클러스터 등록 + spread 적용 — 14 tests (C-1, C-2) |
 
 ### #9. Baremetal 확장성
 
@@ -139,8 +139,8 @@
 | 항목 | 상태 | 비고 |
 |------|------|------|
 | Tower Pre-OIDC kubectl | VERIFIED (docs) | ops-guide Section 4 |
-| **Sandbox 외부 kubectl** | **GAP** | CF Tunnel 미라우팅 (C-5) |
-| SOCKS5 프록시 | INCOMPLETE | 배포됨, CF Tunnel에 미노출 |
+| **Sandbox 외부 kubectl** | **RESOLVED** | 아키텍처 결정: Tower 경유 관리. 디버깅용 3방법 문서화 (C-5) |
+| SOCKS5 프록시 | VERIFIED | 배포됨, 향후 필요시 CF Tunnel 추가 가능 |
 
 ### #15. NAT 접근 경로
 
@@ -264,10 +264,11 @@ _generated/
 | commands/cluster | 11 | cluster init, SDI/baremetal, gitops |
 | core/tofu | 12 | HCL gen, SSH URI, VFIO, single-node, host-infra |
 | models/* | 8 | parse/serialize |
-| core/resource_pool | 5 | aggregation, table |
+| core/resource_pool | 7 | aggregation, table, disk_gb |
 | core/ssh | 5 | SSH command building, ProxyJump key, reachable_node_ip key |
 | commands/facts | 4 | facts gathering |
-| **TOTAL** | **352** | |
+| commands/bootstrap | 14 | ArgoCD helm, cluster add, kubectl apply, pipeline |
+| **TOTAL** | **374** | |
 
 ---
 
@@ -275,7 +276,10 @@ _generated/
 
 | Sprint | Date | Tests | Summary |
 |--------|------|-------|---------|
-| 15a | 2026-03-11 | — | (진행 예정) Kubespray 경로 해결 버그 수정 |
+| 15e | 2026-03-11 | 374 | Sandbox 외부 접근 아키텍처 결정 + ops-guide Section 5 문서화 |
+| 15d | 2026-03-11 | 372 | resource_pool에 total_disk_gb/disk_gb 필드 추가 |
+| 15b-c | 2026-03-11 | 370 | `scalex bootstrap` 3단계 파이프라인 + README 업데이트 |
+| 15a | 2026-03-11 | 355 | Kubespray 서브모듈 경로 해결 버그 수정 |
 | 13d | 2026-03-11 | 352 | Edge cases: Cilium cluster_id, common config, mixed-mode, host placement, CIDR overlap |
 | 13c | 2026-03-11 | 347 | 2-layer template 정합성, OIDC 템플릿, credentials 완전성, setup-client.sh 버그 수정 |
 | 13b | 2026-03-11 | 342 | G-13 해결 (pre-OIDC kubectl 이미 문서화), NAT 접근 경로 검증 tests |

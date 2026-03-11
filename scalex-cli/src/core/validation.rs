@@ -5118,4 +5118,53 @@ config:
             }
         }
     }
+
+    // ── Sprint 15e: Sandbox External Access Architecture (C-5) ──
+
+    /// C-5: ops-guide must have a dedicated section explaining sandbox access architecture —
+    /// sandbox is managed via tower ArgoCD, not directly exposed via CF Tunnel.
+    #[test]
+    fn test_checklist_sandbox_access_architecture_documented() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Must have a dedicated "Sandbox Access" or "Sandbox 클러스터 접근" section heading
+        assert!(
+            ops_guide.contains("## 5. Sandbox") || ops_guide.contains("Sandbox Access"),
+            "ops-guide must have a dedicated Sandbox access section"
+        );
+
+        // Must explicitly state the architecture decision: sandbox workloads managed via tower ArgoCD
+        assert!(
+            ops_guide.contains("Tower ArgoCD") || ops_guide.contains("tower ArgoCD"),
+            "ops-guide must explain sandbox is managed via Tower ArgoCD"
+        );
+
+        // Must explain why sandbox API is NOT in CF Tunnel routing
+        assert!(
+            ops_guide.contains("Sandbox API")
+                && (ops_guide.contains("Tunnel") || ops_guide.contains("tunnel")),
+            "ops-guide must explain Sandbox API CF Tunnel architecture decision"
+        );
+    }
+
+    /// C-5: ops-guide must document sandbox kubectl access for debugging/emergency.
+    #[test]
+    fn test_checklist_sandbox_kubectl_access_methods() {
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
+
+        // Must show sandbox kubeconfig path for direct access
+        assert!(
+            ops_guide.contains("clusters/sandbox/kubeconfig"),
+            "ops-guide must reference sandbox kubeconfig path"
+        );
+
+        // Must document at least 2 sandbox access methods
+        let has_lan = ops_guide.contains("Sandbox") && ops_guide.contains("LAN");
+        let has_tailscale = ops_guide.contains("Sandbox") && ops_guide.contains("Tailscale");
+        let has_bastion = ops_guide.contains("Sandbox") && ops_guide.contains("bastion");
+        assert!(
+            (has_lan as u8 + has_tailscale as u8 + has_bastion as u8) >= 2,
+            "ops-guide must document at least 2 sandbox access methods (LAN/Tailscale/bastion)"
+        );
+    }
 }
