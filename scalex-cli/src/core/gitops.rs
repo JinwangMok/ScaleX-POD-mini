@@ -1264,4 +1264,68 @@ spec:
         }
         result
     }
+
+    /// Sprint 42-C: Every gitops app directory referenced by generators
+    /// must contain a kustomization.yaml — otherwise ArgoCD silently fails.
+    #[test]
+    fn test_generator_referenced_dirs_have_kustomization_yaml() {
+        let generators: Vec<(&str, &str)> = vec![
+            (
+                "tower-common",
+                include_str!("../../../gitops/generators/tower/common-generator.yaml"),
+            ),
+            (
+                "tower-apps",
+                include_str!("../../../gitops/generators/tower/tower-generator.yaml"),
+            ),
+            (
+                "sandbox-common",
+                include_str!("../../../gitops/generators/sandbox/common-generator.yaml"),
+            ),
+            (
+                "sandbox-apps",
+                include_str!("../../../gitops/generators/sandbox/sandbox-generator.yaml"),
+            ),
+        ];
+
+        let repo_root = env!("CARGO_MANIFEST_DIR")
+            .trim_end_matches("/scalex-cli")
+            .to_string();
+
+        let mut missing = Vec::new();
+
+        for (gen_name, content) in &generators {
+            let yaml: serde_yaml::Value = serde_yaml::from_str(content)
+                .unwrap_or_else(|e| panic!("Failed to parse {}: {}", gen_name, e));
+
+            let path_template = yaml["spec"]["template"]["spec"]["source"]["path"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{}: missing source.path", gen_name));
+
+            let elements = yaml["spec"]["generators"][0]["list"]["elements"]
+                .as_sequence()
+                .unwrap_or_else(|| panic!("{}: missing elements", gen_name));
+
+            for elem in elements {
+                let app_name = elem["appName"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{}: element missing appName", gen_name));
+                let resolved = path_template.replace("{{.appName}}", app_name);
+                let kust_path = format!("{}/{}/kustomization.yaml", repo_root, resolved);
+
+                if !std::path::Path::new(&kust_path).exists() {
+                    missing.push(format!(
+                        "{} -> {}/kustomization.yaml",
+                        gen_name, resolved
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "Generator-referenced directories missing kustomization.yaml:\n{}",
+            missing.join("\n")
+        );
+    }
 }
