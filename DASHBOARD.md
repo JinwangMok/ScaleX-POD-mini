@@ -110,24 +110,13 @@
 - [x] NAT 접근 3가지 방법 (CF Tunnel, Tailscale, LAN+스위치) 문서화 검증
 - [x] 2 tests 추가 (342 total)
 
-### Sprint 13c: CF Tunnel Access Verification Tests (오프라인)
-- [ ] `cloudflared-tunnel/values.yaml` 라우팅 도메인 검증
-- [ ] SOCKS5 proxy manifest 구조 검증
-- [ ] Keycloak 없는 직접 접근 경로 문서화
-
-### Sprint 13d: Idempotency Tests (오프라인)
-- [ ] HCL 생성 멱등성 (같은 입력 → 같은 출력)
-- [ ] Kubespray inventory 생성 멱등성
-- [ ] GitOps YAML 생성 멱등성
-
-### Sprint 13e: Documentation Accuracy Tests (오프라인)
-- [ ] README.md의 CLI 명령어가 실제 CLI 구조와 일치
-- [ ] 모든 example YAML 파일이 유효한 YAML
-- [ ] docs/ 내 링크가 실재하는 파일을 참조
-
-### Sprint 13f: Cleanup
-- [ ] PROMPT.md 삭제
-- [ ] REQUEST-TO-USER.md 삭제 (내용은 README.md + docs/에 이미 포함)
+### Sprint 13c: 2-Layer Template Consistency + Client OIDC (오프라인) ✅
+- [x] sdi-specs pool_name ↔ k8s-clusters cluster_sdi_resource_pool 정합성 검증
+- [x] k8s-clusters domains ↔ CF Tunnel values.yaml 라우팅 정합성 검증
+- [x] client/kubeconfig-oidc.yaml.j2 Jinja2 변수 검증 (domains, keycloak)
+- [x] credentials/ 5개 example 파일 완전성 검증
+- [x] 버그 수정: setup-client.sh "playbox" → "scalex" 레거시 참조
+- [x] 5 tests 추가 (347 total)
 
 ### Sprint 14: 실환경 E2E (물리 인프라 필요)
 - [ ] I-1 ~ I-6 순차 실행
@@ -191,7 +180,8 @@ _generated/
 | core/ssh | 5 | SSH command building, ProxyJump key, reachable_node_ip key |
 | core/validation (13a-e) | 18 | config alignment, CF tunnel routing, idempotency, README accuracy, GitOps completeness |
 | core/validation (13b) | 2 | pre-OIDC kubectl access docs, NAT access methods docs |
-| **TOTAL** | **342** | |
+| core/validation (13c) | 5 | 2-layer template consistency, OIDC template, credentials completeness, setup-client fix |
+| **TOTAL** | **347** | |
 
 ---
 
@@ -199,6 +189,7 @@ _generated/
 
 | Sprint | Date | Tests | Summary |
 |--------|------|-------|---------|
+| 13c | 2026-03-11 | 347 | 2-layer template 정합성, OIDC 템플릿, credentials 완전성, setup-client.sh 버그 수정 |
 | 13b | 2026-03-11 | 342 | G-13 해결 (pre-OIDC kubectl 이미 문서화), NAT 접근 경로 검증 tests |
 | 13a | 2026-03-11 | 340 | Checklist 15항목 갭 분석 + 18 tests (config alignment, CF tunnel, idempotency, docs accuracy) |
 | 12e | 2026-03-11 | 322 | GitOps structure ↔ cluster config consistency test |

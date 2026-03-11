@@ -29,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KUBECONFIG_SRC="${SCRIPT_DIR}/kubeconfig-oidc.yaml"
 
 if [[ ! -f "${KUBECONFIG_SRC}" ]]; then
-    echo "ERROR: kubeconfig-oidc.yaml not found. Run 'playbox generate-kubeconfig' first."
+    echo "ERROR: kubeconfig-oidc.yaml not found. Run 'scalex cluster init' first."
     exit 1
 fi
 

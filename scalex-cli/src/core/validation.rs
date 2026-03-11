@@ -4769,4 +4769,141 @@ config:
             "ops-guide must have access method comparison"
         );
     }
+
+    // ── Sprint 13c: 2-Layer Template Consistency + Client OIDC + Credentials ──
+
+    #[test]
+    fn test_checklist_two_layer_pool_name_consistency() {
+        // Verify that sdi-specs pool names match k8s-clusters cluster_sdi_resource_pool references
+        let sdi_specs = include_str!("../../../config/sdi-specs.yaml.example");
+        let k8s_clusters = include_str!("../../../config/k8s-clusters.yaml.example");
+
+        // Extract pool_name values from sdi-specs (lines like "    - pool_name: ..." or "      pool_name: ...")
+        let sdi_pool_names: Vec<&str> = sdi_specs
+            .lines()
+            .filter(|l| l.contains("pool_name:"))
+            .map(|l| l.split('"').nth(1).unwrap_or(""))
+            .collect();
+        assert!(
+            sdi_pool_names.len() >= 2,
+            "sdi-specs must define at least 2 pools (tower + sandbox), found {}",
+            sdi_pool_names.len()
+        );
+
+        // Every cluster_sdi_resource_pool in k8s-clusters must reference a valid sdi pool
+        for line in k8s_clusters.lines() {
+            if let Some(pool_ref) = line.trim().strip_prefix("cluster_sdi_resource_pool:") {
+                // Strip inline YAML comment, then trim quotes
+                let pool_ref = pool_ref.split('#').next().unwrap_or("").trim().trim_matches('"');
+                assert!(
+                    sdi_pool_names.contains(&pool_ref),
+                    "k8s-clusters references pool '{}' not defined in sdi-specs (available: {:?})",
+                    pool_ref,
+                    sdi_pool_names
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_checklist_two_layer_domains_consistency() {
+        // k8s-clusters.yaml defines domains; these must be used in gitops CF tunnel config
+        let k8s_clusters = include_str!("../../../config/k8s-clusters.yaml.example");
+        let cf_values = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
+
+        // Extract domain values from k8s-clusters
+        let domains = ["auth.jinwang.dev", "cd.jinwang.dev", "api.k8s.jinwang.dev"];
+        for domain in &domains {
+            assert!(
+                k8s_clusters.contains(domain),
+                "k8s-clusters.yaml must define domain '{}'",
+                domain
+            );
+            assert!(
+                cf_values.contains(domain),
+                "CF tunnel values.yaml must route domain '{}'",
+                domain
+            );
+        }
+    }
+
+    #[test]
+    fn test_checklist_client_oidc_template_variables() {
+        // kubeconfig-oidc.yaml.j2 must reference domain variables from k8s-clusters config
+        let template = include_str!("../../../client/kubeconfig-oidc.yaml.j2");
+
+        // Must use Jinja2 variables for domains (not hardcoded)
+        assert!(
+            template.contains("{{ domains.k8s_api }}"),
+            "OIDC kubeconfig template must use domains.k8s_api variable"
+        );
+        assert!(
+            template.contains("{{ domains.auth }}"),
+            "OIDC kubeconfig template must use domains.auth variable"
+        );
+        // Must reference Keycloak OIDC config
+        assert!(
+            template.contains("{{ keycloak.realm }}"),
+            "OIDC kubeconfig template must use keycloak.realm variable"
+        );
+        assert!(
+            template.contains("{{ keycloak.client_id }}"),
+            "OIDC kubeconfig template must use keycloak.client_id variable"
+        );
+        // Must use oidc-login exec plugin
+        assert!(
+            template.contains("oidc-login"),
+            "OIDC kubeconfig must use kubectl oidc-login plugin"
+        );
+    }
+
+    #[test]
+    fn test_checklist_credentials_example_completeness() {
+        // All 5 credential example files must exist with proper content
+        let baremetal = include_str!("../../../credentials/.baremetal-init.yaml.example");
+        let env = include_str!("../../../credentials/.env.example");
+        let secrets = include_str!("../../../credentials/secrets.yaml.example");
+        let cf_tunnel = include_str!("../../../credentials/cloudflare-tunnel.json.example");
+        let creds_readme = include_str!("../../../credentials/README.md");
+
+        // .baremetal-init.yaml.example must cover all 3 SSH modes
+        assert!(baremetal.contains("direct_reachable: true"), "must show Case 1 (direct)");
+        assert!(baremetal.contains("reachable_node_ip"), "must show Case 2 (external IP)");
+        assert!(baremetal.contains("reachable_via"), "must show Case 3 (ProxyJump)");
+        assert!(baremetal.contains("networkDefaults"), "must include network defaults");
+
+        // .env.example must have password and key variables
+        assert!(env.contains("PLAYBOX_0_PASSWORD"), "must have playbox-0 password var");
+        assert!(env.contains("SSH_KEY_PATH"), "must have SSH key path var");
+
+        // secrets.yaml.example must have keycloak + argocd + cloudflare
+        assert!(secrets.contains("keycloak"), "must have keycloak section");
+        assert!(secrets.contains("argocd"), "must have argocd section");
+        assert!(secrets.contains("cloudflare"), "must have cloudflare section");
+
+        // cloudflare-tunnel.json.example must have required fields
+        assert!(cf_tunnel.contains("AccountTag"), "must have AccountTag");
+        assert!(cf_tunnel.contains("TunnelSecret"), "must have TunnelSecret");
+        assert!(cf_tunnel.contains("TunnelID"), "must have TunnelID");
+
+        // credentials/README.md must exist and explain the directory
+        assert!(!creds_readme.is_empty(), "credentials/README.md must not be empty");
+    }
+
+    #[test]
+    fn test_checklist_setup_client_references_scalex() {
+        // setup-client.sh must reference scalex CLI, not legacy 'playbox' name
+        let setup_script = include_str!("../../../client/setup-client.sh");
+
+        // Must not contain legacy 'playbox' references
+        assert!(
+            !setup_script.contains("playbox"),
+            "setup-client.sh must reference 'scalex', not legacy 'playbox'"
+        );
+        // Must reference correct tool
+        assert!(
+            setup_script.contains("scalex") || setup_script.contains("ScaleX"),
+            "setup-client.sh must reference scalex CLI"
+        );
+    }
 }
