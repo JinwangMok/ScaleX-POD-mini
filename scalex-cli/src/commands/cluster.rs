@@ -96,6 +96,18 @@ fn run_init(
         );
     }
 
+    let net_errors = validation::validate_cluster_network_overlap(&k8s_config);
+    if !net_errors.is_empty() {
+        eprintln!("[cluster] Network overlap errors:");
+        for err in &net_errors {
+            eprintln!("  - {}", err);
+        }
+        anyhow::bail!(
+            "Fix {} network overlap error(s) before proceeding",
+            net_errors.len()
+        );
+    }
+
     if let Some(ref spec) = sdi_spec {
         let pool_errors = validation::validate_cluster_sdi_pool_mapping(&k8s_config, spec);
         if !pool_errors.is_empty() {

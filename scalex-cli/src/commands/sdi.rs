@@ -570,10 +570,36 @@ fn run_sync(
             let pools: Vec<SdiPoolState> = serde_json::from_str(&state_raw)?;
             let conflicts = sync::detect_vm_conflicts(&pools, &diff.to_remove);
             if !conflicts.is_empty() {
+                // Classify severity for each conflict
+                let has_mgmt = sync::has_management_cluster_conflict(&conflicts, &pools);
+
                 println!("\n[sdi] WARNING: Removing these nodes will affect hosted VMs:");
                 for c in &conflicts {
-                    println!("  {} (pool: {}, host: {})", c.vm_name, c.pool_name, c.host);
+                    let severity = sync::classify_conflict_severity(c, &pools);
+                    let label = match severity {
+                        sync::ConflictSeverity::Critical => "CRITICAL",
+                        sync::ConflictSeverity::High => "HIGH",
+                        sync::ConflictSeverity::Medium => "MEDIUM",
+                    };
+                    println!(
+                        "  [{}] {} (pool: {}, host: {})",
+                        label, c.vm_name, c.pool_name, c.host
+                    );
                 }
+
+                if has_mgmt {
+                    println!(
+                        "\n[sdi] FATAL: Removing this host would destroy the management cluster (tower)."
+                    );
+                    println!(
+                        "[sdi] The management cluster cannot be recovered without a full rebuild."
+                    );
+                    anyhow::bail!(
+                        "Cannot remove nodes hosting management cluster VMs. \
+                         This would destroy the entire platform management plane."
+                    );
+                }
+
                 println!("[sdi] You must migrate or destroy these VMs before removing the host.");
                 if !dry_run {
                     anyhow::bail!(

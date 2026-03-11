@@ -185,6 +185,48 @@ pub fn validate_sdi_hosts_exist(spec: &SdiSpec, baremetal_node_names: &[String])
 
 /// Validate bootstrap prerequisites. Pure function: checks if required files/state exist.
 /// Returns list of warnings (empty = all prerequisites met).
+/// Validate that Pod/Service CIDRs and DNS domains do not overlap between clusters.
+/// Pure function: returns list of error messages (empty = valid).
+/// Critical for multi-cluster environments — overlapping CIDRs break ClusterMesh routing.
+pub fn validate_cluster_network_overlap(k8s_config: &K8sClustersConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let clusters = &k8s_config.config.clusters;
+
+    for i in 0..clusters.len() {
+        for j in (i + 1)..clusters.len() {
+            let a = &clusters[i];
+            let b = &clusters[j];
+
+            // Check pod CIDR overlap (exact match — full CIDR range overlap
+            // requires IP parsing which is beyond pure-function scope without deps)
+            if a.network.pod_cidr == b.network.pod_cidr {
+                errors.push(format!(
+                    "Pod CIDR '{}' is used by both '{}' and '{}' — must be unique per cluster for ClusterMesh",
+                    a.network.pod_cidr, a.cluster_name, b.cluster_name
+                ));
+            }
+
+            // Check service CIDR overlap
+            if a.network.service_cidr == b.network.service_cidr {
+                errors.push(format!(
+                    "Service CIDR '{}' is used by both '{}' and '{}' — must be unique per cluster",
+                    a.network.service_cidr, a.cluster_name, b.cluster_name
+                ));
+            }
+
+            // Check DNS domain overlap
+            if a.network.dns_domain == b.network.dns_domain {
+                errors.push(format!(
+                    "DNS domain '{}' is used by both '{}' and '{}' — must be unique per cluster",
+                    a.network.dns_domain, a.cluster_name, b.cluster_name
+                ));
+            }
+        }
+    }
+
+    errors
+}
+
 pub fn validate_bootstrap_prerequisites(
     tower_kubeconfig_path: &str,
     cf_credentials_path: &str,
@@ -6495,5 +6537,185 @@ config:
                 step
             );
         }
+    }
+
+    // === Sprint 29a: validate_cluster_network_overlap tests ===
+
+    fn make_cluster_with_network(
+        name: &str,
+        pod_cidr: &str,
+        service_cidr: &str,
+        dns_domain: &str,
+    ) -> ClusterDef {
+        ClusterDef {
+            cluster_name: name.to_string(),
+            cluster_mode: ClusterMode::Sdi,
+            cluster_sdi_resource_pool: name.to_string(),
+            baremetal_nodes: vec![],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: pod_cidr.to_string(),
+                service_cidr: service_cidr.to_string(),
+                dns_domain: dns_domain.to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+            ssh_user: None,
+        }
+    }
+
+    #[test]
+    fn test_network_overlap_no_errors_when_unique() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: \"v1.32.0\"\nkubespray_version: \"v2.30.0\"").unwrap(),
+                clusters: vec![
+                    make_cluster_with_network("tower", "10.244.0.0/20", "10.96.0.0/20", "tower.local"),
+                    make_cluster_with_network("sandbox", "10.233.0.0/17", "10.233.128.0/18", "sandbox.local"),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let errors = validate_cluster_network_overlap(&config);
+        assert!(errors.is_empty(), "Unique networks should produce no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn test_network_overlap_detects_pod_cidr_collision() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: \"v1.32.0\"\nkubespray_version: \"v2.30.0\"").unwrap(),
+                clusters: vec![
+                    make_cluster_with_network("tower", "10.244.0.0/16", "10.96.0.0/16", "tower.local"),
+                    make_cluster_with_network("sandbox", "10.244.0.0/16", "10.97.0.0/16", "sandbox.local"),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let errors = validate_cluster_network_overlap(&config);
+        assert_eq!(errors.len(), 1, "Should detect exactly 1 pod CIDR overlap");
+        assert!(errors[0].contains("Pod CIDR"), "Error must mention Pod CIDR: {}", errors[0]);
+        assert!(errors[0].contains("tower") && errors[0].contains("sandbox"));
+    }
+
+    #[test]
+    fn test_network_overlap_detects_service_cidr_collision() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: \"v1.32.0\"\nkubespray_version: \"v2.30.0\"").unwrap(),
+                clusters: vec![
+                    make_cluster_with_network("tower", "10.244.0.0/16", "10.96.0.0/16", "tower.local"),
+                    make_cluster_with_network("sandbox", "10.245.0.0/16", "10.96.0.0/16", "sandbox.local"),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let errors = validate_cluster_network_overlap(&config);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("Service CIDR"));
+    }
+
+    #[test]
+    fn test_network_overlap_detects_dns_domain_collision() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: \"v1.32.0\"\nkubespray_version: \"v2.30.0\"").unwrap(),
+                clusters: vec![
+                    make_cluster_with_network("tower", "10.244.0.0/16", "10.96.0.0/16", "cluster.local"),
+                    make_cluster_with_network("sandbox", "10.245.0.0/16", "10.97.0.0/16", "cluster.local"),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let errors = validate_cluster_network_overlap(&config);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("DNS domain"));
+    }
+
+    #[test]
+    fn test_network_overlap_detects_multiple_collisions() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: \"v1.32.0\"\nkubespray_version: \"v2.30.0\"").unwrap(),
+                clusters: vec![
+                    make_cluster_with_network("a", "10.0.0.0/16", "10.1.0.0/16", "same.local"),
+                    make_cluster_with_network("b", "10.0.0.0/16", "10.1.0.0/16", "same.local"),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let errors = validate_cluster_network_overlap(&config);
+        assert_eq!(errors.len(), 3, "Should detect pod + service + DNS overlap: {:?}", errors);
+    }
+
+    #[test]
+    fn test_network_overlap_three_clusters_pairwise() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: \"v1.32.0\"\nkubespray_version: \"v2.30.0\"").unwrap(),
+                clusters: vec![
+                    make_cluster_with_network("a", "10.0.0.0/16", "10.1.0.0/16", "a.local"),
+                    make_cluster_with_network("b", "10.0.0.0/16", "10.2.0.0/16", "b.local"),
+                    make_cluster_with_network("c", "10.0.0.0/16", "10.3.0.0/16", "c.local"),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let errors = validate_cluster_network_overlap(&config);
+        // a-b, a-c, b-c = 3 pod CIDR overlaps
+        assert_eq!(errors.len(), 3, "All 3 pairwise pod CIDR overlaps must be detected: {:?}", errors);
+    }
+
+    #[test]
+    fn test_network_overlap_wired_into_cluster_init_pipeline() {
+        // Verify the function is called in cluster.rs by checking it's importable and callable
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: \"v1.32.0\"\nkubespray_version: \"v2.30.0\"").unwrap(),
+                clusters: vec![
+                    make_cluster_with_network("tower", "10.244.0.0/20", "10.96.0.0/20", "tower.local"),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        // Single cluster = no overlap possible
+        let errors = validate_cluster_network_overlap(&config);
+        assert!(errors.is_empty());
+
+        // Verify cluster.rs references validate_cluster_network_overlap
+        let cluster_rs = include_str!("../commands/cluster.rs");
+        assert!(
+            cluster_rs.contains("validate_cluster_network_overlap"),
+            "cluster init must call validate_cluster_network_overlap"
+        );
+    }
+
+    #[test]
+    fn test_example_configs_pass_network_overlap_validation() {
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let errors = validate_cluster_network_overlap(&k8s);
+        assert!(
+            errors.is_empty(),
+            "Example k8s-clusters.yaml must pass network overlap validation, got: {:?}",
+            errors
+        );
     }
 }

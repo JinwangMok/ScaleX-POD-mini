@@ -69,6 +69,51 @@ pub fn detect_vm_conflicts(pools: &[SdiPoolState], nodes_to_remove: &[String]) -
     conflicts
 }
 
+/// Severity level for a VM conflict when removing a host node.
+#[derive(Debug, PartialEq, Clone)]
+pub enum ConflictSeverity {
+    /// Removing management cluster VM — blocks entire platform management
+    Critical,
+    /// Removing control-plane VM — cluster loses quorum/availability
+    High,
+    /// Removing worker VM — workloads disrupted but cluster survives
+    Medium,
+}
+
+/// Classify the severity of a VM conflict based on pool purpose and VM roles.
+/// Pure function: no I/O, no side effects.
+pub fn classify_conflict_severity(
+    conflict: &VmConflict,
+    pools: &[SdiPoolState],
+) -> ConflictSeverity {
+    // Find the pool this VM belongs to
+    let pool = pools.iter().find(|p| p.pool_name == conflict.pool_name);
+
+    match pool {
+        Some(p) if p.purpose == "management" => ConflictSeverity::Critical,
+        _ => {
+            // Check if VM name suggests control-plane role (convention: contains "cp")
+            if conflict.vm_name.contains("-cp-") || conflict.vm_name.contains("-master-") {
+                ConflictSeverity::High
+            } else {
+                ConflictSeverity::Medium
+            }
+        }
+    }
+}
+
+/// Check if any conflicts would affect the management cluster.
+/// Returns true if removing nodes would destroy the management plane — this should be a hard block.
+/// Pure function: no I/O, no side effects.
+pub fn has_management_cluster_conflict(
+    conflicts: &[VmConflict],
+    pools: &[SdiPoolState],
+) -> bool {
+    conflicts
+        .iter()
+        .any(|c| classify_conflict_severity(c, pools) == ConflictSeverity::Critical)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +385,189 @@ mod tests {
         assert_eq!(conflicts[0].pool_name, "sandbox");
         assert_eq!(conflicts[1].vm_name, "tower-cp-0");
         assert_eq!(conflicts[1].pool_name, "tower");
+    }
+
+    // --- classify_conflict_severity ---
+
+    #[test]
+    fn test_classify_severity_management_pool_is_critical() {
+        let pools = vec![SdiPoolState {
+            pool_name: "tower".to_string(),
+            purpose: "management".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "tower-cp-0".to_string(),
+                ip: "192.168.88.100".to_string(),
+                host: "playbox-0".to_string(),
+                cpu: 2,
+                mem_gb: 3,
+                disk_gb: 30,
+                status: "running".to_string(),
+                gpu_passthrough: false,
+            }],
+        }];
+
+        let conflict = VmConflict {
+            vm_name: "tower-cp-0".to_string(),
+            pool_name: "tower".to_string(),
+            host: "playbox-0".to_string(),
+        };
+
+        assert_eq!(
+            classify_conflict_severity(&conflict, &pools),
+            ConflictSeverity::Critical,
+            "Management pool VM removal must be CRITICAL"
+        );
+    }
+
+    #[test]
+    fn test_classify_severity_control_plane_is_high() {
+        let pools = vec![SdiPoolState {
+            pool_name: "sandbox".to_string(),
+            purpose: "workload".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "sandbox-cp-0".to_string(),
+                ip: "192.168.88.110".to_string(),
+                host: "playbox-0".to_string(),
+                cpu: 4,
+                mem_gb: 8,
+                disk_gb: 60,
+                status: "running".to_string(),
+                gpu_passthrough: false,
+            }],
+        }];
+
+        let conflict = VmConflict {
+            vm_name: "sandbox-cp-0".to_string(),
+            pool_name: "sandbox".to_string(),
+            host: "playbox-0".to_string(),
+        };
+
+        assert_eq!(
+            classify_conflict_severity(&conflict, &pools),
+            ConflictSeverity::High,
+            "Control-plane VM (contains -cp-) must be HIGH severity"
+        );
+    }
+
+    #[test]
+    fn test_classify_severity_worker_is_medium() {
+        let pools = vec![SdiPoolState {
+            pool_name: "sandbox".to_string(),
+            purpose: "workload".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "sandbox-w-0".to_string(),
+                ip: "192.168.88.120".to_string(),
+                host: "playbox-1".to_string(),
+                cpu: 8,
+                mem_gb: 16,
+                disk_gb: 100,
+                status: "running".to_string(),
+                gpu_passthrough: false,
+            }],
+        }];
+
+        let conflict = VmConflict {
+            vm_name: "sandbox-w-0".to_string(),
+            pool_name: "sandbox".to_string(),
+            host: "playbox-1".to_string(),
+        };
+
+        assert_eq!(
+            classify_conflict_severity(&conflict, &pools),
+            ConflictSeverity::Medium,
+            "Worker VM must be MEDIUM severity"
+        );
+    }
+
+    // --- has_management_cluster_conflict ---
+
+    #[test]
+    fn test_has_management_conflict_true() {
+        let pools = vec![
+            SdiPoolState {
+                pool_name: "tower".to_string(),
+                purpose: "management".to_string(),
+                nodes: vec![SdiNodeState {
+                    node_name: "tower-cp-0".to_string(),
+                    ip: "192.168.88.100".to_string(),
+                    host: "playbox-0".to_string(),
+                    cpu: 2,
+                    mem_gb: 3,
+                    disk_gb: 30,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                }],
+            },
+            SdiPoolState {
+                pool_name: "sandbox".to_string(),
+                purpose: "workload".to_string(),
+                nodes: vec![SdiNodeState {
+                    node_name: "sandbox-w-0".to_string(),
+                    ip: "192.168.88.120".to_string(),
+                    host: "playbox-1".to_string(),
+                    cpu: 8,
+                    mem_gb: 16,
+                    disk_gb: 100,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                }],
+            },
+        ];
+
+        let conflicts = vec![VmConflict {
+            vm_name: "tower-cp-0".to_string(),
+            pool_name: "tower".to_string(),
+            host: "playbox-0".to_string(),
+        }];
+
+        assert!(
+            has_management_cluster_conflict(&conflicts, &pools),
+            "Must detect management cluster conflict"
+        );
+    }
+
+    #[test]
+    fn test_has_management_conflict_false_workers_only() {
+        let pools = vec![SdiPoolState {
+            pool_name: "sandbox".to_string(),
+            purpose: "workload".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "sandbox-w-0".to_string(),
+                ip: "192.168.88.120".to_string(),
+                host: "playbox-1".to_string(),
+                cpu: 8,
+                mem_gb: 16,
+                disk_gb: 100,
+                status: "running".to_string(),
+                gpu_passthrough: false,
+            }],
+        }];
+
+        let conflicts = vec![VmConflict {
+            vm_name: "sandbox-w-0".to_string(),
+            pool_name: "sandbox".to_string(),
+            host: "playbox-1".to_string(),
+        }];
+
+        assert!(
+            !has_management_cluster_conflict(&conflicts, &pools),
+            "Worker-only conflicts must NOT be flagged as management conflict"
+        );
+    }
+
+    #[test]
+    fn test_has_management_conflict_empty_conflicts() {
+        let pools = vec![SdiPoolState {
+            pool_name: "tower".to_string(),
+            purpose: "management".to_string(),
+            nodes: vec![],
+        }];
+
+        let conflicts: Vec<VmConflict> = vec![];
+        assert!(
+            !has_management_cluster_conflict(&conflicts, &pools),
+            "Empty conflicts must return false"
+        );
     }
 
     #[test]
