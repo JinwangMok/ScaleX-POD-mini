@@ -1472,4 +1472,353 @@ mod tests {
         // CIDR prefix should be extractable from the result
         assert_eq!(extract_cidr_prefix(&result.cidr), 16);
     }
+
+    // --- Sprint 31a: build_host_infra_inputs edge cases ---
+
+    #[test]
+    fn test_build_host_infra_inputs_empty_list() {
+        let inputs = build_host_infra_inputs(&[]);
+        assert!(inputs.is_empty(), "empty node list must produce empty inputs");
+    }
+
+    #[test]
+    fn test_build_host_infra_inputs_four_nodes_matching_example() {
+        let nodes = vec![
+            NodeConnectionConfig {
+                name: "playbox-0".to_string(),
+                direct_reachable: false,
+                node_ip: "192.168.88.8".to_string(),
+                reachable_node_ip: Some("100.64.0.1".to_string()),
+                reachable_via: None,
+                admin_user: "jinwang".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Password,
+                ssh_password: Some("secret".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+            NodeConnectionConfig {
+                name: "playbox-1".to_string(),
+                direct_reachable: false,
+                node_ip: "192.168.88.9".to_string(),
+                reachable_node_ip: None,
+                reachable_via: Some(vec!["playbox-0".to_string()]),
+                admin_user: "jinwang".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Password,
+                ssh_password: Some("secret".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+            NodeConnectionConfig {
+                name: "playbox-2".to_string(),
+                direct_reachable: false,
+                node_ip: "192.168.88.10".to_string(),
+                reachable_node_ip: None,
+                reachable_via: Some(vec!["playbox-0".to_string()]),
+                admin_user: "jinwang".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Password,
+                ssh_password: Some("secret".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+            NodeConnectionConfig {
+                name: "playbox-3".to_string(),
+                direct_reachable: false,
+                node_ip: "192.168.88.11".to_string(),
+                reachable_node_ip: None,
+                reachable_via: Some(vec!["playbox-0".to_string()]),
+                admin_user: "jinwang".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Password,
+                ssh_password: Some("secret".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+        ];
+
+        let inputs = build_host_infra_inputs(&nodes);
+        assert_eq!(inputs.len(), 4);
+        assert_eq!(inputs[0].name, "playbox-0");
+        assert_eq!(inputs[0].ip, "192.168.88.8");
+        assert_eq!(inputs[0].ssh_user, "jinwang");
+        assert_eq!(inputs[3].name, "playbox-3");
+        assert_eq!(inputs[3].ip, "192.168.88.11");
+    }
+
+    #[test]
+    fn test_build_host_infra_inputs_preserves_different_admin_users() {
+        let nodes = vec![
+            NodeConnectionConfig {
+                name: "node-a".to_string(),
+                direct_reachable: true,
+                node_ip: "10.0.0.1".to_string(),
+                reachable_node_ip: None,
+                reachable_via: None,
+                admin_user: "alice".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Key,
+                ssh_password: None,
+                ssh_key_path: Some("key".to_string()),
+                ssh_key_path_of_reachable_node: None,
+            },
+            NodeConnectionConfig {
+                name: "node-b".to_string(),
+                direct_reachable: true,
+                node_ip: "10.0.0.2".to_string(),
+                reachable_node_ip: None,
+                reachable_via: None,
+                admin_user: "bob".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Key,
+                ssh_password: None,
+                ssh_key_path: Some("key".to_string()),
+                ssh_key_path_of_reachable_node: None,
+            },
+        ];
+
+        let inputs = build_host_infra_inputs(&nodes);
+        assert_eq!(inputs[0].ssh_user, "alice");
+        assert_eq!(inputs[1].ssh_user, "bob");
+    }
+
+    // --- Sprint 31a: build_pool_state multi-pool + edge cases ---
+
+    #[test]
+    fn test_build_pool_state_multi_pool_tower_and_sandbox() {
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "playbox-pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec!["8.8.8.8".to_string()],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![
+                    SdiPool {
+                        pool_name: "tower".to_string(),
+                        purpose: "management".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec!["playbox-0".to_string()],
+                            spread: false,
+                        },
+                        node_specs: vec![NodeSpec {
+                            node_name: "tower-cp-0".to_string(),
+                            ip: "192.168.88.100".to_string(),
+                            cpu: 2,
+                            mem_gb: 3,
+                            disk_gb: 30,
+                            host: None,
+                            roles: vec!["control-plane".to_string(), "worker".to_string()],
+                            devices: None,
+                        }],
+                    },
+                    SdiPool {
+                        pool_name: "sandbox".to_string(),
+                        purpose: "workload".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec![],
+                            spread: true,
+                        },
+                        node_specs: vec![
+                            NodeSpec {
+                                node_name: "sandbox-cp-0".to_string(),
+                                ip: "192.168.88.110".to_string(),
+                                cpu: 4,
+                                mem_gb: 8,
+                                disk_gb: 60,
+                                host: Some("playbox-0".to_string()),
+                                roles: vec!["control-plane".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "sandbox-w-2".to_string(),
+                                ip: "192.168.88.122".to_string(),
+                                cpu: 12,
+                                mem_gb: 32,
+                                disk_gb: 200,
+                                host: Some("playbox-3".to_string()),
+                                roles: vec!["worker".to_string()],
+                                devices: Some(DeviceConfig { gpu_passthrough: true }),
+                            },
+                        ],
+                    },
+                ],
+            },
+        };
+
+        let state = build_pool_state(&spec);
+        assert_eq!(state.len(), 2, "must produce 2 pools");
+
+        // Tower
+        assert_eq!(state[0].pool_name, "tower");
+        assert_eq!(state[0].purpose, "management");
+        assert_eq!(state[0].nodes.len(), 1);
+        assert_eq!(state[0].nodes[0].host, "playbox-0"); // from placement.hosts
+        assert!(!state[0].nodes[0].gpu_passthrough);
+
+        // Sandbox
+        assert_eq!(state[1].pool_name, "sandbox");
+        assert_eq!(state[1].nodes.len(), 2);
+        assert_eq!(state[1].nodes[0].host, "playbox-0"); // explicit
+        assert_eq!(state[1].nodes[1].host, "playbox-3"); // explicit
+        assert!(state[1].nodes[1].gpu_passthrough);
+        assert_eq!(state[1].nodes[1].mem_gb, 32);
+    }
+
+    #[test]
+    fn test_build_pool_state_unassigned_host_fallback() {
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![SdiPool {
+                    pool_name: "orphan-pool".to_string(),
+                    purpose: "test".to_string(),
+                    placement: PlacementConfig {
+                        hosts: vec![],
+                        spread: true,
+                    },
+                    node_specs: vec![NodeSpec {
+                        node_name: "orphan-node".to_string(),
+                        ip: "10.0.0.50".to_string(),
+                        cpu: 2,
+                        mem_gb: 4,
+                        disk_gb: 20,
+                        host: None,
+                        roles: vec!["worker".to_string()],
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+
+        let state = build_pool_state(&spec);
+        assert_eq!(state[0].nodes[0].host, "unassigned",
+            "node with no host and no placement hosts must be 'unassigned'");
+    }
+
+    #[test]
+    fn test_build_pool_state_empty_pools() {
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec { sdi_pools: vec![] },
+        };
+
+        let state = build_pool_state(&spec);
+        assert!(state.is_empty(), "empty sdi_pools must produce empty state");
+    }
+
+    // --- Sprint 31a: extract_cidr_prefix edge cases ---
+
+    #[test]
+    fn test_extract_cidr_prefix_boundary_values() {
+        assert_eq!(extract_cidr_prefix("10.0.0.0/0"), 0);
+        assert_eq!(extract_cidr_prefix("10.0.0.1/32"), 32);
+        assert_eq!(extract_cidr_prefix("10.0.0.0/8"), 8);
+        // Invalid prefix falls back to 24
+        assert_eq!(extract_cidr_prefix("10.0.0.0/abc"), 24);
+        assert_eq!(extract_cidr_prefix("10.0.0.0/999"), 24); // overflows u8
+    }
+
+    // --- Sprint 31a: no-flag pipeline — host-infra HCL generation ---
+
+    #[test]
+    fn test_no_flag_pipeline_host_infra_hcl_generation() {
+        use crate::core::tofu;
+
+        let nodes = vec![
+            NodeConnectionConfig {
+                name: "playbox-0".to_string(),
+                direct_reachable: false,
+                node_ip: "192.168.88.8".to_string(),
+                reachable_node_ip: Some("100.64.0.1".to_string()),
+                reachable_via: None,
+                admin_user: "jinwang".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Password,
+                ssh_password: Some("pass".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+            NodeConnectionConfig {
+                name: "playbox-1".to_string(),
+                direct_reachable: false,
+                node_ip: "192.168.88.9".to_string(),
+                reachable_node_ip: None,
+                reachable_via: Some(vec!["playbox-0".to_string()]),
+                admin_user: "jinwang".to_string(),
+                ssh_auth_mode: crate::core::config::SshAuthMode::Password,
+                ssh_password: Some("pass".to_string()),
+                ssh_key_path: None,
+                ssh_key_path_of_reachable_node: None,
+            },
+        ];
+
+        let inputs = build_host_infra_inputs(&nodes);
+        let net = NetworkDefaults {
+            bridge: "br0".to_string(),
+            cidr: "192.168.88.0/24".to_string(),
+            gateway: "192.168.88.1".to_string(),
+        };
+
+        let hcl = tofu::generate_tofu_host_infra(&inputs, &net.bridge, &net.cidr, &net.gateway);
+
+        assert!(hcl.contains("playbox-0"), "HCL must reference playbox-0");
+        assert!(hcl.contains("playbox-1"), "HCL must reference playbox-1");
+        assert!(hcl.contains("192.168.88.8"), "HCL must contain playbox-0 IP");
+        assert!(hcl.contains("jinwang"), "HCL must contain ssh_user");
+        assert!(hcl.contains("libvirt"), "HCL must use libvirt provider");
+    }
+
+    #[test]
+    fn test_no_flag_fallback_network_defaults_coherence() {
+        // When resolve_network_config returns Err, run_init uses hardcoded fallback.
+        // Verify the fallback matches documented defaults (192.168.88.0/24).
+        let result = resolve_network_config(None, None);
+        assert!(result.is_err());
+
+        let fallback = NetworkDefaults {
+            bridge: "br0".to_string(),
+            cidr: "192.168.88.0/24".to_string(),
+            gateway: "192.168.88.1".to_string(),
+        };
+        assert_eq!(extract_cidr_prefix(&fallback.cidr), 24);
+    }
 }

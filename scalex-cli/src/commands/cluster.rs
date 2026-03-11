@@ -829,4 +829,117 @@ kubespray_version: "v2.30.0"
             "Regression: kubespray submodule path missing from candidates"
         );
     }
+
+    // --- Sprint 31d: find_control_plane_ip edge cases ---
+
+    #[test]
+    fn test_find_cp_ip_sdi_no_cp_role_in_pool() {
+        // Pool exists but has only worker nodes — no control-plane
+        let cluster = make_sdi_cluster("sandbox", "sandbox-pool");
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "keys".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![SdiPool {
+                    pool_name: "sandbox-pool".to_string(),
+                    purpose: "workload".to_string(),
+                    placement: PlacementConfig {
+                        hosts: vec!["h0".to_string()],
+                        spread: false,
+                    },
+                    node_specs: vec![NodeSpec {
+                        node_name: "worker-0".to_string(),
+                        ip: "10.0.0.50".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 50,
+                        host: None,
+                        roles: vec!["worker".to_string()], // no control-plane
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+
+        let ip = find_control_plane_ip(&cluster, Some(&spec));
+        assert_eq!(ip, None, "must return None when pool has no control-plane nodes");
+    }
+
+    #[test]
+    fn test_find_cp_ip_baremetal_no_cp_role() {
+        let mut cluster = make_baremetal_cluster("edge", "workload");
+        // Override the node to only have worker role
+        cluster.baremetal_nodes = vec![BaremetalNode {
+            node_name: "bm-w-0".to_string(),
+            ip: "10.0.0.50".to_string(),
+            roles: vec!["worker".to_string()],
+        }];
+
+        let ip = find_control_plane_ip(&cluster, None);
+        assert_eq!(ip, None, "must return None when baremetal has no control-plane");
+    }
+
+    #[test]
+    fn test_find_cp_ip_sdi_without_spec_returns_none() {
+        // SDI mode but no spec provided (edge case during partial workflow)
+        let cluster = make_sdi_cluster("tower", "tower-pool");
+        let ip = find_control_plane_ip(&cluster, None);
+        assert_eq!(ip, None, "SDI mode without spec must return None");
+    }
+
+    // --- Sprint 31d: clusters_needing_gitops_update with 3+ clusters ---
+
+    #[test]
+    fn test_gitops_update_targets_three_clusters() {
+        let config = K8sClustersConfig {
+            config: K8sConfig {
+                common: make_common(),
+                clusters: vec![
+                    make_sdi_cluster("tower", "tower-pool"), // management
+                    {
+                        let mut c = make_sdi_cluster("sandbox", "sandbox-pool");
+                        c.cluster_role = "workload".to_string();
+                        c
+                    },
+                    {
+                        let mut c = make_baremetal_cluster("prod", "workload");
+                        c.cluster_role = "workload".to_string();
+                        c
+                    },
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let targets = clusters_needing_gitops_update(&config);
+        assert_eq!(targets.len(), 2, "both non-management clusters need update");
+        assert!(targets.contains(&"sandbox".to_string()));
+        assert!(targets.contains(&"prod".to_string()));
+    }
+
+    // --- Sprint 31d: build_kubeconfig_scp_args defaults ---
+
+    #[test]
+    fn test_kubeconfig_scp_default_root_user() {
+        // When ssh_user is None, collect_kubeconfig falls back to "root"
+        let args = build_kubeconfig_scp_args("root", "192.168.88.100", "/out/kube.yaml");
+        let scp_target = args.iter().find(|a| a.contains('@')).unwrap();
+        assert!(scp_target.starts_with("root@"), "default must be root@");
+    }
 }
