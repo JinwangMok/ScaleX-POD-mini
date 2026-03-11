@@ -118,6 +118,14 @@
 - [x] 버그 수정: setup-client.sh "playbox" → "scalex" 레거시 참조
 - [x] 5 tests 추가 (347 total)
 
+### Sprint 13d: Edge Cases (오프라인) ✅
+- [x] Cilium cluster_id 고유성 검증 (ClusterMesh 요구사항)
+- [x] 공통 설정 필수 필드 검증 (CNI, runtime, etcd, DNS 등)
+- [x] SDI+Baremetal 혼합 모드 공존 검증 (#9 확장성)
+- [x] SDI node placement → baremetal-init 호스트 참조 검증
+- [x] 클러스터 간 Pod/Service CIDR 비중복 검증
+- [x] 5 tests 추가 (352 total)
+
 ### Sprint 14: 실환경 E2E (물리 인프라 필요)
 - [ ] I-1 ~ I-6 순차 실행
 
@@ -181,7 +189,8 @@ _generated/
 | core/validation (13a-e) | 18 | config alignment, CF tunnel routing, idempotency, README accuracy, GitOps completeness |
 | core/validation (13b) | 2 | pre-OIDC kubectl access docs, NAT access methods docs |
 | core/validation (13c) | 5 | 2-layer template consistency, OIDC template, credentials completeness, setup-client fix |
-| **TOTAL** | **347** | |
+| core/validation (13d) | 5 | Cilium cluster_id, common config, mixed-mode, host placement, CIDR overlap |
+| **TOTAL** | **352** | |
 
 ---
 
@@ -189,6 +198,7 @@ _generated/
 
 | Sprint | Date | Tests | Summary |
 |--------|------|-------|---------|
+| 13d | 2026-03-11 | 352 | Edge cases: Cilium cluster_id, common config, mixed-mode, host placement, CIDR overlap |
 | 13c | 2026-03-11 | 347 | 2-layer template 정합성, OIDC 템플릿, credentials 완전성, setup-client.sh 버그 수정 |
 | 13b | 2026-03-11 | 342 | G-13 해결 (pre-OIDC kubectl 이미 문서화), NAT 접근 경로 검증 tests |
 | 13a | 2026-03-11 | 340 | Checklist 15항목 갭 분석 + 18 tests (config alignment, CF tunnel, idempotency, docs accuracy) |

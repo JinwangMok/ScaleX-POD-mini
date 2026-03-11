@@ -4906,4 +4906,190 @@ config:
             "setup-client.sh must reference scalex CLI"
         );
     }
+
+    // ── Sprint 13d: Edge Cases ──
+
+    #[test]
+    fn test_edge_cilium_cluster_id_uniqueness() {
+        // Multi-cluster Cilium ClusterMesh requires unique cluster_id per cluster
+        let k8s_clusters = include_str!("../../../config/k8s-clusters.yaml.example");
+
+        let cluster_ids: Vec<&str> = k8s_clusters
+            .lines()
+            .filter(|l| l.contains("cluster_id:"))
+            .map(|l| l.split(':').last().unwrap_or("").trim())
+            .collect();
+
+        assert!(
+            cluster_ids.len() >= 2,
+            "Must define at least 2 Cilium cluster_ids, found {}",
+            cluster_ids.len()
+        );
+
+        // All IDs must be unique
+        let mut seen = std::collections::HashSet::new();
+        for id in &cluster_ids {
+            assert!(
+                seen.insert(id),
+                "Duplicate Cilium cluster_id '{}' — ClusterMesh requires unique IDs",
+                id
+            );
+        }
+
+        // Cilium cluster_id must be 1-255
+        for id in &cluster_ids {
+            let num: u32 = id.parse().expect("cluster_id must be numeric");
+            assert!(
+                num >= 1 && num <= 255,
+                "Cilium cluster_id {} out of range (must be 1-255)",
+                num
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_common_config_essential_fields() {
+        // k8s-clusters common config must include all fields critical for multi-cluster consistency
+        let k8s_clusters = include_str!("../../../config/k8s-clusters.yaml.example");
+
+        let essential_fields = [
+            "kubernetes_version",
+            "container_runtime",
+            "cni",
+            "cgroup_driver",
+            "etcd_deployment_type",
+            "dns_mode",
+        ];
+
+        for field in &essential_fields {
+            assert!(
+                k8s_clusters.contains(field),
+                "k8s-clusters common config must include '{}' for multi-cluster consistency",
+                field
+            );
+        }
+
+        // CNI must be cilium (project requirement for ClusterMesh)
+        assert!(
+            k8s_clusters.contains("cni: \"cilium\""),
+            "CNI must be cilium for ClusterMesh multi-cluster networking"
+        );
+
+        // Container runtime must be containerd (production standard)
+        assert!(
+            k8s_clusters.contains("container_runtime: \"containerd\""),
+            "Container runtime must be containerd"
+        );
+
+        // etcd must be host deployment (production recommendation)
+        assert!(
+            k8s_clusters.contains("etcd_deployment_type: \"host\""),
+            "etcd deployment must be 'host' for production"
+        );
+    }
+
+    #[test]
+    fn test_edge_mixed_mode_sdi_and_baremetal_coexistence() {
+        // Verify k8s-clusters supports both SDI and baremetal mode clusters
+        let k8s_clusters = include_str!("../../../config/k8s-clusters.yaml.example");
+
+        // Must have at least one SDI-mode cluster (tower and sandbox)
+        assert!(
+            k8s_clusters.contains("cluster_sdi_resource_pool"),
+            "Must have SDI-mode clusters"
+        );
+
+        // Must document baremetal mode as a valid option (even if commented)
+        assert!(
+            k8s_clusters.contains("cluster_mode: \"baremetal\""),
+            "Must document baremetal cluster mode for extensibility (#9)"
+        );
+        assert!(
+            k8s_clusters.contains("baremetal_nodes"),
+            "Baremetal mode must show node definition syntax"
+        );
+    }
+
+    #[test]
+    fn test_edge_sdi_node_placement_host_references() {
+        // Every explicit host placement in sdi-specs must reference a node from .baremetal-init.yaml
+        let sdi_specs = include_str!("../../../config/sdi-specs.yaml.example");
+        let baremetal_init = include_str!("../../../credentials/.baremetal-init.yaml.example");
+
+        // Extract bare-metal node names
+        let bm_names: Vec<&str> = baremetal_init
+            .lines()
+            .filter(|l| l.trim().starts_with("- name:"))
+            .map(|l| l.split('"').nth(1).unwrap_or(""))
+            .collect();
+        assert!(!bm_names.is_empty(), "Must have baremetal nodes defined");
+
+        // Extract host references from sdi-specs (explicit placement)
+        for line in sdi_specs.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("host:") || trimmed.starts_with("hosts:") {
+                // Extract node names: handle both "quoted" and [bracket, list] and bare values
+                let value = trimmed.split(':').skip(1).collect::<Vec<_>>().join(":");
+                let value = value.split('#').next().unwrap_or("");
+                let value = value.replace(['[', ']', '"'], "");
+                for name in value.split(',') {
+                    let name = name.trim();
+                    if !name.is_empty() && name.contains("playbox") {
+                        assert!(
+                            bm_names.contains(&name),
+                            "SDI placement references host '{}' not in baremetal-init (available: {:?})",
+                            name,
+                            bm_names
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_edge_cluster_network_cidrs_no_overlap() {
+        // Pod and service CIDRs across clusters must not overlap for ClusterMesh
+        let k8s_clusters = include_str!("../../../config/k8s-clusters.yaml.example");
+
+        let mut pod_cidrs = Vec::new();
+        let mut service_cidrs = Vec::new();
+
+        for line in k8s_clusters.lines() {
+            let trimmed = line.trim();
+            if let Some(cidr) = trimmed.strip_prefix("pod_cidr:") {
+                pod_cidrs.push(cidr.trim().trim_matches('"'));
+            } else if let Some(cidr) = trimmed.strip_prefix("service_cidr:") {
+                service_cidrs.push(cidr.trim().trim_matches('"'));
+            }
+        }
+
+        assert!(
+            pod_cidrs.len() >= 2,
+            "Must have at least 2 pod CIDRs for multi-cluster"
+        );
+
+        // Pod CIDRs must differ (simple string comparison — full CIDR overlap check
+        // is done in test_cross_config_cidrs_no_overlap)
+        for i in 0..pod_cidrs.len() {
+            for j in (i + 1)..pod_cidrs.len() {
+                assert_ne!(
+                    pod_cidrs[i], pod_cidrs[j],
+                    "Pod CIDRs must not be identical across clusters: '{}'",
+                    pod_cidrs[i]
+                );
+            }
+        }
+
+        // Service CIDRs must differ
+        for i in 0..service_cidrs.len() {
+            for j in (i + 1)..service_cidrs.len() {
+                assert_ne!(
+                    service_cidrs[i], service_cidrs[j],
+                    "Service CIDRs must not be identical across clusters: '{}'",
+                    service_cidrs[i]
+                );
+            }
+        }
+    }
 }
