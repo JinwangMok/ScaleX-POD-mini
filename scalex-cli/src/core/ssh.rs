@@ -32,25 +32,10 @@ pub fn build_ssh_command(
     // Handle ProxyJump for non-direct nodes
     if !node.direct_reachable {
         if let Some(ref proxy_ip) = node.reachable_node_ip {
-            // Via external IP (e.g., Tailscale) — connect directly to that IP
+            // Via external IP (e.g., Tailscale) — the external IP reaches the SAME node,
+            // so connect directly to that IP and run the command (no inner SSH needed).
             args.push(format!("{}@{}", node.admin_user, proxy_ip));
-            // Then SSH from there to the actual node, including key if available
-            let key_flag = match node.ssh_auth_mode {
-                SshAuthMode::Key => node
-                    .ssh_key_path
-                    .as_deref()
-                    .map(|k| format!("-i {} ", k))
-                    .unwrap_or_default(),
-                SshAuthMode::Password => String::new(),
-            };
-            let inner_cmd = format!(
-                "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 {}{}@{} '{}'",
-                key_flag,
-                node.admin_user,
-                node.node_ip,
-                remote_command.replace('\'', "'\\''")
-            );
-            args.push(inner_cmd);
+            args.push(remote_command.to_string());
         } else if let Some(ref via_nodes) = node.reachable_via {
             // Via ProxyJump through another node
             if let Some(proxy_name) = via_nodes.first() {
@@ -260,10 +245,11 @@ mod tests {
         );
     }
 
-    /// B-3b: When reachable_node_ip is used (e.g. Tailscale), and key auth is active,
-    /// the inner SSH command must include `-i <key_path>`.
+    /// B-3b: When reachable_node_ip is used (e.g. Tailscale), SSH connects directly
+    /// to the external IP (same node, different network path) and runs the command.
+    /// The key should be in the outer SSH args, and the last arg is the remote command.
     #[test]
-    fn test_reachable_node_ip_with_key_auth_includes_key() {
+    fn test_reachable_node_ip_connects_directly() {
         let node = NodeConnectionConfig {
             name: "node0".to_string(),
             direct_reachable: false,
@@ -278,12 +264,25 @@ mod tests {
         };
 
         let cmd = build_ssh_command(&node, "hostname", &[node.clone()]).unwrap();
-        // The inner SSH command (connecting from Tailscale IP to LAN IP) must include -i
-        let inner_cmd = cmd.args.last().unwrap();
+        // Key should be in the outer SSH args
         assert!(
-            inner_cmd.contains("-i") && inner_cmd.contains("/keys/node_key"),
-            "Inner SSH via reachable_node_ip must include -i key, got: {}",
-            inner_cmd
+            cmd.args.contains(&"-i".to_string())
+                && cmd.args.contains(&"/keys/node_key".to_string()),
+            "SSH via reachable_node_ip must include -i key in outer args: {:?}",
+            cmd.args
+        );
+        // Connects to the external IP directly
+        assert!(
+            cmd.args.contains(&"jinwang@100.64.0.1".to_string()),
+            "Should connect to reachable_node_ip directly: {:?}",
+            cmd.args
+        );
+        // Last arg is the remote command, not an inner SSH
+        let last = cmd.args.last().unwrap();
+        assert_eq!(
+            last, "hostname",
+            "Last arg should be the command, not inner SSH: {}",
+            last
         );
     }
 }
