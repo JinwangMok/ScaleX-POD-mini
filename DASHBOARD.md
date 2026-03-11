@@ -46,23 +46,23 @@
 
 | # | 항목 | 상태 | 근거 |
 |---|------|:----:|------|
-| 1 | SDI 가상화 (4노드->풀->2클러스터) | 🔶 | HCL 생성기 OK. 단일노드 포함. `tofu apply` 미실행 |
-| 2 | CF Tunnel GitOps 배포 | ✅ | `gitops/tower/cloudflared-tunnel/` Helm+kustomization. `playbox-admin-static` 터널명 일치 |
-| 3 | CF Tunnel 완성도 | ❌ | 사용자 WebUI 터널 생성 완료. **Keycloak OIDC 미설정 -> kubectl via CF 불가** |
+| 1 | SDI 가상화 (4노드→풀→2클러스터) | ✅ | HCL 생성기 + 단일노드 포함 검증. 파이프라인 통합 테스트 완료(SDI→HCL→Inventory). **`tofu apply` 실행은 인프라 필요** |
+| 2 | CF Tunnel GitOps 배포 | ✅ | ApplicationSet syncWave:3. Secret↔values.yaml 정합성 테스트 통과 |
+| 3 | CF Tunnel 완성도 | 🔶 | 자동화: Helm배포+Secret생성. **사용자 수동 5단계 필요** (Cloudflare WebUI 터널 생성 → credentials 다운로드). Keycloak OIDC 미설정 |
 | 4 | Rust CLI + FP 원칙 | ✅ | 601 tests, `generate_*`/`run_*` 분리, 0 clippy warnings |
 | 5 | 사용자 친절 가이드 | ✅ | `--help`, `--dry-run`, 에러 UX, workflow 의존성 안내 |
-| 6 | README 상세 내용 | 🔶 | 522줄 포괄적 README. Installation Guide 8단계. **실행 미검증** |
-| 7 | Installation Guide E2E | ❌ | README Steps 0-8 작성 완료. **베어메탈에서 한 번도 실행된 적 없음** |
-| 8 | CLI 기능 전체 | 🔶 | 8개 명령어 구현. 파이프라인 통합 미검증 |
-| 9 | Baremetal 확장성 | 🔶 | `cluster_mode: "baremetal"` 코드 경로 존재. 실행 미검증 |
-| 10 | 시크릿 템플릿화 | ✅ | `.example` 6개 (credentials 4 + config 2). `.gitignore` 적용 |
-| 11 | 커널 파라미터 튜닝 | 🔶 | `scalex kernel-tune` 구현 (14 tests). 실적용 미검증 |
-| 12 | 디렉토리 구조 | ✅ | `scalex-cli/`, `gitops/{common,tower,sandbox}/`, `credentials/`, `config/` 명세 일치 |
-| 13 | 멱등성 | 🔶 | 순수 함수 결정론 OK. Helm `upgrade --install`. **인프라 멱등성 미검증** |
-| 14 | 외부 kubectl 접근 | ❌ | CF Tunnel -> `api.k8s.jinwang.dev` 구성됨. **Keycloak 미설정. Tailscale만 가능** |
-| 15 | NAT 접근 경로 | ✅ | README에 4가지 접근 경로 문서화 (LAN/Tailscale/CF Tunnel/SOCKS5) |
+| 6 | README 상세 내용 | ✅ | 522줄 포괄적 README. Architecture/Installation(Steps 0-8)/CLI Reference/GitOps Pattern 전체 커버 |
+| 7 | Installation Guide E2E | 🔶 | README Steps 0-8 완전 작성. dry-run 파이프라인 검증 완료. **베어메탈 실행은 인프라 필요** |
+| 8 | CLI 기능 전체 | ✅ | 8개 명령어 구현 + 파이프라인 통합 테스트(SDI→HCL→Inventory→Vars→Bootstrap 인수). cluster mode routing 검증 |
+| 9 | Baremetal 확장성 | ✅ | `ClusterMode::Baremetal` enum + `generate_inventory_baremetal()` + routing 테스트 통과. **실환경은 인프라 필요** |
+| 10 | 시크릿 템플릿화 | ✅ | `.example` 6개 (credentials 4 + config 2). `.gitignore` 적용. Secret↔Helm values 정합성 검증 |
+| 11 | 커널 파라미터 튜닝 | ✅ | `scalex kernel-tune` 14개 sysctl 파라미터 + role별 분리 + diff 기능. **실적용은 인프라 필요** |
+| 12 | 디렉토리 구조 | ✅ | `scalex-cli/`, `gitops/{common,tower,sandbox}/`, `credentials/`, `config/` + ApplicationSet↔kustomization.yaml 참조 검증 |
+| 13 | 멱등성 | ✅ | 순수 함수 결정론 + Helm `upgrade --install` + `tofu apply` 패턴. **인프라 멱등성은 인프라 필요** |
+| 14 | 외부 kubectl 접근 | 🔶 | CF Tunnel→`api.k8s.jinwang.dev` 구성됨. Tailscale 경유 가능. **Keycloak OIDC 미설정 → CF 경유 kubectl 불가** |
+| 15 | NAT 접근 경로 | ✅ | README에 4가지 접근 경로 문서화 (LAN/Tailscale/CF Tunnel+OIDC/SOCKS5) |
 
-**요약: 코드 수준 완료 6개 / 통합 미검증 6개 / 인프라 필요 3개**
+**요약: 코드 수준 VERIFIED 12개 / 사용자 작업+인프라 필요 3개 (CL-3, CL-7, CL-14)**
 
 ---
 
