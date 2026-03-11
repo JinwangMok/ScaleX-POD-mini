@@ -1479,8 +1479,7 @@ br0
 net.ipv4.ip_forward = 1
 ---SCALEX_FACTS_END---"#;
 
-        let facts =
-            crate::commands::facts::parse_facts_output_public("playbox-0", raw).unwrap();
+        let facts = crate::commands::facts::parse_facts_output_public("playbox-0", raw).unwrap();
 
         // Serialize to JSON (what `scalex facts` writes to _generated/facts/)
         let json = serde_json::to_string_pretty(&facts).unwrap();
@@ -1510,8 +1509,7 @@ net.ipv4.ip_forward = 1
     #[test]
     fn test_chain_sdi_vm_ips_flow_into_inventory_ansible_host() {
         let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
-        let sdi_spec: crate::models::sdi::SdiSpec =
-            serde_yaml::from_str(sdi_content).unwrap();
+        let sdi_spec: crate::models::sdi::SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
 
         let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
         let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
@@ -1531,8 +1529,7 @@ net.ipv4.ip_forward = 1
                 });
 
             // Generate inventory from this cluster + sdi spec
-            let inventory =
-                crate::core::kubespray::generate_inventory(cluster, &sdi_spec).unwrap();
+            let inventory = crate::core::kubespray::generate_inventory(cluster, &sdi_spec).unwrap();
 
             // Every VM IP in the SDI pool must appear as ansible_host in inventory
             for node in &pool.node_specs {
