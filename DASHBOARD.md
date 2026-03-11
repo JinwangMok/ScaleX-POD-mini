@@ -73,17 +73,17 @@
 
 ## Gap Summary
 
-### 오프라인에서 추가 검증 가능한 갭
+### 오프라인 갭 — 전부 해결 ✅
 
-| ID | 갭 | 해결 방법 |
-|----|------|-----------|
-| G-7 | Config example 파일이 체크리스트 스펙과 정확히 일치하는지 테스트 없음 | 파싱 + 필드 존재 테스트 추가 |
-| G-8 | `sdi init` (no-flag) 자동 디스커버리 경로 테스트 부족 | resource pool summary 생성 로직 테스트 |
-| G-9 | CF Tunnel values.yaml 라우팅이 kubectl 접근 도메인과 일치하는지 테스트 없음 | GitOps YAML 파싱 테스트 |
-| G-10 | 멱등성 (같은 입력 → 같은 출력) 오프라인 테스트 부족 | HCL/inventory 재생성 동일성 테스트 |
-| G-11 | README 설치 가이드의 명령어가 실제 CLI와 일치하는지 테스트 없음 | README 파싱 + CLI 구조 비교 테스트 |
-| G-12 | 불필요 파일 존재 (PROMPT.md, REQUEST-TO-USER.md) | 삭제 |
-| ~~G-13~~ | ~~Keycloak 없이 외부 kubectl 직접 접근 방법 미문서화~~ | **RESOLVED** — `docs/ops-guide.md` Section 4 "Pre-OIDC" 이미 문서화 |
+| ID | 갭 | 해결 Sprint |
+|----|------|-------------|
+| ~~G-7~~ | Config example 파일 스펙 일치 | **13a** — 파싱 + 필드 존재 테스트 |
+| ~~G-8~~ | `sdi init` 자동 디스커버리 경로 | **13a** — resource pool summary 테스트 |
+| ~~G-9~~ | CF Tunnel 라우팅 도메인 일치 | **13a** — GitOps YAML 파싱 테스트 |
+| ~~G-10~~ | 멱등성 오프라인 테스트 | **13a** — HCL/inventory 재생성 동일성 |
+| ~~G-11~~ | README CLI 명령어 일치 | **13a** — README 파싱 + CLI 비교 |
+| ~~G-12~~ | 불필요 파일 (PROMPT.md 등) | **13a** — 삭제 완료 |
+| ~~G-13~~ | Keycloak 없이 외부 kubectl | **13b** — ops-guide.md Section 4 이미 문서화 |
 
 ### 실환경 필수 갭 (물리 인프라 필요)
 
@@ -100,10 +100,12 @@
 
 ## Execution Plan
 
-### Sprint 13a: Config Format Alignment Tests (오프라인)
-- [ ] `.baremetal-init.yaml.example` 파싱 + 3가지 SSH 모드 필드 존재 검증
-- [ ] `sdi-specs.yaml.example` 파싱 + pool_name/nodeSpecs 구조 검증
-- [ ] `k8s-clusters.yaml.example` 파싱 + cluster_sdi_resource_pool 매핑 검증
+### Sprint 13a: Config Format Alignment + Gap Tests (오프라인) ✅
+- [x] `.baremetal-init.yaml.example` 파싱 + 3가지 SSH 모드 필드 존재 검증
+- [x] `sdi-specs.yaml.example` 파싱 + pool_name/nodeSpecs 구조 검증
+- [x] `k8s-clusters.yaml.example` 파싱 + cluster_sdi_resource_pool 매핑 검증
+- [x] CF Tunnel 라우팅, 멱등성, README, GitOps 디렉토리 등 18 tests
+- [x] PROMPT.md, REQUEST-TO-USER.md 삭제
 
 ### Sprint 13b: External Access Documentation Verification (오프라인) ✅
 - [x] G-13 해결: Pre-OIDC kubectl 접근 경로 검증 (ops-guide.md Section 4 이미 문서화)
