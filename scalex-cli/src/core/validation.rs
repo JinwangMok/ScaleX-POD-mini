@@ -304,6 +304,127 @@ pub fn validate_bootstrap_prerequisites(
     warnings
 }
 
+// ── Sprint 39: 2-Layer cross-validation ──
+
+/// Cross-validate SDI spec pools against K8s cluster definitions.
+/// Checks: every SDI pool referenced by a cluster has a control-plane node,
+/// node IPs don't fall within pod/service CIDRs, and orphan pools are warned.
+/// Pure function: no I/O.
+pub fn validate_two_layer_consistency(
+    k8s_config: &K8sClustersConfig,
+    sdi_spec: &SdiSpec,
+) -> (Vec<String>, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    // 1. Every SDI pool used by a cluster must have at least one control-plane node
+    for cluster in &k8s_config.config.clusters {
+        if cluster.cluster_mode == ClusterMode::Baremetal {
+            continue;
+        }
+        if let Some(pool) = sdi_spec
+            .spec
+            .sdi_pools
+            .iter()
+            .find(|p| p.pool_name == cluster.cluster_sdi_resource_pool)
+        {
+            let has_cp = pool
+                .node_specs
+                .iter()
+                .any(|n| n.roles.iter().any(|r| r == "control-plane"));
+            if !has_cp {
+                errors.push(format!(
+                    "Cluster '{}' references SDI pool '{}' which has no control-plane node. \
+                     Kubespray requires at least one.",
+                    cluster.cluster_name, pool.pool_name
+                ));
+            }
+        }
+    }
+
+    // 2. SDI node IPs must not fall within any cluster's pod/service CIDRs
+    for pool in &sdi_spec.spec.sdi_pools {
+        for node in &pool.node_specs {
+            for cluster in &k8s_config.config.clusters {
+                if ip_in_cidr(&node.ip, &cluster.network.pod_cidr) {
+                    errors.push(format!(
+                        "SDI node '{}' IP '{}' falls within cluster '{}' pod CIDR '{}' — \
+                         management IPs must not overlap with pod network",
+                        node.node_name, node.ip, cluster.cluster_name, cluster.network.pod_cidr
+                    ));
+                }
+                if ip_in_cidr(&node.ip, &cluster.network.service_cidr) {
+                    errors.push(format!(
+                        "SDI node '{}' IP '{}' falls within cluster '{}' service CIDR '{}' — \
+                         management IPs must not overlap with service network",
+                        node.node_name,
+                        node.ip,
+                        cluster.cluster_name,
+                        cluster.network.service_cidr
+                    ));
+                }
+            }
+        }
+    }
+
+    // 3. Orphan pools: SDI pools not referenced by any cluster
+    let referenced_pools: std::collections::HashSet<&str> = k8s_config
+        .config
+        .clusters
+        .iter()
+        .filter(|c| c.cluster_mode != ClusterMode::Baremetal)
+        .map(|c| c.cluster_sdi_resource_pool.as_str())
+        .collect();
+
+    for pool in &sdi_spec.spec.sdi_pools {
+        if !referenced_pools.contains(pool.pool_name.as_str()) {
+            warnings.push(format!(
+                "SDI pool '{}' is not referenced by any cluster in k8s-clusters config. \
+                 This pool will be created but unused.",
+                pool.pool_name
+            ));
+        }
+    }
+
+    (errors, warnings)
+}
+
+/// Check if an IP address falls within a CIDR range.
+/// Pure function.
+fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
+    let ip_u32 = match parse_ip(ip) {
+        Some(v) => v,
+        None => return false,
+    };
+    let (net, prefix) = match parse_cidr(cidr) {
+        Some(v) => v,
+        None => return false,
+    };
+    let mask = if prefix == 0 {
+        0
+    } else {
+        !((1u32 << (32 - prefix)) - 1)
+    };
+    (ip_u32 & mask) == net
+}
+
+/// Parse an IPv4 address into a u32. Pure function.
+fn parse_ip(ip: &str) -> Option<u32> {
+    let octets: Vec<&str> = ip.split('.').collect();
+    if octets.len() != 4 {
+        return None;
+    }
+    let mut result: u32 = 0;
+    for octet in &octets {
+        let val: u32 = octet.parse().ok()?;
+        if val > 255 {
+            return None;
+        }
+        result = (result << 8) | val;
+    }
+    Some(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7501,5 +7622,195 @@ config:
                 cluster.cluster_name
             );
         }
+    }
+
+    // ── Sprint 39: 2-Layer cross-validation tests ──
+
+    #[test]
+    fn test_two_layer_consistency_valid_example_configs() {
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let (errors, warnings) = validate_two_layer_consistency(&k8s_config, &sdi_spec);
+        assert!(errors.is_empty(), "example configs must have no cross-layer errors: {:?}", errors);
+        assert!(warnings.is_empty(), "example configs must have no orphan pool warnings: {:?}", warnings);
+    }
+
+    #[test]
+    fn test_two_layer_no_control_plane_in_pool_detected() {
+        let sdi = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "test".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "key".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![SdiPool {
+                    pool_name: "workers-only".to_string(),
+                    purpose: "test".to_string(),
+                    placement: PlacementConfig::default(),
+                    node_specs: vec![NodeSpec {
+                        node_name: "w-0".to_string(),
+                        ip: "192.168.88.50".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 50,
+                        host: None,
+                        roles: vec!["worker".to_string()],
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+
+        let k8s = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'").unwrap(),
+                clusters: vec![make_cluster("test", "workers-only", ClusterMode::Sdi)],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let (errors, _) = validate_two_layer_consistency(&k8s, &sdi);
+        assert!(!errors.is_empty(), "must detect missing control-plane");
+        assert!(errors[0].contains("control-plane"), "error must mention control-plane");
+    }
+
+    #[test]
+    fn test_two_layer_node_ip_in_pod_cidr_detected() {
+        // SDI node IP 10.244.0.50 falls within pod CIDR 10.244.0.0/20
+        let sdi = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "test".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.244.0.0/20".to_string(),
+                    gateway: "10.244.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "key".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![SdiPool {
+                    pool_name: "bad-pool".to_string(),
+                    purpose: "test".to_string(),
+                    placement: PlacementConfig::default(),
+                    node_specs: vec![NodeSpec {
+                        node_name: "cp-0".to_string(),
+                        ip: "10.244.0.50".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 50,
+                        host: None,
+                        roles: vec!["control-plane".to_string(), "worker".to_string()],
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+
+        let k8s = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'").unwrap(),
+                clusters: vec![ClusterDef {
+                    cluster_name: "test".to_string(),
+                    cluster_mode: ClusterMode::Sdi,
+                    cluster_sdi_resource_pool: "bad-pool".to_string(),
+                    baremetal_nodes: vec![],
+                    cluster_role: "workload".to_string(),
+                    network: ClusterNetwork {
+                        pod_cidr: "10.244.0.0/20".to_string(),
+                        service_cidr: "10.96.0.0/20".to_string(),
+                        dns_domain: "test.local".to_string(),
+                        native_routing_cidr: None,
+                    },
+                    cilium: None,
+                    oidc: None,
+                    kubespray_extra_vars: None,
+                    ssh_user: None,
+                }],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let (errors, _) = validate_two_layer_consistency(&k8s, &sdi);
+        assert!(!errors.is_empty(), "must detect node IP in pod CIDR");
+        assert!(errors[0].contains("pod CIDR"), "error must mention pod CIDR");
+    }
+
+    #[test]
+    fn test_two_layer_orphan_pool_warned() {
+        let sdi = make_sdi_spec_with_pools(&["tower", "sandbox", "orphan"]);
+
+        let k8s = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'").unwrap(),
+                clusters: vec![
+                    make_cluster("tower", "tower", ClusterMode::Sdi),
+                    make_cluster("sandbox", "sandbox", ClusterMode::Sdi),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let (errors, warnings) = validate_two_layer_consistency(&k8s, &sdi);
+        assert!(errors.is_empty(), "no errors expected");
+        assert_eq!(warnings.len(), 1, "must warn about orphan pool");
+        assert!(warnings[0].contains("orphan"), "warning must mention pool name");
+    }
+
+    #[test]
+    fn test_two_layer_baremetal_clusters_skipped() {
+        let sdi = make_sdi_spec_with_pools(&["tower"]);
+
+        let k8s = K8sClustersConfig {
+            config: K8sConfig {
+                common: serde_yaml::from_str("kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'").unwrap(),
+                clusters: vec![
+                    make_cluster("tower", "tower", ClusterMode::Sdi),
+                    make_cluster("prod", "", ClusterMode::Baremetal),
+                ],
+                argocd: None,
+                domains: None,
+            },
+        };
+
+        let (errors, _) = validate_two_layer_consistency(&k8s, &sdi);
+        assert!(errors.is_empty(), "baremetal clusters should be skipped in SDI validation");
+    }
+
+    #[test]
+    fn test_ip_in_cidr_helper() {
+        assert!(ip_in_cidr("10.244.0.50", "10.244.0.0/20"));
+        assert!(ip_in_cidr("10.244.15.255", "10.244.0.0/20"));
+        assert!(!ip_in_cidr("10.244.16.0", "10.244.0.0/20"));
+        assert!(!ip_in_cidr("192.168.88.50", "10.244.0.0/20"));
+        assert!(!ip_in_cidr("invalid", "10.244.0.0/20"));
+        assert!(!ip_in_cidr("10.244.0.50", "invalid"));
     }
 }
