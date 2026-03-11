@@ -1630,4 +1630,409 @@ supplementary_addresses_in_ssl_keys:
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("control-plane"));
     }
+
+    // ── Sprint 36: Single-node SDI support tests (CL-1 philosophy) ──
+
+    /// CL-1: Single-node SDI — one node with all roles (control-plane+worker+etcd)
+    /// must produce a valid inventory where the node appears in all sections.
+    #[test]
+    fn test_generate_inventory_sdi_single_node_all_roles() {
+        let sdi_spec = SdiSpec {
+            resource_pool: crate::models::sdi::ResourcePoolConfig {
+                name: "mini-pool".to_string(),
+                network: crate::models::sdi::NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec!["8.8.8.8".to_string()],
+                },
+            },
+            os_image: crate::models::sdi::OsImageConfig {
+                source: "https://example.com/img.qcow2".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: crate::models::sdi::CloudInitConfig {
+                ssh_authorized_keys_file: "~/.ssh/id.pub".to_string(),
+                packages: vec![],
+            },
+            spec: crate::models::sdi::SdiPoolsSpec {
+                sdi_pools: vec![crate::models::sdi::SdiPool {
+                    pool_name: "single".to_string(),
+                    purpose: "all-in-one".to_string(),
+                    placement: Default::default(),
+                    node_specs: vec![crate::models::sdi::NodeSpec {
+                        node_name: "aio-0".to_string(),
+                        ip: "192.168.88.50".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 50,
+                        host: Some("playbox-0".to_string()),
+                        roles: vec![
+                            "control-plane".to_string(),
+                            "worker".to_string(),
+                            "etcd".to_string(),
+                        ],
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+
+        let cluster = ClusterDef {
+            cluster_name: "single-cluster".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Sdi,
+            cluster_sdi_resource_pool: "single".to_string(),
+            baremetal_nodes: vec![],
+            cluster_role: "management".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.244.0.0/20".to_string(),
+                service_cidr: "10.96.0.0/20".to_string(),
+                dns_domain: "single.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+            ssh_user: None,
+        };
+
+        let ini = generate_inventory(&cluster, &sdi_spec).unwrap();
+
+        // Node appears in [all] exactly once
+        assert_eq!(
+            ini.matches("ansible_host=192.168.88.50").count(),
+            1,
+            "single node must appear exactly once in [all]"
+        );
+        // Node appears in all three role sections
+        assert!(
+            ini.contains("[kube_control_plane]\naio-0"),
+            "single node must be in kube_control_plane"
+        );
+        assert!(
+            ini.contains("[etcd]\naio-0"),
+            "single node must be in etcd"
+        );
+        assert!(
+            ini.contains("[kube_node]\naio-0"),
+            "single node must be in kube_node (worker)"
+        );
+        // k8s_cluster:children always present
+        assert!(ini.contains("[k8s_cluster:children]"));
+    }
+
+    /// CL-1: IP consistency — SDI spec node IPs must exactly match inventory ansible_host.
+    #[test]
+    fn test_sdi_inventory_ip_consistency() {
+        let sdi_spec = SdiSpec {
+            resource_pool: crate::models::sdi::ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: crate::models::sdi::NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: crate::models::sdi::OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: crate::models::sdi::CloudInitConfig {
+                ssh_authorized_keys_file: "key".to_string(),
+                packages: vec![],
+            },
+            spec: crate::models::sdi::SdiPoolsSpec {
+                sdi_pools: vec![crate::models::sdi::SdiPool {
+                    pool_name: "multi".to_string(),
+                    purpose: "test".to_string(),
+                    placement: Default::default(),
+                    node_specs: vec![
+                        crate::models::sdi::NodeSpec {
+                            node_name: "cp-0".to_string(),
+                            ip: "10.0.0.10".to_string(),
+                            cpu: 2,
+                            mem_gb: 4,
+                            disk_gb: 30,
+                            host: None,
+                            roles: vec!["control-plane".to_string()],
+                            devices: None,
+                        },
+                        crate::models::sdi::NodeSpec {
+                            node_name: "w-0".to_string(),
+                            ip: "10.0.0.20".to_string(),
+                            cpu: 4,
+                            mem_gb: 8,
+                            disk_gb: 50,
+                            host: None,
+                            roles: vec!["worker".to_string()],
+                            devices: None,
+                        },
+                    ],
+                }],
+            },
+        };
+
+        let cluster = ClusterDef {
+            cluster_name: "ip-test".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Sdi,
+            cluster_sdi_resource_pool: "multi".to_string(),
+            baremetal_nodes: vec![],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.233.0.0/17".to_string(),
+                service_cidr: "10.233.128.0/18".to_string(),
+                dns_domain: "test.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+            ssh_user: None,
+        };
+
+        let ini = generate_inventory(&cluster, &sdi_spec).unwrap();
+
+        // Every SDI spec IP must appear exactly once as ansible_host
+        assert_eq!(ini.matches("ansible_host=10.0.0.10").count(), 1);
+        assert_eq!(ini.matches("ansible_host=10.0.0.20").count(), 1);
+        // ip= field must match ansible_host (both are the SDI spec IP)
+        assert!(ini.contains("cp-0 ansible_host=10.0.0.10 ip=10.0.0.10"));
+        assert!(ini.contains("w-0 ansible_host=10.0.0.20 ip=10.0.0.20"));
+    }
+
+    /// CL-1: SDI pool with no control-plane nodes must be rejected.
+    #[test]
+    fn test_sdi_inventory_no_control_plane_rejected() {
+        let sdi_spec = SdiSpec {
+            resource_pool: crate::models::sdi::ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: crate::models::sdi::NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: crate::models::sdi::OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: crate::models::sdi::CloudInitConfig {
+                ssh_authorized_keys_file: "key".to_string(),
+                packages: vec![],
+            },
+            spec: crate::models::sdi::SdiPoolsSpec {
+                sdi_pools: vec![crate::models::sdi::SdiPool {
+                    pool_name: "workers-only".to_string(),
+                    purpose: "test".to_string(),
+                    placement: Default::default(),
+                    node_specs: vec![crate::models::sdi::NodeSpec {
+                        node_name: "w-0".to_string(),
+                        ip: "10.0.0.10".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 50,
+                        host: None,
+                        roles: vec!["worker".to_string()],
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+
+        let cluster = ClusterDef {
+            cluster_name: "fail-test".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Sdi,
+            cluster_sdi_resource_pool: "workers-only".to_string(),
+            baremetal_nodes: vec![],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.233.0.0/17".to_string(),
+                service_cidr: "10.233.128.0/18".to_string(),
+                dns_domain: "test.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+            ssh_user: None,
+        };
+
+        let result = generate_inventory(&cluster, &sdi_spec);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("control-plane"));
+    }
+
+    /// CL-1: Nonexistent SDI pool name must produce a clear error.
+    #[test]
+    fn test_sdi_inventory_missing_pool_error() {
+        let sdi_spec = SdiSpec {
+            resource_pool: crate::models::sdi::ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: crate::models::sdi::NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "10.0.0.0/24".to_string(),
+                    gateway: "10.0.0.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: crate::models::sdi::OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: crate::models::sdi::CloudInitConfig {
+                ssh_authorized_keys_file: "key".to_string(),
+                packages: vec![],
+            },
+            spec: crate::models::sdi::SdiPoolsSpec {
+                sdi_pools: vec![],
+            },
+        };
+
+        let cluster = ClusterDef {
+            cluster_name: "ghost".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Sdi,
+            cluster_sdi_resource_pool: "nonexistent".to_string(),
+            baremetal_nodes: vec![],
+            cluster_role: "workload".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.233.0.0/17".to_string(),
+                service_cidr: "10.233.128.0/18".to_string(),
+                dns_domain: "test.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: None,
+            oidc: None,
+            kubespray_extra_vars: None,
+            ssh_user: None,
+        };
+
+        let result = generate_inventory(&cluster, &sdi_spec);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("nonexistent"),
+            "error must mention the missing pool name"
+        );
+        assert!(
+            err.contains("not found"),
+            "error must indicate pool was not found"
+        );
+    }
+
+    /// CL-1: Minimal pipeline — single bare-metal → single SDI pool → single cluster
+    /// generates both valid inventory AND valid cluster vars.
+    #[test]
+    fn test_minimal_pipeline_single_node_inventory_and_vars() {
+        // 1. Define a minimal SDI spec with 1 pool, 1 node (all roles)
+        let sdi_spec = SdiSpec {
+            resource_pool: crate::models::sdi::ResourcePoolConfig {
+                name: "mini".to_string(),
+                network: crate::models::sdi::NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.1.0/24".to_string(),
+                    gateway: "192.168.1.1".to_string(),
+                    nameservers: vec!["1.1.1.1".to_string()],
+                },
+            },
+            os_image: crate::models::sdi::OsImageConfig {
+                source: "img.qcow2".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: crate::models::sdi::CloudInitConfig {
+                ssh_authorized_keys_file: "key.pub".to_string(),
+                packages: vec![],
+            },
+            spec: crate::models::sdi::SdiPoolsSpec {
+                sdi_pools: vec![crate::models::sdi::SdiPool {
+                    pool_name: "mini-tower".to_string(),
+                    purpose: "management".to_string(),
+                    placement: Default::default(),
+                    node_specs: vec![crate::models::sdi::NodeSpec {
+                        node_name: "tower-0".to_string(),
+                        ip: "192.168.1.100".to_string(),
+                        cpu: 2,
+                        mem_gb: 3,
+                        disk_gb: 30,
+                        host: Some("playbox-0".to_string()),
+                        roles: vec![
+                            "control-plane".to_string(),
+                            "worker".to_string(),
+                        ],
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+
+        // 2. Define cluster pointing to the SDI pool
+        let common = CommonConfig {
+            kubernetes_version: "1.33.1".to_string(),
+            kubespray_version: "v2.30.0".to_string(),
+            container_runtime: "containerd".to_string(),
+            cni: "cilium".to_string(),
+            cilium_version: "1.17.5".to_string(),
+            kube_proxy_remove: true,
+            cgroup_driver: "systemd".to_string(),
+            helm_enabled: true,
+            kube_apiserver_admission_plugins: vec!["NodeRestriction".to_string()],
+            firewalld_enabled: false,
+            kube_vip_enabled: false,
+            gateway_api_enabled: false,
+            gateway_api_version: String::new(),
+            graceful_node_shutdown: true,
+            graceful_node_shutdown_sec: 120,
+            kubelet_custom_flags: vec![],
+            kubeconfig_localhost: true,
+            kubectl_localhost: true,
+            enable_nodelocaldns: true,
+            kube_network_node_prefix: 24,
+            ntp_enabled: true,
+            etcd_deployment_type: "host".to_string(),
+            dns_mode: "coredns".to_string(),
+        };
+
+        let cluster = ClusterDef {
+            cluster_name: "tower".to_string(),
+            cluster_mode: crate::models::cluster::ClusterMode::Sdi,
+            cluster_sdi_resource_pool: "mini-tower".to_string(),
+            baremetal_nodes: vec![],
+            cluster_role: "management".to_string(),
+            network: ClusterNetwork {
+                pod_cidr: "10.244.0.0/20".to_string(),
+                service_cidr: "10.96.0.0/20".to_string(),
+                dns_domain: "tower.local".to_string(),
+                native_routing_cidr: None,
+            },
+            cilium: Some(crate::models::cluster::CiliumConfig {
+                cluster_id: 1,
+                cluster_name: "tower".to_string(),
+            }),
+            oidc: None,
+            kubespray_extra_vars: None,
+            ssh_user: None,
+        };
+
+        // 3. Generate inventory
+        let ini = generate_inventory(&cluster, &sdi_spec).unwrap();
+        assert!(ini.contains("tower-0 ansible_host=192.168.1.100"));
+        assert!(ini.contains("[kube_control_plane]\ntower-0"));
+        assert!(ini.contains("[kube_node]\ntower-0"));
+
+        // 4. Generate cluster vars
+        let vars = generate_cluster_vars(&cluster, &common);
+        assert!(vars.contains("kube_version: \"1.33.1\""));
+        assert!(vars.contains("container_manager: \"containerd\""));
+        // When cni=cilium, kubespray uses "cni" as plugin (Cilium managed by GitOps)
+        assert!(vars.contains("kube_network_plugin: cni"));
+        assert!(
+            vars.contains("kube_pods_subnet: \"10.244.0.0/20\""),
+            "cluster vars must include pod CIDR from cluster def"
+        );
+        assert!(
+            vars.contains("kube_service_addresses: \"10.96.0.0/20\""),
+            "cluster vars must include service CIDR from cluster def"
+        );
+    }
 }
