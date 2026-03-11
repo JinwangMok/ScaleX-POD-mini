@@ -98,7 +98,7 @@
 | clap derive CLI | ✅ |
 | 순수 함수/I/O 분리 (`generate_*` / `run_*`) | ✅ |
 | thiserror 에러 처리 | ✅ |
-| 537 tests, 0 clippy warnings, fmt OK | ✅ |
+| 554 tests, 0 clippy warnings, fmt OK | ✅ |
 
 ### CL-5. 사용자 친절한 가이드 -- ✅ VERIFIED (Sprint 38 강화)
 
@@ -147,7 +147,7 @@ Architecture, Philosophy(7원칙), Installation(Step 0~8), CLI Reference, GitOps
 ### CL-12. 디렉토리 구조 -- ✅ STRUCTURE-OK
 
 ```
-scalex-cli/           ✅ Rust CLI (537 tests)
+scalex-cli/           ✅ Rust CLI (554 tests)
 gitops/               ✅ ArgoCD multi-cluster
   bootstrap/          ✅ spread.yaml
   generators/         ✅ tower/ + sandbox/
@@ -235,6 +235,23 @@ tests/                ✅ run-tests.sh
 - Node IP ↔ Pod/Service CIDR 충돌 감지 ✅
 - Orphan pool (미참조 SDI pool) 경고 ✅
 - `ip_in_cidr()` helper + edge case 테스트 ✅
+
+### Sprint 40: 프로덕션 준비 수준 개선 — 5개 이슈 해소 (537 → 554 tests) ✅ DONE
+
+**결과**: 537 → 554 tests (+17), 0 clippy warnings, fmt OK
+
+- **P0 BUG FIX**: Cloudflare credentials — 파일 경로를 Secret에 저장하던 버그 수정 ✅
+  - `commands/secrets.rs`: `load_and_resolve_secrets()` — 파일 경로 감지 시 내용 읽어서 교체
+  - `core/secrets.rs`: `is_credentials_file_path()` 순수 함수 추가
+- **P1**: YAML value escaping — JSON/따옴표/개행 포함 값에 block scalar(`|`) 사용 ✅
+  - `generate_k8s_secret_yaml()` 개선: 특수 문자 감지 시 `|` 블록 스칼라 자동 적용
+- **P2**: `--output json` 플래그 추가 (`scalex get --output json baremetals/sdi-pools`) ✅
+  - `OutputFormat` enum, `facts_to_json()`, `sdi_pools_to_json()` 순수 함수
+- **P3**: Prerequisite tool checks 순수 함수 라이브러리 ✅
+  - `prerequisites_for_command()`, `check_tool_available()`, `find_missing_prerequisites()`, `check_prerequisites()`
+- **P4**: Kubespray submodule validation ✅
+  - `validate_kubespray_submodule()` — 디렉토리 존재 + cluster.yml 초기화 확인
+- **Cleanup**: 13개 compiler warnings → 0, `#[allow(dead_code)]` for core module APIs
 
 ---
 
@@ -362,23 +379,23 @@ _generated/
 
 ---
 
-## Test Summary (537 tests total)
+## Test Summary (554 tests total)
 
 | Module | Tests | 주요 커버리지 |
 |--------|:-----:|----------|
-| core/validation | 101+ | pool mapping, cluster IDs/names, CIDR overlap, DNS, bootstrap, 2-layer consistency |
+| core/validation | 197 | pool mapping, cluster IDs/names, CIDR overlap, DNS, bootstrap, 2-layer consistency, prerequisites |
+| commands/sdi | 47 | network resolve, host infra, pool state, clean, GPU |
 | core/gitops | 39 | ApplicationSet, kustomization, sync waves, Cilium |
 | core/kubespray | 38 | inventory (SDI + baremetal), cluster vars, OIDC, single-node SDI |
-| commands/sdi | 31 | network resolve, host infra, pool state, clean, GPU |
 | commands/cluster | 28 | cluster init, SDI/baremetal, gitops, E2E pipeline |
-| commands/status | 21 | platform status |
-| core/secrets | 18 | K8s secret generation, edge cases |
-| commands/get | 18 | facts row, config status, SDI pools, clusters |
+| core/sync | 27 | sync diff, VM conflict, severity |
 | core/config | 24 | baremetal config, semantic validation, error UX |
+| commands/get | 24 | facts row, config status, SDI pools, clusters, JSON output |
+| core/secrets | 23 | K8s secret generation, block scalar, JSON values, edge cases |
+| commands/status | 21 | platform status |
 | core/kernel | 14 | kernel-tune recommendations |
-| commands/bootstrap | 14+ | ArgoCD helm, cluster add, kubectl apply |
+| commands/bootstrap | 14 | ArgoCD helm, cluster add, kubectl apply |
 | commands/facts | 14 | facts gathering, parse edge cases |
-| core/sync | 13 | sync diff, VM conflict, severity |
 | core/host_prepare | 12 | KVM, bridge, VFIO |
 | core/tofu | 12 | HCL gen, SSH URI, VFIO, single-node |
 | models/* | 8 | parse/serialize |

@@ -877,7 +877,10 @@ kubespray_version: "v2.30.0"
         };
 
         let ip = find_control_plane_ip(&cluster, Some(&spec));
-        assert_eq!(ip, None, "must return None when pool has no control-plane nodes");
+        assert_eq!(
+            ip, None,
+            "must return None when pool has no control-plane nodes"
+        );
     }
 
     #[test]
@@ -891,7 +894,10 @@ kubespray_version: "v2.30.0"
         }];
 
         let ip = find_control_plane_ip(&cluster, None);
-        assert_eq!(ip, None, "must return None when baremetal has no control-plane");
+        assert_eq!(
+            ip, None,
+            "must return None when baremetal has no control-plane"
+        );
     }
 
     #[test]
@@ -956,17 +962,39 @@ kubespray_version: "v2.30.0"
 
         for cluster in &k8s_config.config.clusters {
             let inventory = crate::core::kubespray::generate_inventory(cluster, &sdi_spec)
-                .unwrap_or_else(|e| panic!(
-                    "generate_inventory must succeed for cluster '{}': {}",
-                    cluster.cluster_name, e
-                ));
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "generate_inventory must succeed for cluster '{}': {}",
+                        cluster.cluster_name, e
+                    )
+                });
 
             // Must contain [all], [kube_control_plane], [etcd], [kube_node], [k8s_cluster:children]
-            assert!(inventory.contains("[all]"), "{}: missing [all]", cluster.cluster_name);
-            assert!(inventory.contains("[kube_control_plane]"), "{}: missing [kube_control_plane]", cluster.cluster_name);
-            assert!(inventory.contains("[etcd]"), "{}: missing [etcd]", cluster.cluster_name);
-            assert!(inventory.contains("[kube_node]"), "{}: missing [kube_node]", cluster.cluster_name);
-            assert!(inventory.contains("[k8s_cluster:children]"), "{}: missing [k8s_cluster:children]", cluster.cluster_name);
+            assert!(
+                inventory.contains("[all]"),
+                "{}: missing [all]",
+                cluster.cluster_name
+            );
+            assert!(
+                inventory.contains("[kube_control_plane]"),
+                "{}: missing [kube_control_plane]",
+                cluster.cluster_name
+            );
+            assert!(
+                inventory.contains("[etcd]"),
+                "{}: missing [etcd]",
+                cluster.cluster_name
+            );
+            assert!(
+                inventory.contains("[kube_node]"),
+                "{}: missing [kube_node]",
+                cluster.cluster_name
+            );
+            assert!(
+                inventory.contains("[k8s_cluster:children]"),
+                "{}: missing [k8s_cluster:children]",
+                cluster.cluster_name
+            );
         }
     }
 
@@ -1031,7 +1059,9 @@ kubespray_version: "v2.30.0"
             assert!(
                 values.contains(&ip),
                 "Cilium values for '{}' must contain CP IP '{}' — got:\n{}",
-                cluster.cluster_name, ip, values
+                cluster.cluster_name,
+                ip,
+                values
             );
             assert!(
                 values.contains("k8sServiceHost"),
@@ -1051,10 +1081,8 @@ kubespray_version: "v2.30.0"
         let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
 
         for cluster in &k8s_config.config.clusters {
-            let vars = crate::core::kubespray::generate_cluster_vars(
-                cluster,
-                &k8s_config.config.common,
-            );
+            let vars =
+                crate::core::kubespray::generate_cluster_vars(cluster, &k8s_config.config.common);
 
             // Must contain critical Kubespray variables
             assert!(
@@ -1101,10 +1129,8 @@ kubespray_version: "v2.30.0"
         let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
 
         // Step 1: Validate cross-references (every SDI cluster must have matching pool)
-        let mapping_errors = crate::core::validation::validate_cluster_sdi_pool_mapping(
-            &k8s_config,
-            &sdi_spec,
-        );
+        let mapping_errors =
+            crate::core::validation::validate_cluster_sdi_pool_mapping(&k8s_config, &sdi_spec);
         assert!(
             mapping_errors.is_empty(),
             "pool mapping errors: {:?}",
@@ -1113,18 +1139,22 @@ kubespray_version: "v2.30.0"
 
         // Step 2: Validate SDI spec itself
         let sdi_errors = crate::core::validation::validate_sdi_spec(&sdi_spec);
-        assert!(
-            sdi_errors.is_empty(),
-            "SDI spec errors: {:?}",
-            sdi_errors
-        );
+        assert!(sdi_errors.is_empty(), "SDI spec errors: {:?}", sdi_errors);
 
         // Step 3: Validate unique cluster names and IDs
         let name_errors = crate::core::validation::validate_unique_cluster_names(&k8s_config);
-        assert!(name_errors.is_empty(), "duplicate cluster names: {:?}", name_errors);
+        assert!(
+            name_errors.is_empty(),
+            "duplicate cluster names: {:?}",
+            name_errors
+        );
 
         let id_errors = crate::core::validation::validate_unique_cluster_ids(&k8s_config);
-        assert!(id_errors.is_empty(), "duplicate cluster IDs: {:?}", id_errors);
+        assert!(
+            id_errors.is_empty(),
+            "duplicate cluster IDs: {:?}",
+            id_errors
+        );
 
         // Step 4: Validate no network overlap
         let net_errors = crate::core::validation::validate_cluster_network_overlap(&k8s_config);
@@ -1133,10 +1163,21 @@ kubespray_version: "v2.30.0"
         // Step 5: Generate inventory + vars for each cluster
         for cluster in &k8s_config.config.clusters {
             let ini = crate::core::kubespray::generate_inventory(cluster, &sdi_spec)
-                .unwrap_or_else(|e| panic!("inventory generation failed for {}: {}", cluster.cluster_name, e));
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "inventory generation failed for {}: {}",
+                        cluster.cluster_name, e
+                    )
+                });
 
             // Inventory must have all required sections
-            for section in &["[all]", "[kube_control_plane]", "[etcd]", "[kube_node]", "[k8s_cluster:children]"] {
+            for section in &[
+                "[all]",
+                "[kube_control_plane]",
+                "[etcd]",
+                "[kube_node]",
+                "[k8s_cluster:children]",
+            ] {
                 assert!(
                     ini.contains(section),
                     "{}: missing section {}",
@@ -1145,16 +1186,30 @@ kubespray_version: "v2.30.0"
                 );
             }
 
-            let vars = crate::core::kubespray::generate_cluster_vars(
-                cluster,
-                &k8s_config.config.common,
-            );
+            let vars =
+                crate::core::kubespray::generate_cluster_vars(cluster, &k8s_config.config.common);
 
             // Vars must contain essential Kubespray settings
-            assert!(vars.contains("kube_version:"), "{}: missing kube_version", cluster.cluster_name);
-            assert!(vars.contains("container_manager:"), "{}: missing container_manager", cluster.cluster_name);
-            assert!(vars.contains("kube_pods_subnet:"), "{}: missing kube_pods_subnet", cluster.cluster_name);
-            assert!(vars.contains("kube_service_addresses:"), "{}: missing kube_service_addresses", cluster.cluster_name);
+            assert!(
+                vars.contains("kube_version:"),
+                "{}: missing kube_version",
+                cluster.cluster_name
+            );
+            assert!(
+                vars.contains("container_manager:"),
+                "{}: missing container_manager",
+                cluster.cluster_name
+            );
+            assert!(
+                vars.contains("kube_pods_subnet:"),
+                "{}: missing kube_pods_subnet",
+                cluster.cluster_name
+            );
+            assert!(
+                vars.contains("kube_service_addresses:"),
+                "{}: missing kube_service_addresses",
+                cluster.cluster_name
+            );
         }
     }
 
@@ -1178,7 +1233,10 @@ kubespray_version: "v2.30.0"
             })
             .collect();
 
-        assert!(inventories.len() >= 2, "example config must define at least 2 clusters");
+        assert!(
+            inventories.len() >= 2,
+            "example config must define at least 2 clusters"
+        );
 
         // Collect all IPs from each cluster inventory
         let extract_ips = |ini: &str| -> Vec<String> {
@@ -1221,7 +1279,8 @@ kubespray_version: "v2.30.0"
             .clusters
             .iter()
             .map(|c| {
-                let vars = crate::core::kubespray::generate_cluster_vars(c, &k8s_config.config.common);
+                let vars =
+                    crate::core::kubespray::generate_cluster_vars(c, &k8s_config.config.common);
                 (c.cluster_name.clone(), vars)
             })
             .collect();
@@ -1318,8 +1377,13 @@ config:
         let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_yaml).unwrap();
 
         // Validation
-        let mapping_errors = crate::core::validation::validate_cluster_sdi_pool_mapping(&k8s_config, &sdi_spec);
-        assert!(mapping_errors.is_empty(), "mapping errors: {:?}", mapping_errors);
+        let mapping_errors =
+            crate::core::validation::validate_cluster_sdi_pool_mapping(&k8s_config, &sdi_spec);
+        assert!(
+            mapping_errors.is_empty(),
+            "mapping errors: {:?}",
+            mapping_errors
+        );
 
         let sdi_errors = crate::core::validation::validate_sdi_spec(&sdi_spec);
         assert!(sdi_errors.is_empty(), "SDI errors: {:?}", sdi_errors);
@@ -1327,7 +1391,8 @@ config:
         // Generate
         let cluster = &k8s_config.config.clusters[0];
         let ini = crate::core::kubespray::generate_inventory(cluster, &sdi_spec).unwrap();
-        let vars = crate::core::kubespray::generate_cluster_vars(cluster, &k8s_config.config.common);
+        let vars =
+            crate::core::kubespray::generate_cluster_vars(cluster, &k8s_config.config.common);
 
         // Single node appears in all required sections
         assert!(ini.contains("node-0 ansible_host=192.168.1.100"));
@@ -1368,7 +1433,10 @@ config:
         }
 
         // HCL must reference the OS image
-        assert!(hcl.contains(&sdi_spec.os_image.source), "HCL must reference OS image source");
+        assert!(
+            hcl.contains(&sdi_spec.os_image.source),
+            "HCL must reference OS image source"
+        );
 
         // HCL must reference the network bridge
         assert!(

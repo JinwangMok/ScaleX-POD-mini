@@ -231,10 +231,7 @@ pub fn format_config_not_found(missing_path: &str, example_path: &str) -> String
 
 /// Validate that a config file exists, returning a user-friendly error if not.
 /// Pure function: only checks path existence.
-pub fn validate_config_file_exists(
-    path: &str,
-    example_path: Option<&str>,
-) -> Result<(), String> {
+pub fn validate_config_file_exists(path: &str, example_path: Option<&str>) -> Result<(), String> {
     if Path::new(path).exists() {
         Ok(())
     } else {
@@ -625,15 +622,27 @@ targetNodes:
 
     #[test]
     fn test_friendly_error_missing_config_file() {
-        let msg = format_config_not_found("config/k8s-clusters.yaml", "config/k8s-clusters.yaml.example");
-        assert!(msg.contains("config/k8s-clusters.yaml"), "must mention the missing file");
-        assert!(msg.contains(".example"), "must suggest copying from .example");
+        let msg = format_config_not_found(
+            "config/k8s-clusters.yaml",
+            "config/k8s-clusters.yaml.example",
+        );
+        assert!(
+            msg.contains("config/k8s-clusters.yaml"),
+            "must mention the missing file"
+        );
+        assert!(
+            msg.contains(".example"),
+            "must suggest copying from .example"
+        );
         assert!(msg.contains("cp "), "must include cp command");
     }
 
     #[test]
     fn test_friendly_error_missing_credentials() {
-        let msg = format_config_not_found("credentials/.baremetal-init.yaml", "credentials/.baremetal-init.yaml.example");
+        let msg = format_config_not_found(
+            "credentials/.baremetal-init.yaml",
+            "credentials/.baremetal-init.yaml.example",
+        );
         assert!(msg.contains("credentials/.baremetal-init.yaml"));
         assert!(msg.contains(".example"));
     }
@@ -660,8 +669,14 @@ targetNodes:
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("nonexistent/config.yaml"), "error must name the missing file");
-        assert!(err.contains(".example"), "error must mention the example file");
+        assert!(
+            err.contains("nonexistent/config.yaml"),
+            "error must name the missing file"
+        );
+        assert!(
+            err.contains(".example"),
+            "error must mention the example file"
+        );
     }
 
     #[test]
@@ -677,7 +692,10 @@ targetNodes:
         let bad_yaml = "targetNodes:\n  - name: test\n  bad_indent: true";
         let err = serde_yaml::from_str::<BaremetalInitConfig>(bad_yaml).unwrap_err();
         let msg = format_yaml_parse_error("credentials/.baremetal-init.yaml", &err);
-        assert!(msg.contains("credentials/.baremetal-init.yaml"), "must name the file");
+        assert!(
+            msg.contains("credentials/.baremetal-init.yaml"),
+            "must name the file"
+        );
         assert!(msg.contains("YAML"), "must mention YAML");
     }
 
@@ -695,7 +713,10 @@ targetNodes:
         ];
         let msg = format_validation_errors("SDI spec", &errors);
         assert!(msg.contains("SDI spec"), "must mention the context");
-        assert!(msg.contains("Duplicate pool name"), "must include first error");
+        assert!(
+            msg.contains("Duplicate pool name"),
+            "must include first error"
+        );
         assert!(msg.contains("0 CPU cores"), "must include second error");
         assert!(msg.contains("2 error(s)"), "must show error count");
     }

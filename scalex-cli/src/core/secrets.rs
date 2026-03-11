@@ -38,8 +38,20 @@ pub struct K8sSecretSpec {
     pub data: Vec<(String, String)>,
 }
 
+/// Check if a credentials_file value looks like a file path (not inline JSON content).
+/// Pure function.
+pub fn is_credentials_file_path(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let trimmed = value.trim();
+    // Inline JSON starts with '{', file paths don't
+    !trimmed.starts_with('{')
+}
+
 /// Generate a Kubernetes Secret YAML manifest from a spec.
-/// Pure function: no I/O.
+/// Pure function: no I/O. Uses block scalar (|) for values containing
+/// quotes or newlines to prevent YAML corruption.
 pub fn generate_k8s_secret_yaml(spec: &K8sSecretSpec) -> String {
     let mut yaml = String::new();
     yaml.push_str("apiVersion: v1\n");
@@ -50,7 +62,15 @@ pub fn generate_k8s_secret_yaml(spec: &K8sSecretSpec) -> String {
     yaml.push_str("type: Opaque\n");
     yaml.push_str("stringData:\n");
     for (key, value) in &spec.data {
-        yaml.push_str(&format!("  {key}: \"{value}\"\n"));
+        if value.contains('"') || value.contains('\n') || value.contains('\\') {
+            // Use YAML block scalar (|) for values with special characters
+            yaml.push_str(&format!("  {key}: |\n"));
+            for line in value.lines() {
+                yaml.push_str(&format!("    {line}\n"));
+            }
+        } else {
+            yaml.push_str(&format!("  {key}: \"{value}\"\n"));
+        }
     }
     yaml
 }
@@ -300,6 +320,82 @@ keycloak:
         assert!(result.is_err());
     }
 
+    // --- Sprint 40: cloudflare credentials file resolution + YAML escaping ---
+
+    #[test]
+    fn test_is_credentials_file_path_detects_path() {
+        assert!(is_credentials_file_path(
+            "credentials/cloudflare-tunnel.json"
+        ));
+        assert!(is_credentials_file_path("/path/to/creds.json"));
+        assert!(is_credentials_file_path("./creds.json"));
+    }
+
+    #[test]
+    fn test_is_credentials_file_path_detects_inline_json() {
+        assert!(!is_credentials_file_path(
+            r#"{"AccountTag":"abc","TunnelSecret":"xyz","TunnelID":"123"}"#
+        ));
+        assert!(!is_credentials_file_path(""));
+    }
+
+    #[test]
+    fn test_generate_k8s_secret_yaml_json_value_uses_block_scalar() {
+        let spec = K8sSecretSpec {
+            name: "cf-creds".to_string(),
+            namespace: "kube-tunnel".to_string(),
+            data: vec![(
+                "credentials.json".to_string(),
+                r#"{"AccountTag":"abc","TunnelSecret":"s3c","TunnelID":"123"}"#.to_string(),
+            )],
+        };
+        let yaml = generate_k8s_secret_yaml(&spec);
+        // Must produce valid YAML even with JSON containing quotes
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap_or_else(|e| {
+            panic!("generated secret with JSON value is not valid YAML: {e}\n{yaml}")
+        });
+        assert!(parsed.is_mapping());
+        // The JSON content must be preserved intact
+        let sd = parsed["stringData"]["credentials.json"].as_str().unwrap();
+        assert!(sd.contains("AccountTag"));
+        assert!(sd.contains("abc"));
+    }
+
+    #[test]
+    fn test_generate_k8s_secret_yaml_value_with_quotes() {
+        let spec = K8sSecretSpec {
+            name: "test".to_string(),
+            namespace: "default".to_string(),
+            data: vec![(
+                "key".to_string(),
+                r#"value with "quotes" inside"#.to_string(),
+            )],
+        };
+        let yaml = generate_k8s_secret_yaml(&spec);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml)
+            .unwrap_or_else(|e| panic!("YAML with quotes should be valid: {e}\n{yaml}"));
+        let val = parsed["stringData"]["key"].as_str().unwrap();
+        assert!(
+            val.contains("\"quotes\""),
+            "quotes must be preserved in value"
+        );
+    }
+
+    #[test]
+    fn test_generate_k8s_secret_yaml_value_with_newlines() {
+        let spec = K8sSecretSpec {
+            name: "test".to_string(),
+            namespace: "default".to_string(),
+            data: vec![("key".to_string(), "line1\nline2\nline3".to_string())],
+        };
+        let yaml = generate_k8s_secret_yaml(&spec);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml)
+            .unwrap_or_else(|e| panic!("YAML with newlines should be valid: {e}\n{yaml}"));
+        let val = parsed["stringData"]["key"].as_str().unwrap();
+        assert!(val.contains("line1"), "multiline content must be preserved");
+        assert!(val.contains("line2"), "multiline content must be preserved");
+    }
+
     // --- Sprint 32c: secrets edge case tests ---
 
     #[test]
@@ -374,7 +470,10 @@ cloudflare:
   credentials_file: '{"AccountTag":"x","TunnelSecret":"y","TunnelID":"z"}'
 "#;
         let result = generate_all_secrets_manifests(yaml, "management").unwrap();
-        let docs: Vec<&str> = result.split("---").filter(|s| !s.trim().is_empty()).collect();
+        let docs: Vec<&str> = result
+            .split("---")
+            .filter(|s| !s.trim().is_empty())
+            .collect();
         assert_eq!(docs.len(), 3, "management + cloudflare = 3 secrets");
         assert!(result.contains("cloudflared-tunnel-credentials"));
     }

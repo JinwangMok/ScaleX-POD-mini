@@ -1709,10 +1709,7 @@ supplementary_addresses_in_ssl_keys:
             ini.contains("[kube_control_plane]\naio-0"),
             "single node must be in kube_control_plane"
         );
-        assert!(
-            ini.contains("[etcd]\naio-0"),
-            "single node must be in etcd"
-        );
+        assert!(ini.contains("[etcd]\naio-0"), "single node must be in etcd");
         assert!(
             ini.contains("[kube_node]\naio-0"),
             "single node must be in kube_node (worker)"
@@ -1885,9 +1882,7 @@ supplementary_addresses_in_ssl_keys:
                 ssh_authorized_keys_file: "key".to_string(),
                 packages: vec![],
             },
-            spec: crate::models::sdi::SdiPoolsSpec {
-                sdi_pools: vec![],
-            },
+            spec: crate::models::sdi::SdiPoolsSpec { sdi_pools: vec![] },
         };
 
         let cluster = ClusterDef {
@@ -1956,10 +1951,7 @@ supplementary_addresses_in_ssl_keys:
                         mem_gb: 3,
                         disk_gb: 30,
                         host: Some("playbox-0".to_string()),
-                        roles: vec![
-                            "control-plane".to_string(),
-                            "worker".to_string(),
-                        ],
+                        roles: vec!["control-plane".to_string(), "worker".to_string()],
                         devices: None,
                     }],
                 }],

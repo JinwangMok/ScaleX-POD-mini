@@ -879,11 +879,7 @@ mod tests {
 
         // But VM conflicts STILL detected regardless of force
         let conflicts = detect_vm_conflicts(&pools, &to_remove);
-        assert_eq!(
-            conflicts.len(),
-            1,
-            "VM conflicts exist even with --force"
-        );
+        assert_eq!(conflicts.len(), 1, "VM conflicts exist even with --force");
         assert!(
             has_management_cluster_conflict(&conflicts, &pools),
             "Management conflict exists even with --force — caller must decide to proceed"

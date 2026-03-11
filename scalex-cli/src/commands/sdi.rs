@@ -1483,7 +1483,10 @@ mod tests {
     #[test]
     fn test_build_host_infra_inputs_empty_list() {
         let inputs = build_host_infra_inputs(&[]);
-        assert!(inputs.is_empty(), "empty node list must produce empty inputs");
+        assert!(
+            inputs.is_empty(),
+            "empty node list must produce empty inputs"
+        );
     }
 
     #[test]
@@ -1650,7 +1653,9 @@ mod tests {
                                 disk_gb: 200,
                                 host: Some("playbox-3".to_string()),
                                 roles: vec!["worker".to_string()],
-                                devices: Some(DeviceConfig { gpu_passthrough: true }),
+                                devices: Some(DeviceConfig {
+                                    gpu_passthrough: true,
+                                }),
                             },
                         ],
                     },
@@ -1720,8 +1725,10 @@ mod tests {
         };
 
         let state = build_pool_state(&spec);
-        assert_eq!(state[0].nodes[0].host, "unassigned",
-            "node with no host and no placement hosts must be 'unassigned'");
+        assert_eq!(
+            state[0].nodes[0].host, "unassigned",
+            "node with no host and no placement hosts must be 'unassigned'"
+        );
     }
 
     #[test]
@@ -1807,7 +1814,10 @@ mod tests {
 
         assert!(hcl.contains("playbox-0"), "HCL must reference playbox-0");
         assert!(hcl.contains("playbox-1"), "HCL must reference playbox-1");
-        assert!(hcl.contains("192.168.88.8"), "HCL must contain playbox-0 IP");
+        assert!(
+            hcl.contains("192.168.88.8"),
+            "HCL must contain playbox-0 IP"
+        );
         assert!(hcl.contains("jinwang"), "HCL must contain ssh_user");
         assert!(hcl.contains("libvirt"), "HCL must use libvirt provider");
     }
@@ -1869,7 +1879,9 @@ mod tests {
                 host: host.map(|s| s.to_string()),
                 roles: vec!["worker".to_string()],
                 devices: if gpu {
-                    Some(DeviceConfig { gpu_passthrough: true })
+                    Some(DeviceConfig {
+                        gpu_passthrough: true,
+                    })
                 } else {
                     None
                 },
@@ -1879,13 +1891,21 @@ mod tests {
 
     #[test]
     fn test_spec_needs_gpu_passthrough_explicit_host_match() {
-        let spec = stub_sdi_spec(vec![make_gpu_pool(Some("playbox-0"), vec!["playbox-0"], true)]);
+        let spec = stub_sdi_spec(vec![make_gpu_pool(
+            Some("playbox-0"),
+            vec!["playbox-0"],
+            true,
+        )]);
         assert!(spec_needs_gpu_passthrough(&spec, "playbox-0"));
     }
 
     #[test]
     fn test_spec_needs_gpu_passthrough_explicit_host_no_match() {
-        let spec = stub_sdi_spec(vec![make_gpu_pool(Some("playbox-0"), vec!["playbox-0"], true)]);
+        let spec = stub_sdi_spec(vec![make_gpu_pool(
+            Some("playbox-0"),
+            vec!["playbox-0"],
+            true,
+        )]);
         assert!(!spec_needs_gpu_passthrough(&spec, "playbox-1"));
     }
 
@@ -1898,7 +1918,11 @@ mod tests {
 
     #[test]
     fn test_spec_needs_gpu_passthrough_no_devices() {
-        let spec = stub_sdi_spec(vec![make_gpu_pool(Some("playbox-0"), vec!["playbox-0"], false)]);
+        let spec = stub_sdi_spec(vec![make_gpu_pool(
+            Some("playbox-0"),
+            vec!["playbox-0"],
+            false,
+        )]);
         assert!(!spec_needs_gpu_passthrough(&spec, "playbox-0"));
     }
 
@@ -1950,7 +1974,9 @@ mod tests {
                     disk_gb: 50,
                     host: None,
                     roles: vec!["worker".to_string()],
-                    devices: Some(DeviceConfig { gpu_passthrough: true }),
+                    devices: Some(DeviceConfig {
+                        gpu_passthrough: true,
+                    }),
                 }],
             },
         ]);
@@ -2012,15 +2038,27 @@ mod tests {
 
         // Step 3: generate_tofu_host_infra with pipeline output
         let hcl = crate::core::tofu::generate_tofu_host_infra(
-            &inputs, &net.bridge, &net.cidr, &net.gateway,
+            &inputs,
+            &net.bridge,
+            &net.cidr,
+            &net.gateway,
         );
 
         // Verify HCL contains both hosts with correct connection info
         assert!(hcl.contains("playbox-0"), "HCL must contain playbox-0");
         assert!(hcl.contains("playbox-1"), "HCL must contain playbox-1");
-        assert!(hcl.contains("jinwang@192.168.88.8"), "HCL must contain correct SSH URI for playbox-0");
-        assert!(hcl.contains("jinwang@192.168.88.9"), "HCL must contain correct SSH URI for playbox-1");
-        assert!(hcl.contains("scalex-pool"), "HCL must create storage pool on each host");
+        assert!(
+            hcl.contains("jinwang@192.168.88.8"),
+            "HCL must contain correct SSH URI for playbox-0"
+        );
+        assert!(
+            hcl.contains("jinwang@192.168.88.9"),
+            "HCL must contain correct SSH URI for playbox-1"
+        );
+        assert!(
+            hcl.contains("scalex-pool"),
+            "HCL must create storage pool on each host"
+        );
     }
 
     #[test]
@@ -2035,10 +2073,22 @@ mod tests {
 
         // Verify HCL contains all nodes from both pools
         assert!(hcl.contains("tower-cp-0"), "HCL must contain tower CP node");
-        assert!(hcl.contains("sandbox-cp-0"), "HCL must contain sandbox CP node");
-        assert!(hcl.contains("sandbox-w-0"), "HCL must contain sandbox worker 0");
-        assert!(hcl.contains("sandbox-w-1"), "HCL must contain sandbox worker 1");
-        assert!(hcl.contains("sandbox-w-2"), "HCL must contain sandbox worker 2");
+        assert!(
+            hcl.contains("sandbox-cp-0"),
+            "HCL must contain sandbox CP node"
+        );
+        assert!(
+            hcl.contains("sandbox-w-0"),
+            "HCL must contain sandbox worker 0"
+        );
+        assert!(
+            hcl.contains("sandbox-w-1"),
+            "HCL must contain sandbox worker 1"
+        );
+        assert!(
+            hcl.contains("sandbox-w-2"),
+            "HCL must contain sandbox worker 2"
+        );
 
         // Step 2: Build pool state from same spec
         let pool_states = build_pool_state(&spec);
@@ -2075,12 +2125,12 @@ mod tests {
         let original: SdiSpec = serde_yaml::from_str(content).unwrap();
 
         // Simulate what sdi init does: serialize to YAML (sdi-spec-cache.yaml)
-        let cached_yaml = serde_yaml::to_string(&original)
-            .expect("SdiSpec must be serializable to YAML");
+        let cached_yaml =
+            serde_yaml::to_string(&original).expect("SdiSpec must be serializable to YAML");
 
         // Simulate what cluster init does: deserialize from cache
-        let restored: SdiSpec = serde_yaml::from_str(&cached_yaml)
-            .expect("Cached SdiSpec YAML must be parseable back");
+        let restored: SdiSpec =
+            serde_yaml::from_str(&cached_yaml).expect("Cached SdiSpec YAML must be parseable back");
 
         // Verify structural equivalence
         assert_eq!(
@@ -2088,10 +2138,17 @@ mod tests {
             restored.spec.sdi_pools.len(),
             "Pool count must survive round-trip"
         );
-        for (orig_pool, rest_pool) in original.spec.sdi_pools.iter().zip(restored.spec.sdi_pools.iter()) {
+        for (orig_pool, rest_pool) in original
+            .spec
+            .sdi_pools
+            .iter()
+            .zip(restored.spec.sdi_pools.iter())
+        {
             assert_eq!(orig_pool.pool_name, rest_pool.pool_name);
             assert_eq!(orig_pool.node_specs.len(), rest_pool.node_specs.len());
-            for (orig_node, rest_node) in orig_pool.node_specs.iter().zip(rest_pool.node_specs.iter()) {
+            for (orig_node, rest_node) in
+                orig_pool.node_specs.iter().zip(rest_pool.node_specs.iter())
+            {
                 assert_eq!(orig_node.node_name, rest_node.node_name);
                 assert_eq!(orig_node.ip, rest_node.ip);
                 assert_eq!(orig_node.cpu, rest_node.cpu);

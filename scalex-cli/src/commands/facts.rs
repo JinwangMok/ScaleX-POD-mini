@@ -643,11 +643,11 @@ eth4|25000|mlx5|up
 ---SCALEX_FACTS_END---"#;
         let facts = parse_facts_output("nic-test", raw).unwrap();
         assert_eq!(facts.nics.len(), 5);
-        assert_eq!(facts.nics[0].speed, "10G");   // 10000 >= 10000
-        assert_eq!(facts.nics[1].speed, "1000M");  // 1000 > 0 but < 10000
-        assert_eq!(facts.nics[2].speed, "100M");    // 100 > 0
+        assert_eq!(facts.nics[0].speed, "10G"); // 10000 >= 10000
+        assert_eq!(facts.nics[1].speed, "1000M"); // 1000 > 0 but < 10000
+        assert_eq!(facts.nics[2].speed, "100M"); // 100 > 0
         assert_eq!(facts.nics[3].speed, "unknown"); // -1
-        assert_eq!(facts.nics[4].speed, "25G");     // 25000 >= 10000
+        assert_eq!(facts.nics[4].speed, "25G"); // 25000 >= 10000
     }
 
     #[test]
@@ -738,7 +738,11 @@ net.bridge.bridge-nf-call-iptables=0
         let facts = parse_facts_output("kp-test", raw).unwrap();
         assert_eq!(facts.kernel.params.get("net.ipv4.ip_forward").unwrap(), "1");
         assert_eq!(
-            facts.kernel.params.get("net.bridge.bridge-nf-call-iptables").unwrap(),
+            facts
+                .kernel
+                .params
+                .get("net.bridge.bridge-nf-call-iptables")
+                .unwrap(),
             "0"
         );
     }

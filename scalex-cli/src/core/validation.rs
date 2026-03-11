@@ -357,10 +357,7 @@ pub fn validate_two_layer_consistency(
                     errors.push(format!(
                         "SDI node '{}' IP '{}' falls within cluster '{}' service CIDR '{}' — \
                          management IPs must not overlap with service network",
-                        node.node_name,
-                        node.ip,
-                        cluster.cluster_name,
-                        cluster.network.service_cidr
+                        node.node_name, node.ip, cluster.cluster_name, cluster.network.service_cidr
                     ));
                 }
             }
@@ -423,6 +420,81 @@ fn parse_ip(ip: &str) -> Option<u32> {
         result = (result << 8) | val;
     }
     Some(result)
+}
+
+/// Validate that the kubespray submodule directory exists and is initialized.
+/// Returns Ok(()) if valid, Err with a user-friendly message if not.
+pub fn validate_kubespray_submodule(project_root: &str) -> Result<(), String> {
+    let kubespray_dir = std::path::Path::new(project_root).join("kubespray");
+    if !kubespray_dir.exists() {
+        return Err(format!(
+            "kubespray/ directory not found at '{}'.\n\
+             Run: git submodule update --init --recursive",
+            kubespray_dir.display()
+        ));
+    }
+    // Check if initialized (should have cluster.yml from kubespray)
+    if !kubespray_dir.join("cluster.yml").exists() {
+        return Err(
+            "kubespray/ submodule not initialized (missing cluster.yml).\n\
+             Run: git submodule update --init --recursive"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Return the list of external tools required for a given scalex command.
+/// Pure function.
+pub fn prerequisites_for_command(command: &str) -> Vec<&'static str> {
+    match command {
+        "sdi-init" => vec!["ssh", "tofu", "sshpass"],
+        "cluster-init" => vec!["ssh", "ansible-playbook", "sshpass"],
+        "bootstrap" => vec!["helm", "kubectl"],
+        "secrets-apply" => vec!["kubectl"],
+        "facts" => vec!["ssh", "sshpass"],
+        _ => vec![],
+    }
+}
+
+/// Check if a tool is available on the system PATH.
+pub fn check_tool_available(tool: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(tool)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Find which prerequisites are missing from the system.
+/// Returns a list of missing tool names.
+pub fn find_missing_prerequisites(tools: &[&str]) -> Vec<String> {
+    tools
+        .iter()
+        .filter(|t| !check_tool_available(t))
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// Check all prerequisites for a command and return a formatted error if any are missing.
+pub fn check_prerequisites(command: &str) -> Result<(), String> {
+    let required = prerequisites_for_command(command);
+    if required.is_empty() {
+        return Ok(());
+    }
+    let missing = find_missing_prerequisites(&required);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Missing required tools for `scalex {}`: {}\n\
+             Install them before proceeding. See README.md Step 0 for installation instructions.",
+            command.replace('-', " "),
+            missing.join(", ")
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -7157,9 +7229,8 @@ config:
     fn test_sprint33a_baremetal_init_example_roundtrip() {
         // .baremetal-init.yaml.example must parse (with mock env vars)
         let content = include_str!("../../../credentials/.baremetal-init.yaml.example");
-        let config: crate::core::config::BaremetalInitConfig =
-            serde_yaml::from_str(content)
-                .expect(".baremetal-init.yaml.example must parse as valid BaremetalInitConfig");
+        let config: crate::core::config::BaremetalInitConfig = serde_yaml::from_str(content)
+            .expect(".baremetal-init.yaml.example must parse as valid BaremetalInitConfig");
 
         // Must have 4 target nodes (playbox-0 through playbox-3)
         assert_eq!(
@@ -7203,7 +7274,11 @@ config:
 
         // All nodes must have admin user
         for node in &config.target_nodes {
-            assert!(!node.admin_user.is_empty(), "Node {} must have adminUser", node.name);
+            assert!(
+                !node.admin_user.is_empty(),
+                "Node {} must have adminUser",
+                node.name
+            );
         }
     }
 
@@ -7565,10 +7640,7 @@ config:
             output1, output2,
             "generate_tofu_main() must be idempotent: two calls with same input must produce identical HCL"
         );
-        assert!(
-            !output1.is_empty(),
-            "Generated HCL must not be empty"
-        );
+        assert!(!output1.is_empty(), "Generated HCL must not be empty");
     }
 
     #[test]
@@ -7582,8 +7654,8 @@ config:
         let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
 
         for cluster in &k8s_config.config.clusters {
-            let inv1 = generate_inventory(cluster, &sdi_spec)
-                .expect("generate_inventory must succeed");
+            let inv1 =
+                generate_inventory(cluster, &sdi_spec).expect("generate_inventory must succeed");
             let inv2 = generate_inventory(cluster, &sdi_spec)
                 .expect("generate_inventory must succeed on second call");
 
@@ -7635,8 +7707,16 @@ config:
         let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
 
         let (errors, warnings) = validate_two_layer_consistency(&k8s_config, &sdi_spec);
-        assert!(errors.is_empty(), "example configs must have no cross-layer errors: {:?}", errors);
-        assert!(warnings.is_empty(), "example configs must have no orphan pool warnings: {:?}", warnings);
+        assert!(
+            errors.is_empty(),
+            "example configs must have no cross-layer errors: {:?}",
+            errors
+        );
+        assert!(
+            warnings.is_empty(),
+            "example configs must have no orphan pool warnings: {:?}",
+            warnings
+        );
     }
 
     #[test]
@@ -7680,7 +7760,10 @@ config:
 
         let k8s = K8sClustersConfig {
             config: K8sConfig {
-                common: serde_yaml::from_str("kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'").unwrap(),
+                common: serde_yaml::from_str(
+                    "kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'",
+                )
+                .unwrap(),
                 clusters: vec![make_cluster("test", "workers-only", ClusterMode::Sdi)],
                 argocd: None,
                 domains: None,
@@ -7689,7 +7772,10 @@ config:
 
         let (errors, _) = validate_two_layer_consistency(&k8s, &sdi);
         assert!(!errors.is_empty(), "must detect missing control-plane");
-        assert!(errors[0].contains("control-plane"), "error must mention control-plane");
+        assert!(
+            errors[0].contains("control-plane"),
+            "error must mention control-plane"
+        );
     }
 
     #[test]
@@ -7734,7 +7820,10 @@ config:
 
         let k8s = K8sClustersConfig {
             config: K8sConfig {
-                common: serde_yaml::from_str("kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'").unwrap(),
+                common: serde_yaml::from_str(
+                    "kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'",
+                )
+                .unwrap(),
                 clusters: vec![ClusterDef {
                     cluster_name: "test".to_string(),
                     cluster_mode: ClusterMode::Sdi,
@@ -7759,7 +7848,10 @@ config:
 
         let (errors, _) = validate_two_layer_consistency(&k8s, &sdi);
         assert!(!errors.is_empty(), "must detect node IP in pod CIDR");
-        assert!(errors[0].contains("pod CIDR"), "error must mention pod CIDR");
+        assert!(
+            errors[0].contains("pod CIDR"),
+            "error must mention pod CIDR"
+        );
     }
 
     #[test]
@@ -7768,7 +7860,10 @@ config:
 
         let k8s = K8sClustersConfig {
             config: K8sConfig {
-                common: serde_yaml::from_str("kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'").unwrap(),
+                common: serde_yaml::from_str(
+                    "kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'",
+                )
+                .unwrap(),
                 clusters: vec![
                     make_cluster("tower", "tower", ClusterMode::Sdi),
                     make_cluster("sandbox", "sandbox", ClusterMode::Sdi),
@@ -7781,7 +7876,10 @@ config:
         let (errors, warnings) = validate_two_layer_consistency(&k8s, &sdi);
         assert!(errors.is_empty(), "no errors expected");
         assert_eq!(warnings.len(), 1, "must warn about orphan pool");
-        assert!(warnings[0].contains("orphan"), "warning must mention pool name");
+        assert!(
+            warnings[0].contains("orphan"),
+            "warning must mention pool name"
+        );
     }
 
     #[test]
@@ -7790,7 +7888,10 @@ config:
 
         let k8s = K8sClustersConfig {
             config: K8sConfig {
-                common: serde_yaml::from_str("kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'").unwrap(),
+                common: serde_yaml::from_str(
+                    "kubernetes_version: '1.33.1'\nkubespray_version: 'v2.30.0'",
+                )
+                .unwrap(),
                 clusters: vec![
                     make_cluster("tower", "tower", ClusterMode::Sdi),
                     make_cluster("prod", "", ClusterMode::Baremetal),
@@ -7801,7 +7902,10 @@ config:
         };
 
         let (errors, _) = validate_two_layer_consistency(&k8s, &sdi);
-        assert!(errors.is_empty(), "baremetal clusters should be skipped in SDI validation");
+        assert!(
+            errors.is_empty(),
+            "baremetal clusters should be skipped in SDI validation"
+        );
     }
 
     #[test]
@@ -7812,5 +7916,77 @@ config:
         assert!(!ip_in_cidr("192.168.88.50", "10.244.0.0/20"));
         assert!(!ip_in_cidr("invalid", "10.244.0.0/20"));
         assert!(!ip_in_cidr("10.244.0.50", "invalid"));
+    }
+
+    // --- Sprint 40: kubespray directory validation ---
+
+    #[test]
+    fn test_validate_kubespray_submodule_missing_dir() {
+        let result = validate_kubespray_submodule("/nonexistent/path");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_validate_kubespray_submodule_empty_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("kubespray")).unwrap();
+        let result = validate_kubespray_submodule(tmp.path().to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not initialized"));
+    }
+
+    #[test]
+    fn test_validate_kubespray_submodule_with_cluster_yml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ks_dir = tmp.path().join("kubespray");
+        std::fs::create_dir(&ks_dir).unwrap();
+        std::fs::write(ks_dir.join("cluster.yml"), "---").unwrap();
+        let result = validate_kubespray_submodule(tmp.path().to_str().unwrap());
+        assert!(result.is_ok(), "should pass with cluster.yml present");
+    }
+
+    // --- Sprint 40: prerequisite tool checks ---
+
+    #[test]
+    fn test_prerequisites_for_sdi_init() {
+        let tools = prerequisites_for_command("sdi-init");
+        assert!(tools.contains(&"tofu"));
+        assert!(tools.contains(&"ssh"));
+        assert!(!tools.contains(&"helm"));
+    }
+
+    #[test]
+    fn test_prerequisites_for_cluster_init() {
+        let tools = prerequisites_for_command("cluster-init");
+        assert!(tools.contains(&"ansible-playbook"));
+        assert!(tools.contains(&"ssh"));
+    }
+
+    #[test]
+    fn test_prerequisites_for_bootstrap() {
+        let tools = prerequisites_for_command("bootstrap");
+        assert!(tools.contains(&"helm"));
+        assert!(tools.contains(&"kubectl"));
+    }
+
+    #[test]
+    fn test_prerequisites_for_unknown_command() {
+        let tools = prerequisites_for_command("unknown");
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_check_tool_available_finds_common_tools() {
+        // 'ls' should exist on any Linux system
+        assert!(check_tool_available("ls"));
+        // non-existent tool
+        assert!(!check_tool_available("definitely-not-a-real-tool-12345"));
+    }
+
+    #[test]
+    fn test_find_missing_prerequisites() {
+        let missing = find_missing_prerequisites(&["ls", "definitely-not-a-real-tool-12345"]);
+        assert_eq!(missing, vec!["definitely-not-a-real-tool-12345"]);
     }
 }

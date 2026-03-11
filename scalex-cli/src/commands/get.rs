@@ -4,10 +4,40 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 use tabled::{Table, Tabled};
 
+/// Output format for get commands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutputFormat {
+    Table,
+    Json,
+}
+
+impl OutputFormat {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "json" => OutputFormat::Json,
+            _ => OutputFormat::Table,
+        }
+    }
+}
+
+/// Serialize NodeFacts list to JSON string. Pure function.
+pub fn facts_to_json(facts: &[NodeFacts]) -> String {
+    serde_json::to_string_pretty(facts).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))
+}
+
+/// Serialize SdiPoolState list to JSON string. Pure function.
+pub fn sdi_pools_to_json(pools: &[SdiPoolState]) -> String {
+    serde_json::to_string_pretty(pools).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))
+}
+
 #[derive(Args)]
 pub struct GetArgs {
     #[command(subcommand)]
     resource: GetResource,
+
+    /// Output format: table (default) or json
+    #[arg(long, short, default_value = "table")]
+    output: String,
 }
 
 #[derive(Subcommand)]
@@ -57,15 +87,16 @@ struct BaremetalRow {
 }
 
 pub fn run(args: GetArgs) -> anyhow::Result<()> {
+    let format = OutputFormat::from_str(&args.output);
     match args.resource {
-        GetResource::Baremetals { facts_dir } => get_baremetals(&facts_dir),
-        GetResource::SdiPools { sdi_dir } => get_sdi_pools(&sdi_dir),
+        GetResource::Baremetals { facts_dir } => get_baremetals(&facts_dir, &format),
+        GetResource::SdiPools { sdi_dir } => get_sdi_pools(&sdi_dir, &format),
         GetResource::Clusters { clusters_dir } => get_clusters(&clusters_dir),
         GetResource::ConfigFiles => get_config_files(),
     }
 }
 
-fn get_baremetals(facts_dir: &PathBuf) -> anyhow::Result<()> {
+fn get_baremetals(facts_dir: &PathBuf, format: &OutputFormat) -> anyhow::Result<()> {
     if !facts_dir.exists() {
         anyhow::bail!(
             "Facts directory '{}' not found. Run `scalex facts` first.",
@@ -73,7 +104,7 @@ fn get_baremetals(facts_dir: &PathBuf) -> anyhow::Result<()> {
         );
     }
 
-    let mut rows: Vec<BaremetalRow> = Vec::new();
+    let mut all_facts: Vec<NodeFacts> = Vec::new();
 
     let mut entries: Vec<_> = std::fs::read_dir(facts_dir)?
         .filter_map(|e| e.ok())
@@ -84,16 +115,22 @@ fn get_baremetals(facts_dir: &PathBuf) -> anyhow::Result<()> {
     for entry in entries {
         let content = std::fs::read_to_string(entry.path())?;
         let facts: NodeFacts = serde_json::from_str(&content)?;
-        rows.push(facts_to_row(&facts));
+        all_facts.push(facts);
     }
 
-    if rows.is_empty() {
+    if all_facts.is_empty() {
         println!("No facts found. Run `scalex facts` first.");
         return Ok(());
     }
 
-    let table = Table::new(&rows).to_string();
-    println!("{}", table);
+    match format {
+        OutputFormat::Json => println!("{}", facts_to_json(&all_facts)),
+        OutputFormat::Table => {
+            let rows: Vec<BaremetalRow> = all_facts.iter().map(facts_to_row).collect();
+            let table = Table::new(&rows).to_string();
+            println!("{}", table);
+        }
+    }
     Ok(())
 }
 
@@ -209,7 +246,7 @@ fn get_clusters(clusters_dir: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn get_sdi_pools(sdi_dir: &std::path::Path) -> anyhow::Result<()> {
+fn get_sdi_pools(sdi_dir: &std::path::Path, format: &OutputFormat) -> anyhow::Result<()> {
     let state_path = sdi_dir.join("sdi-state.json");
     let summary_path = sdi_dir.join("resource-pool-summary.json");
 
@@ -217,15 +254,22 @@ fn get_sdi_pools(sdi_dir: &std::path::Path) -> anyhow::Result<()> {
         // VM pools created via `sdi init <spec>`
         let content = std::fs::read_to_string(&state_path)?;
         let pools: Vec<SdiPoolState> = serde_json::from_str(&content)?;
-        let rows = sdi_pools_to_rows(&pools);
 
-        if rows.is_empty() {
-            println!("No SDI pools found.");
-            return Ok(());
+        match format {
+            OutputFormat::Json => {
+                println!("{}", sdi_pools_to_json(&pools));
+                return Ok(());
+            }
+            OutputFormat::Table => {
+                let rows = sdi_pools_to_rows(&pools);
+                if rows.is_empty() {
+                    println!("No SDI pools found.");
+                    return Ok(());
+                }
+                let table = Table::new(&rows).to_string();
+                println!("{}", table);
+            }
         }
-
-        let table = Table::new(&rows).to_string();
-        println!("{}", table);
     } else if summary_path.exists() {
         // Bare-metal resource pool via `sdi init` (no spec)
         let content = std::fs::read_to_string(&summary_path)?;
@@ -825,6 +869,51 @@ dns_domain: "tower.local"
         assert!(rows.is_empty());
     }
 
+    // --- Sprint 40: --output json support ---
+
+    #[test]
+    fn test_facts_to_json_produces_valid_json() {
+        let facts = make_test_facts();
+        let json = facts_to_json(&[facts]);
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .unwrap_or_else(|e| panic!("facts JSON output is invalid: {e}\n{json}"));
+        assert!(parsed.is_array());
+        assert_eq!(parsed.as_array().unwrap().len(), 1);
+        assert_eq!(parsed[0]["node_name"], "playbox-0");
+        assert_eq!(parsed[0]["cpu"]["cores"], 6);
+    }
+
+    #[test]
+    fn test_sdi_pools_to_json_produces_valid_json() {
+        let pools = vec![SdiPoolState {
+            pool_name: "tower".to_string(),
+            purpose: "management".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "tower-cp-0".to_string(),
+                ip: "192.168.88.100".to_string(),
+                host: "playbox-0".to_string(),
+                cpu: 2,
+                mem_gb: 3,
+                disk_gb: 30,
+                gpu_passthrough: false,
+                status: "running".to_string(),
+            }],
+        }];
+        let json = sdi_pools_to_json(&pools);
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .unwrap_or_else(|e| panic!("SDI pools JSON output is invalid: {e}\n{json}"));
+        assert!(parsed.is_array());
+        assert_eq!(parsed[0]["pool_name"], "tower");
+    }
+
+    #[test]
+    fn test_output_format_from_str() {
+        assert_eq!(OutputFormat::from_str("json"), OutputFormat::Json);
+        assert_eq!(OutputFormat::from_str("table"), OutputFormat::Table);
+        assert_eq!(OutputFormat::from_str("JSON"), OutputFormat::Json);
+        assert_eq!(OutputFormat::from_str("unknown"), OutputFormat::Table);
+    }
+
     // ===== Sprint 33d: get config-files completeness tests =====
 
     #[test]
@@ -838,10 +927,7 @@ dns_domain: "tower.local"
             "credentials/secrets.yaml",
             "credentials/cloudflare-tunnel.json",
         ];
-        let required_config_files = vec![
-            "config/sdi-specs.yaml",
-            "config/k8s-clusters.yaml",
-        ];
+        let required_config_files = vec!["config/sdi-specs.yaml", "config/k8s-clusters.yaml"];
         let required_generated_dirs = vec![
             "_generated/facts/",
             "_generated/sdi/",
@@ -849,23 +935,28 @@ dns_domain: "tower.local"
         ];
 
         // All 9 paths must be checked (verify via the checks vec in source)
-        let total_expected = required_user_files.len()
-            + required_config_files.len()
-            + required_generated_dirs.len();
+        let total_expected =
+            required_user_files.len() + required_config_files.len() + required_generated_dirs.len();
         assert_eq!(total_expected, 9, "Must check exactly 9 paths");
 
         // Verify classify_config_status produces correct output for each type
         // User file exists → OK (valid YAML) or OK
         let yaml_ok = super::classify_config_status(
             "credentials/.baremetal-init.yaml",
-            true, false, 0, Some(true),
+            true,
+            false,
+            0,
+            Some(true),
         );
         assert_eq!(yaml_ok, "OK (valid YAML)");
 
         // Non-YAML file exists
         let json_ok = super::classify_config_status(
             "credentials/cloudflare-tunnel.json",
-            true, false, 0, Some(true),
+            true,
+            false,
+            0,
+            Some(true),
         );
         assert_eq!(json_ok, "OK");
     }
@@ -875,39 +966,31 @@ dns_domain: "tower.local"
         // Missing file must show MISSING
         let status = super::classify_config_status(
             "credentials/.baremetal-init.yaml",
-            false, false, 0, None,
+            false,
+            false,
+            0,
+            None,
         );
         assert_eq!(status, "MISSING");
 
         // Missing dir also MISSING
-        let dir_status = super::classify_config_status(
-            "_generated/facts/",
-            false, false, 0, None,
-        );
+        let dir_status = super::classify_config_status("_generated/facts/", false, false, 0, None);
         assert_eq!(dir_status, "MISSING");
     }
 
     #[test]
     fn test_sprint33d_config_status_invalid_yaml() {
         // YAML file exists but is invalid
-        let status = super::classify_config_status(
-            "config/sdi-specs.yaml",
-            true, false, 0, Some(false),
-        );
+        let status =
+            super::classify_config_status("config/sdi-specs.yaml", true, false, 0, Some(false));
         assert_eq!(status, "INVALID YAML");
 
         // Directory exists but empty
-        let empty_dir = super::classify_config_status(
-            "_generated/facts/",
-            true, true, 0, None,
-        );
+        let empty_dir = super::classify_config_status("_generated/facts/", true, true, 0, None);
         assert_eq!(empty_dir, "EMPTY");
 
         // Directory exists with items
-        let full_dir = super::classify_config_status(
-            "_generated/facts/",
-            true, true, 4, None,
-        );
+        let full_dir = super::classify_config_status("_generated/facts/", true, true, 4, None);
         assert_eq!(full_dir, "OK (4 items)");
     }
 }

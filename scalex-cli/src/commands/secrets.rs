@@ -40,6 +40,51 @@ pub fn run(args: SecretsArgs) -> anyhow::Result<()> {
     }
 }
 
+/// Parse secrets config and resolve cloudflare credentials_file if it's a path.
+/// This is the I/O boundary — reads the file and replaces the path with content
+/// in the parsed config struct, then generates manifests directly.
+fn load_and_resolve_secrets(
+    yaml_content: &str,
+    config_path: &str,
+    cluster_role: &str,
+) -> anyhow::Result<String> {
+    let mut config = secrets::parse_secrets_config(yaml_content).map_err(|e| anyhow::anyhow!(e))?;
+
+    // If credentials_file looks like a file path, read the file content
+    if secrets::is_credentials_file_path(&config.cloudflare.credentials_file) {
+        let creds_path = &config.cloudflare.credentials_file;
+        // Resolve relative to the project root (parent of credentials/)
+        let base_dir = std::path::Path::new(config_path)
+            .parent()
+            .and_then(|p| p.parent())
+            .unwrap_or(std::path::Path::new("."));
+        let resolved_path = if std::path::Path::new(creds_path).is_relative() {
+            base_dir.join(creds_path)
+        } else {
+            std::path::PathBuf::from(creds_path)
+        };
+
+        let content = std::fs::read_to_string(&resolved_path)
+            .map_err(|e| anyhow::anyhow!(
+                "Failed to read cloudflare credentials file '{}': {}\n\
+                 Hint: Create this file from the example: cp credentials/cloudflare-tunnel.json.example {}",
+                resolved_path.display(), e, creds_path
+            ))?;
+
+        config.cloudflare.credentials_file = content.trim().to_string();
+    }
+
+    let specs = secrets::secrets_for_cluster(cluster_role, &config);
+    if specs.is_empty() {
+        return Ok(String::new());
+    }
+    let manifests: Vec<String> = specs
+        .iter()
+        .map(secrets::generate_k8s_secret_yaml)
+        .collect();
+    Ok(manifests.join("---\n"))
+}
+
 fn run_apply(
     config_path: String,
     cluster_role: String,
@@ -50,8 +95,8 @@ fn run_apply(
     let yaml_content = std::fs::read_to_string(&config_path)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", config_path, e))?;
 
-    let manifests = secrets::generate_all_secrets_manifests(&yaml_content, &cluster_role)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    // Parse, resolve cloudflare credentials file path → content, generate manifests
+    let manifests = load_and_resolve_secrets(&yaml_content, &config_path, &cluster_role)?;
 
     if manifests.is_empty() {
         println!(
