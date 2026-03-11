@@ -122,11 +122,13 @@ pub struct SshCommand {
 pub fn execute_ssh(cmd: &SshCommand) -> Result<String, ScalexError> {
     let output = if cmd.use_sshpass {
         let password = cmd.password.as_deref().unwrap_or("");
+        // Use SSHPASS env var instead of -p flag to avoid exposing password
+        // in process argument list (visible via ps aux / /proc/<pid>/cmdline)
         Command::new("sshpass")
-            .arg("-p")
-            .arg(password)
+            .arg("-e") // read password from SSHPASS env var
             .arg("ssh")
             .args(&cmd.args)
+            .env("SSHPASS", password)
             .output()
             .map_err(|e| ScalexError::Ssh {
                 host: "unknown".to_string(),

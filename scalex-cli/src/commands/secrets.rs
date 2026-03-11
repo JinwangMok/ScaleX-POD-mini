@@ -63,7 +63,32 @@ fn run_apply(
 
     if dry_run {
         println!("[secrets] Dry-run manifests for role '{}':\n", cluster_role);
-        println!("{}", manifests);
+        // Redact sensitive values in stringData to avoid leaking secrets to stdout/logs
+        let redacted: String = manifests
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim_start();
+                // Redact stringData values (indented key: "value" pairs under stringData)
+                if !trimmed.starts_with("kind:")
+                    && !trimmed.starts_with("name:")
+                    && !trimmed.starts_with("namespace:")
+                    && !trimmed.starts_with("stringData:")
+                    && !trimmed.starts_with("apiVersion:")
+                    && !trimmed.starts_with("metadata:")
+                    && !trimmed.starts_with("type:")
+                    && !trimmed.starts_with("---")
+                    && trimmed.contains(": ")
+                    && line.starts_with("    ")
+                {
+                    let key = line.split(": ").next().unwrap_or(line);
+                    format!("{}: [REDACTED]", key)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        println!("{}", redacted);
         return Ok(());
     }
 
