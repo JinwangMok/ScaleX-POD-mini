@@ -31,13 +31,27 @@ Physical (bare-metal nodes)
 
 ### External Access
 
+클러스터는 NAT 내부에 위치하며, 외부 접근 경로는 3가지입니다:
+
+| 접근 방법 | 경로 | 인증 | 필수 조건 |
+|-----------|------|------|----------|
+| **LAN 직접** | `kubectl` → LAN IP → kube-apiserver | 인증서 또는 OIDC | 동일 네트워크 (스위치 접속) |
+| **Tailscale** | `kubectl` → Tailscale IP → kube-apiserver | 인증서 또는 OIDC | Tailscale 설치 + 네트워크 가입 |
+| **Cloudflare Tunnel** | `kubectl (OIDC)` → CF Edge → cloudflared → kube-apiserver | **OIDC만 가능** | Keycloak Realm/Client 설정 완료 |
+
+> **중요**: CF Tunnel은 TLS를 종단(terminate)하므로 **클라이언트 인증서 인증이 전달되지 않습니다.**
+> Keycloak OIDC 설정 전에는 **Tailscale 경유가 유일한 외부 접근 방법**입니다.
+> SOCKS5 proxy(`socks5-proxy` Pod)는 LAN/Tailscale 내부에서의 편의 접근용입니다.
+
 ```
-kubectl (OIDC) → Cloudflare Edge (TLS) → CF Tunnel → cloudflared Pod → kube-apiserver
-                                                    → Keycloak (auth.jinwang.dev)
-                                                    → ArgoCD (cd.jinwang.dev)
+[CF Tunnel + OIDC]  kubectl --token → CF Edge (TLS 종단) → cloudflared Pod → kube-apiserver
+[Tailscale]         kubectl --kubeconfig → Tailscale IP:6443 → kube-apiserver
+[LAN]               kubectl --kubeconfig → 192.168.88.x:6443 → kube-apiserver
+[SOCKS5]            kubectl --proxy-url socks5://localhost:1080 → kube-apiserver (port-forward 필요)
 ```
 
-No client-side software needed beyond `kubectl` + `kubelogin`.
+CF Tunnel은 ArgoCD UI(`cd.jinwang.dev`)와 Keycloak UI(`auth.jinwang.dev`)도 노출합니다.
+상세 설정: [docs/ops-guide.md](docs/ops-guide.md)
 
 ---
 
@@ -57,7 +71,7 @@ No client-side software needed beyond `kubectl` + `kubelogin`.
 
 ### 4. 이중 접근성과 보안
 
-공인 IP 유무에 관계없이 **Cloudflare Tunnel + Tailscale**로 외부 접근을 보장합니다. OIDC(Keycloak) 기반 인증으로 별도 VPN 없이 `kubectl` 접근이 가능합니다.
+공인 IP 유무에 관계없이 **Cloudflare Tunnel + Tailscale**로 외부 접근을 보장합니다. OIDC(Keycloak) 기반 인증으로 별도 VPN 없이 `kubectl` 접근이 가능합니다. LAN 내부에서는 스위치 접속을 통한 직접 접근도 가능합니다 (상세: [External Access](#external-access)).
 
 ### 5. 뉴비 친화적 + 맞춤형 최적화
 
