@@ -103,7 +103,7 @@
 | clap derive CLI | ✅ |
 | 순수 함수 분리 (`generate_*` / `run_*`) | ✅ |
 | thiserror 에러 처리 | ✅ |
-| 505 tests, 0 clippy warnings, fmt OK | ✅ |
+| 512 tests, 0 clippy warnings, fmt OK | ✅ |
 
 ---
 
@@ -169,7 +169,7 @@ Architecture, Design Philosophy(7원칙), Installation Guide(Step 0~8), CLI Refe
 ### #12. 디렉토리 구조 — ✅ STRUCTURE-OK
 
 ```
-scalex-cli/           ✅ Rust CLI (505 tests)
+scalex-cli/           ✅ Rust CLI (512 tests)
 gitops/               ✅ ArgoCD multi-cluster
   bootstrap/          ✅ spread.yaml
   generators/         ✅ tower/ + sandbox/
@@ -284,18 +284,18 @@ tests/                ✅ run-tests.sh
 
 ---
 
-### Sprint 35: sdi sync 복합 시나리오 + 멱등성 강화
+### Sprint 35: sdi sync 복합 시나리오 + 멱등성 강화 ✅ (완료)
 
-#### 35a — sdi sync 복합 상태 전이 (+4 tests)
-- [ ] 동시 add + remove: 2개 노드 추가 + 1개 노드 제거
-- [ ] sync 후 resource pool 재계산 정합
-- [ ] conflict severity escalation: medium → high → critical
-- [ ] `--force` 플래그로 critical conflict 무시 시 경고 메시지
+#### 35a — sdi sync 복합 상태 전이 (+4 tests) ✅
+- [x] 동시 add + remove: 2개 노드 추가 + 1개 노드 제거 + VM conflict 검출
+- [x] sync 후 resource pool 재계산 정합 (unchanged + added = new pool)
+- [x] conflict severity escalation: medium → high → critical 동시 발생 검증
+- [x] `--force` 플래그로 critical conflict 시 경고 메시지 + VM conflict 유지 검증
 
-#### 35b — 멱등성 파이프라인 테스트 (+3 tests)
-- [ ] `generate_tofu_main()` 2회 호출 → 동일 출력
-- [ ] `generate_inventory()` 2회 호출 → 동일 출력
-- [ ] `generate_cluster_vars()` 2회 호출 → 동일 출력 (입력이 같으면)
+#### 35b — 멱등성 파이프라인 테스트 (+3 tests) ✅
+- [x] `generate_tofu_main()` 2회 호출 → 동일 출력
+- [x] `generate_inventory()` 2회 호출 → 동일 출력 (모든 클러스터)
+- [x] `generate_cluster_vars()` 2회 호출 → 동일 출력 (모든 클러스터)
 
 #### 35c — 커밋/푸시
 
@@ -425,4 +425,4 @@ _generated/
 | models/* | 8 | parse/serialize |
 | core/resource_pool | 7 | aggregation, table |
 | core/ssh | 5 | SSH command building |
-| **TOTAL** | **505** | **순수 함수 + 구조 + Integration + GitOps/문서 검증 (Sprint 33-34)** |
+| **TOTAL** | **512** | **순수 함수 + 구조 + Integration + GitOps/문서 + 멱등성 (Sprint 33-35)** |

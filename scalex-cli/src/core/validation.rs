@@ -7426,4 +7426,80 @@ config:
             );
         }
     }
+
+    // ===== Sprint 35b: Idempotency Pipeline Tests =====
+    // Pure functions must produce identical output when called with identical input.
+
+    #[test]
+    fn test_sprint35b_generate_tofu_main_idempotent() {
+        use crate::core::tofu::generate_tofu_main;
+
+        let content = include_str!("../../../config/sdi-specs.yaml.example");
+        let spec: SdiSpec = serde_yaml::from_str(content).unwrap();
+
+        let output1 = generate_tofu_main(&spec, "jinwang");
+        let output2 = generate_tofu_main(&spec, "jinwang");
+
+        assert_eq!(
+            output1, output2,
+            "generate_tofu_main() must be idempotent: two calls with same input must produce identical HCL"
+        );
+        assert!(
+            !output1.is_empty(),
+            "Generated HCL must not be empty"
+        );
+    }
+
+    #[test]
+    fn test_sprint35b_generate_inventory_idempotent() {
+        use crate::core::kubespray::generate_inventory;
+
+        let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
+        let sdi_spec: SdiSpec = serde_yaml::from_str(sdi_content).unwrap();
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s_config.config.clusters {
+            let inv1 = generate_inventory(cluster, &sdi_spec)
+                .expect("generate_inventory must succeed");
+            let inv2 = generate_inventory(cluster, &sdi_spec)
+                .expect("generate_inventory must succeed on second call");
+
+            assert_eq!(
+                inv1, inv2,
+                "generate_inventory() for cluster '{}' must be idempotent",
+                cluster.cluster_name
+            );
+            assert!(
+                !inv1.is_empty(),
+                "Generated inventory for '{}' must not be empty",
+                cluster.cluster_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_sprint35b_generate_cluster_vars_idempotent() {
+        use crate::core::kubespray::generate_cluster_vars;
+
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml.example");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        for cluster in &k8s_config.config.clusters {
+            let vars1 = generate_cluster_vars(cluster, &k8s_config.config.common);
+            let vars2 = generate_cluster_vars(cluster, &k8s_config.config.common);
+
+            assert_eq!(
+                vars1, vars2,
+                "generate_cluster_vars() for cluster '{}' must be idempotent",
+                cluster.cluster_name
+            );
+            assert!(
+                !vars1.is_empty(),
+                "Generated vars for '{}' must not be empty",
+                cluster.cluster_name
+            );
+        }
+    }
 }

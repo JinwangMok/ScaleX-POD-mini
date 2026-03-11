@@ -656,4 +656,246 @@ mod tests {
         let conflicts = detect_vm_conflicts(&pools, &to_remove);
         assert!(conflicts.is_empty());
     }
+
+    // ===== Sprint 35a: Complex State Transition Tests =====
+
+    #[test]
+    fn test_sprint35a_simultaneous_add_remove_with_vm_conflicts() {
+        // Scenario: 2 nodes added + 1 node removed, removed node hosts VMs across 2 pools
+        let desired = vec![
+            "playbox-0".to_string(),
+            "playbox-1".to_string(),
+            "playbox-4".to_string(),
+            "playbox-5".to_string(),
+        ];
+        let current = vec![
+            "playbox-0".to_string(),
+            "playbox-1".to_string(),
+            "playbox-2".to_string(),
+        ];
+
+        let diff = compute_sync_diff(&desired, &current);
+        assert_eq!(diff.to_add, vec!["playbox-4", "playbox-5"]);
+        assert_eq!(diff.to_remove, vec!["playbox-2"]);
+        assert_eq!(diff.unchanged, vec!["playbox-0", "playbox-1"]);
+
+        // Now check VM conflicts for the removed node
+        let pools = vec![
+            SdiPoolState {
+                pool_name: "tower".to_string(),
+                purpose: "management".to_string(),
+                nodes: vec![SdiNodeState {
+                    node_name: "tower-cp-0".to_string(),
+                    ip: "192.168.88.100".to_string(),
+                    host: "playbox-0".to_string(),
+                    cpu: 2,
+                    mem_gb: 3,
+                    disk_gb: 30,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                }],
+            },
+            SdiPoolState {
+                pool_name: "sandbox".to_string(),
+                purpose: "workload".to_string(),
+                nodes: vec![
+                    SdiNodeState {
+                        node_name: "sandbox-cp-0".to_string(),
+                        ip: "192.168.88.110".to_string(),
+                        host: "playbox-1".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 60,
+                        status: "running".to_string(),
+                        gpu_passthrough: false,
+                    },
+                    SdiNodeState {
+                        node_name: "sandbox-w-0".to_string(),
+                        ip: "192.168.88.120".to_string(),
+                        host: "playbox-2".to_string(),
+                        cpu: 8,
+                        mem_gb: 16,
+                        disk_gb: 100,
+                        status: "running".to_string(),
+                        gpu_passthrough: false,
+                    },
+                ],
+            },
+        ];
+
+        let conflicts = detect_vm_conflicts(&pools, &diff.to_remove);
+        assert_eq!(conflicts.len(), 1, "Only VMs on playbox-2 should conflict");
+        assert_eq!(conflicts[0].vm_name, "sandbox-w-0");
+        assert_eq!(
+            classify_conflict_severity(&conflicts[0], &pools),
+            ConflictSeverity::Medium,
+            "Worker VM removal should be Medium severity"
+        );
+        assert!(
+            !has_management_cluster_conflict(&conflicts, &pools),
+            "No management conflict since tower is on playbox-0"
+        );
+    }
+
+    #[test]
+    fn test_sprint35a_sync_resource_pool_recalculation() {
+        // After sync: verify that pool node counts reflect the new state
+        let desired = vec![
+            "playbox-0".to_string(),
+            "playbox-1".to_string(),
+            "playbox-3".to_string(),
+        ];
+        let current = vec![
+            "playbox-0".to_string(),
+            "playbox-1".to_string(),
+            "playbox-2".to_string(),
+        ];
+
+        let diff = compute_sync_diff(&desired, &current);
+
+        // After sync completes: unchanged + added = new resource pool
+        let new_pool_size = diff.unchanged.len() + diff.to_add.len();
+        assert_eq!(
+            new_pool_size, 3,
+            "After sync: 2 unchanged + 1 added = 3 nodes in resource pool"
+        );
+
+        // Removed nodes should not be in the new pool
+        let new_pool_nodes: Vec<String> = diff
+            .unchanged
+            .iter()
+            .chain(diff.to_add.iter())
+            .cloned()
+            .collect();
+        assert!(!new_pool_nodes.contains(&"playbox-2".to_string()));
+        assert!(new_pool_nodes.contains(&"playbox-3".to_string()));
+    }
+
+    #[test]
+    fn test_sprint35a_severity_escalation_medium_high_critical() {
+        // Test that different VM types in the same removal produce escalating severities
+        let pools = vec![
+            SdiPoolState {
+                pool_name: "tower".to_string(),
+                purpose: "management".to_string(),
+                nodes: vec![SdiNodeState {
+                    node_name: "tower-cp-0".to_string(),
+                    ip: "192.168.88.100".to_string(),
+                    host: "playbox-0".to_string(),
+                    cpu: 2,
+                    mem_gb: 3,
+                    disk_gb: 30,
+                    status: "running".to_string(),
+                    gpu_passthrough: false,
+                }],
+            },
+            SdiPoolState {
+                pool_name: "sandbox".to_string(),
+                purpose: "workload".to_string(),
+                nodes: vec![
+                    SdiNodeState {
+                        node_name: "sandbox-cp-0".to_string(),
+                        ip: "192.168.88.110".to_string(),
+                        host: "playbox-0".to_string(),
+                        cpu: 4,
+                        mem_gb: 8,
+                        disk_gb: 60,
+                        status: "running".to_string(),
+                        gpu_passthrough: false,
+                    },
+                    SdiNodeState {
+                        node_name: "sandbox-w-0".to_string(),
+                        ip: "192.168.88.120".to_string(),
+                        host: "playbox-0".to_string(),
+                        cpu: 8,
+                        mem_gb: 16,
+                        disk_gb: 100,
+                        status: "running".to_string(),
+                        gpu_passthrough: false,
+                    },
+                ],
+            },
+        ];
+
+        let to_remove = vec!["playbox-0".to_string()];
+        let conflicts = detect_vm_conflicts(&pools, &to_remove);
+
+        // Should detect 3 conflicts: tower-cp-0, sandbox-cp-0, sandbox-w-0
+        assert_eq!(conflicts.len(), 3);
+
+        // Classify each and verify escalation
+        let severities: Vec<ConflictSeverity> = conflicts
+            .iter()
+            .map(|c| classify_conflict_severity(c, &pools))
+            .collect();
+
+        assert!(
+            severities.contains(&ConflictSeverity::Critical),
+            "Must have Critical (tower management VM)"
+        );
+        assert!(
+            severities.contains(&ConflictSeverity::High),
+            "Must have High (sandbox control-plane VM)"
+        );
+        assert!(
+            severities.contains(&ConflictSeverity::Medium),
+            "Must have Medium (sandbox worker VM)"
+        );
+
+        // Must be flagged as management conflict
+        assert!(
+            has_management_cluster_conflict(&conflicts, &pools),
+            "Removing playbox-0 destroys management cluster — must block"
+        );
+    }
+
+    #[test]
+    fn test_sprint35a_force_flag_with_critical_conflict_warning() {
+        // When --force is used with critical conflicts, validate_removal_safety
+        // should return empty (force bypasses state check), but VM conflicts remain
+        let pools = vec![SdiPoolState {
+            pool_name: "tower".to_string(),
+            purpose: "management".to_string(),
+            nodes: vec![SdiNodeState {
+                node_name: "tower-cp-0".to_string(),
+                ip: "192.168.88.100".to_string(),
+                host: "playbox-0".to_string(),
+                cpu: 2,
+                mem_gb: 3,
+                disk_gb: 30,
+                status: "running".to_string(),
+                gpu_passthrough: false,
+            }],
+        }];
+
+        let to_remove = vec!["playbox-0".to_string()];
+
+        // With state present (--force scenario where state exists)
+        let safety_warnings = validate_removal_safety(true, &to_remove);
+        assert!(
+            safety_warnings.is_empty(),
+            "--force with state: safety check passes (conflict detection handles it)"
+        );
+
+        // But VM conflicts STILL detected regardless of force
+        let conflicts = detect_vm_conflicts(&pools, &to_remove);
+        assert_eq!(
+            conflicts.len(),
+            1,
+            "VM conflicts exist even with --force"
+        );
+        assert!(
+            has_management_cluster_conflict(&conflicts, &pools),
+            "Management conflict exists even with --force — caller must decide to proceed"
+        );
+
+        // Without state (--force needed)
+        let safety_warnings_no_state = validate_removal_safety(false, &to_remove);
+        assert_eq!(
+            safety_warnings_no_state.len(),
+            1,
+            "Without state: safety warning emitted even though --force may bypass it"
+        );
+        assert!(safety_warnings_no_state[0].contains("--force"));
+    }
 }
