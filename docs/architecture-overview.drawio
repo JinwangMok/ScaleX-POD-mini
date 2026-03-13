@@ -1,171 +1,330 @@
-<mxfile host="app.diagrams.net" modified="2026-03-10T00:00:00.000Z" agent="Claude" version="24.0.0">
+<mxfile host="app.diagrams.net" modified="2026-03-13T00:00:00.000Z" agent="Claude" version="24.0.0">
   <diagram id="architecture-overview" name="Architecture Overview">
-    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+    <mxGraphModel dx="1800" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
 
         <!-- Title -->
-        <mxCell id="title" value="ScaleX-POD-mini Architecture Overview" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
-          <mxGeometry x="400" y="20" width="500" height="40" as="geometry" />
+        <mxCell id="title" value="ScaleX-POD-mini Architecture Overview" style="text;html=1;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="450" y="15" width="500" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="5-Layer SDI: Physical → SDI (OpenTofu) → Node Pools → Clusters (Kubespray) → GitOps (ArgoCD)" style="text;html=1;fontSize=11;fontStyle=2;align=center;verticalAlign=middle;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="350" y="50" width="700" height="20" as="geometry" />
         </mxCell>
 
+        <!-- ============================== -->
         <!-- External Access Layer -->
+        <!-- ============================== -->
         <mxCell id="ext-group" value="External Access" style="swimlane;startSize=25;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="340" y="80" width="620" height="120" as="geometry" />
+          <mxGeometry x="300" y="80" width="800" height="120" as="geometry" />
         </mxCell>
         <mxCell id="client" value="Client&#xa;(kubectl + kubelogin)" style="shape=actor;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="ext-group">
           <mxGeometry x="20" y="35" width="100" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="cf-edge" value="Cloudflare Edge&#xa;(Public TLS)" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="ext-group">
-          <mxGeometry x="200" y="30" width="180" height="80" as="geometry" />
+        <mxCell id="cf-edge" value="Cloudflare Edge&#xa;(TLS Termination)" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="ext-group">
+          <mxGeometry x="200" y="25" width="200" height="85" as="geometry" />
         </mxCell>
-        <mxCell id="domains" value="api.k8s.jinwang.dev&#xa;auth.jinwang.dev&#xa;cd.jinwang.dev" style="text;html=1;align=left;fontSize=10;fontStyle=2;fillColor=#fff2cc;strokeColor=#d6b656;rounded=1;" vertex="1" parent="ext-group">
-          <mxGeometry x="440" y="35" width="150" height="60" as="geometry" />
+        <mxCell id="tailscale-ext" value="Tailscale&#xa;Mesh VPN" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="ext-group">
+          <mxGeometry x="470" y="25" width="150" height="85" as="geometry" />
         </mxCell>
-        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" parent="ext-group" source="client" target="cf-edge">
+        <mxCell id="domains" value="cd.jinwang.dev (ArgoCD)&#xa;auth.jinwang.dev (Keycloak)&#xa;api.k8s.jinwang.dev (K8s API)" style="text;html=1;align=left;fontSize=10;fontStyle=2;fillColor=#fff2cc;strokeColor=#d6b656;rounded=1;" vertex="1" parent="ext-group">
+          <mxGeometry x="640" y="30" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="e-client-cf" style="edgeStyle=orthogonalEdgeStyle;" edge="1" parent="ext-group" source="client" target="cf-edge">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;" edge="1" parent="ext-group" source="cf-edge" target="domains">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-
-        <!-- LAN: 192.168.88.0/24 -->
-        <mxCell id="lan-group" value="LAN: 192.168.88.0/24" style="swimlane;startSize=25;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="40" y="230" width="1240" height="720" as="geometry" />
-        </mxCell>
-
-        <!-- playbox-0 -->
-        <mxCell id="pb0-group" value="playbox-0  (192.168.88.8)&#xa;Control Plane + Tower Host" style="swimlane;startSize=40;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=12;" vertex="1" parent="lan-group">
-          <mxGeometry x="20" y="40" width="380" height="380" as="geometry" />
-        </mxCell>
-        <mxCell id="pb0-bond" value="bond0 (eno1)&#xa;active-backup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="pb0-group">
-          <mxGeometry x="20" y="50" width="140" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="pb0-br0" value="br0 (bridge)&#xa;Tower VM L2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="pb0-group">
-          <mxGeometry x="200" y="50" width="140" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="pb0-kubelet" value="kubelet&#xa;(sandbox worker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="pb0-group">
-          <mxGeometry x="20" y="110" width="140" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="pb0-etcd" value="etcd" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="pb0-group">
-          <mxGeometry x="200" y="110" width="140" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="pb0-apiserver" value="kube-apiserver&#xa;(OIDC enabled)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="pb0-group">
-          <mxGeometry x="60" y="170" width="220" height="40" as="geometry" />
-        </mxCell>
-
-        <!-- Tower VM -->
-        <mxCell id="tower-vm" value="Tower VM (192.168.88.100)&#xa;Kubespray K8s on libvirt" style="swimlane;startSize=35;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;dashed=1;dashPattern=5 5;" vertex="1" parent="pb0-group">
-          <mxGeometry x="40" y="230" width="280" height="130" as="geometry" />
-        </mxCell>
-        <mxCell id="tower-argocd" value="ArgoCD&#xa;(manages both clusters)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="tower-vm">
-          <mxGeometry x="20" y="45" width="240" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="tower-k3s" value="Kubespray K8s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="tower-vm">
-          <mxGeometry x="90" y="90" width="100" height="30" as="geometry" />
-        </mxCell>
-
-        <!-- playbox-1 -->
-        <mxCell id="pb1-group" value="playbox-1  (192.168.88.9)&#xa;Worker" style="swimlane;startSize=40;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=12;" vertex="1" parent="lan-group">
-          <mxGeometry x="420" y="40" width="250" height="170" as="geometry" />
-        </mxCell>
-        <mxCell id="pb1-bond" value="bond0 (eno1)&#xa;active-backup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="pb1-group">
-          <mxGeometry x="20" y="50" width="210" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="pb1-kubelet" value="kubelet (sandbox worker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="pb1-group">
-          <mxGeometry x="20" y="110" width="210" height="40" as="geometry" />
-        </mxCell>
-
-        <!-- playbox-2 -->
-        <mxCell id="pb2-group" value="playbox-2  (192.168.88.10)&#xa;Worker" style="swimlane;startSize=40;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=12;" vertex="1" parent="lan-group">
-          <mxGeometry x="690" y="40" width="250" height="170" as="geometry" />
-        </mxCell>
-        <mxCell id="pb2-bond" value="bond0 (eno1)&#xa;active-backup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="pb2-group">
-          <mxGeometry x="20" y="50" width="210" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="pb2-kubelet" value="kubelet (sandbox worker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="pb2-group">
-          <mxGeometry x="20" y="110" width="210" height="40" as="geometry" />
-        </mxCell>
-
-        <!-- playbox-3 -->
-        <mxCell id="pb3-group" value="playbox-3  (192.168.88.11)&#xa;Worker + GPU + 10G NIC" style="swimlane;startSize=40;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=12;" vertex="1" parent="lan-group">
-          <mxGeometry x="960" y="40" width="260" height="170" as="geometry" />
-        </mxCell>
-        <mxCell id="pb3-bond" value="bond0&#xa;eno1(1G) + ens2f0np0(10G)&#xa;active-backup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="pb3-group">
-          <mxGeometry x="20" y="50" width="220" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="pb3-kubelet" value="kubelet (sandbox worker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="pb3-group">
-          <mxGeometry x="20" y="115" width="220" height="40" as="geometry" />
-        </mxCell>
-
-        <!-- Sandbox Cluster Services -->
-        <mxCell id="svc-group" value="Sandbox Cluster Services (kubespray K8s)" style="swimlane;startSize=25;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=13;" vertex="1" parent="lan-group">
-          <mxGeometry x="420" y="240" width="800" height="220" as="geometry" />
-        </mxCell>
-        <mxCell id="cilium" value="Cilium&#xa;(CNI + kube-proxy&#xa;replacement)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=1;" vertex="1" parent="svc-group">
-          <mxGeometry x="20" y="35" width="130" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="certmgr" value="cert-manager" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="svc-group">
-          <mxGeometry x="170" y="35" width="110" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="lpp" value="local-path&#xa;provisioner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="svc-group">
-          <mxGeometry x="300" y="35" width="110" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="cloudflared" value="cloudflared&#xa;(Tunnel Pod)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;fontStyle=1;" vertex="1" parent="svc-group">
-          <mxGeometry x="430" y="35" width="110" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="keycloak" value="Keycloak&#xa;(OIDC IdP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=1;" vertex="1" parent="svc-group">
-          <mxGeometry x="560" y="35" width="110" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="socks5" value="SOCKS5&#xa;Proxy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="svc-group">
-          <mxGeometry x="690" y="35" width="90" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="rbac" value="RBAC&#xa;(ClusterRoleBindings)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="svc-group">
-          <mxGeometry x="20" y="120" width="150" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="clusterconf" value="cluster-config&#xa;(Labels, Taints)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="svc-group">
-          <mxGeometry x="190" y="120" width="150" height="50" as="geometry" />
-        </mxCell>
-
-        <!-- Tailscale Bastion -->
-        <mxCell id="tailscale" value="Tailscale Bastion&#xa;(<TAILSCALE_BASTION_IP>)&#xa;openclaw-vm → playbox-0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=2;" vertex="1" parent="lan-group">
-          <mxGeometry x="20" y="490" width="200" height="60" as="geometry" />
-        </mxCell>
-
-        <!-- Legend -->
-        <mxCell id="legend" value="Legend" style="swimlane;startSize=20;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="lan-group">
-          <mxGeometry x="20" y="580" width="400" height="120" as="geometry" />
-        </mxCell>
-        <mxCell id="leg1" value="Network (bond/bridge)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="legend">
-          <mxGeometry x="10" y="30" width="120" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="leg2" value="K8s Component" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="legend">
-          <mxGeometry x="140" y="30" width="120" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="leg3" value="Tower / CF Tunnel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="legend">
-          <mxGeometry x="270" y="30" width="120" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="leg4" value="Auth / OIDC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;" vertex="1" parent="legend">
-          <mxGeometry x="10" y="70" width="120" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="leg5" value="Utility / Config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=9;" vertex="1" parent="legend">
-          <mxGeometry x="140" y="70" width="120" height="30" as="geometry" />
-        </mxCell>
-
-        <!-- Edges: CF Tunnel to cloudflared -->
-        <mxCell id="e-cf-tunnel" value="CF Tunnel" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#d6b656;fontStyle=2;fontSize=10;" edge="1" parent="1" source="domains" target="cloudflared">
+        <mxCell id="e-client-ts" value="OIDC or cert" style="edgeStyle=orthogonalEdgeStyle;dashed=1;fontSize=9;fontStyle=2;" edge="1" parent="ext-group" source="client" target="tailscale-ext">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="870" y="200" />
-              <mxPoint x="870" y="310" />
+              <mxPoint x="160" y="70" />
+              <mxPoint x="160" y="70" />
             </Array>
           </mxGeometry>
         </mxCell>
 
-        <!-- Edge: ArgoCD manages sandbox -->
-        <mxCell id="e-argocd-sandbox" value="manages" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#d6b656;fontStyle=2;fontSize=10;dashed=1;" edge="1" parent="1" source="tower-argocd" target="svc-group">
+        <!-- ============================== -->
+        <!-- LAN: 192.168.88.0/24 -->
+        <!-- ============================== -->
+        <mxCell id="lan-group" value="LAN: 192.168.88.0/24" style="swimlane;startSize=25;fillColor=#F3E8FF;strokeColor=#9673a6;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="20" y="220" width="1370" height="940" as="geometry" />
+        </mxCell>
+
+        <!-- ======== BARE-METAL NODES ======== -->
+        <mxCell id="bm-title" value="Bare-Metal Nodes (Physical Layer)" style="text;html=1;fontSize=13;fontStyle=1;align=left;fontColor=#6c8ebf;" vertex="1" parent="lan-group">
+          <mxGeometry x="20" y="30" width="300" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- playbox-0 -->
+        <mxCell id="pb0-group" value="playbox-0  (192.168.88.8)&#xa;Sandbox Control Plane + Tower Host" style="swimlane;startSize=40;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;" vertex="1" parent="lan-group">
+          <mxGeometry x="20" y="55" width="340" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="pb0-bond" value="bond0 (eno1) active-backup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="pb0-group">
+          <mxGeometry x="10" y="50" width="150" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pb0-br0" value="br0 (bridge) Tower VM L2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="pb0-group">
+          <mxGeometry x="175" y="50" width="155" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pb0-kubelet" value="kubelet (sandbox CP + worker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="pb0-group">
+          <mxGeometry x="10" y="90" width="150" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pb0-etcd" value="etcd (sandbox)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="pb0-group">
+          <mxGeometry x="175" y="90" width="155" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pb0-apiserver" value="kube-apiserver (OIDC enabled)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=1;" vertex="1" parent="pb0-group">
+          <mxGeometry x="30" y="130" width="260" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Tower VM inside playbox-0 -->
+        <mxCell id="tower-vm" value="Tower VM (192.168.88.100) — libvirt/OpenTofu" style="swimlane;startSize=30;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=10;dashed=1;dashPattern=5 5;" vertex="1" parent="pb0-group">
+          <mxGeometry x="15" y="175" width="310" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="tower-k8s" value="Kubespray K8s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="tower-vm">
+          <mxGeometry x="10" y="35" width="90" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="tower-argocd" value="ArgoCD" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;fontStyle=1;" vertex="1" parent="tower-vm">
+          <mxGeometry x="110" y="35" width="90" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="tower-keycloak" value="Keycloak" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;fontStyle=1;" vertex="1" parent="tower-vm">
+          <mxGeometry x="210" y="35" width="90" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="tower-cilium" value="Cilium" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="tower-vm">
+          <mxGeometry x="10" y="68" width="65" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="tower-certmgr" value="cert-mgr" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="tower-vm">
+          <mxGeometry x="80" y="68" width="65" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="tower-kyverno" value="Kyverno" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="tower-vm">
+          <mxGeometry x="150" y="68" width="65" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="tower-cf" value="cloudflared" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="tower-vm">
+          <mxGeometry x="220" y="68" width="80" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="tower-misc" value="cert-issuers | socks5-proxy | cluster-config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=8;" vertex="1" parent="tower-vm">
+          <mxGeometry x="10" y="100" width="290" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- playbox-1 -->
+        <mxCell id="pb1-group" value="playbox-1  (192.168.88.9)&#xa;Sandbox Worker" style="swimlane;startSize=40;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;" vertex="1" parent="lan-group">
+          <mxGeometry x="380" y="55" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="pb1-bond" value="bond0 (eno1) active-backup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="pb1-group">
+          <mxGeometry x="10" y="50" width="210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pb1-kubelet" value="kubelet (sandbox worker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="pb1-group">
+          <mxGeometry x="10" y="90" width="210" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- playbox-2 -->
+        <mxCell id="pb2-group" value="playbox-2  (192.168.88.10)&#xa;Sandbox Worker" style="swimlane;startSize=40;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;" vertex="1" parent="lan-group">
+          <mxGeometry x="630" y="55" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="pb2-bond" value="bond0 (eno1) active-backup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="pb2-group">
+          <mxGeometry x="10" y="50" width="210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pb2-kubelet" value="kubelet (sandbox worker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="pb2-group">
+          <mxGeometry x="10" y="90" width="210" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- playbox-3 -->
+        <mxCell id="pb3-group" value="playbox-3  (192.168.88.11)&#xa;Sandbox Worker + GPU + 10G NIC" style="swimlane;startSize=40;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;" vertex="1" parent="lan-group">
+          <mxGeometry x="880" y="55" width="260" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="pb3-bond" value="bond0 eno1(1G)+ens2f0np0(10G) active-backup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="pb3-group">
+          <mxGeometry x="10" y="50" width="240" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pb3-kubelet" value="kubelet (sandbox worker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="pb3-group">
+          <mxGeometry x="10" y="90" width="240" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ======== TOWER CLUSTER SERVICES ======== -->
+        <mxCell id="tower-svc-group" value="Tower Cluster Services (Kubespray K8s on VM — manages all clusters)" style="swimlane;startSize=25;fillColor=#FFF8E1;strokeColor=#d6b656;fontStyle=1;fontSize=12;" vertex="1" parent="lan-group">
+          <mxGeometry x="20" y="400" width="630" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="t-argocd" value="ArgoCD&#xa;(GitOps CD)&#xa;manages both clusters" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;fontStyle=1;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="15" y="35" width="140" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="t-keycloak" value="Keycloak&#xa;(OIDC IdP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=1;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="170" y="35" width="100" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="t-cloudflared" value="cloudflared&#xa;(CF Tunnel)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;fontStyle=1;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="285" y="35" width="100" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="t-cilium" value="Cilium&#xa;(CNI)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="400" y="35" width="100" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="t-certmgr" value="cert-manager" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="515" y="35" width="100" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="t-kyverno" value="Kyverno&#xa;(Policy)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="15" y="105" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="t-kyvpol" value="kyverno-policies" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="130" y="105" width="110" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="t-certiss" value="cert-issuers&#xa;(Let's Encrypt)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=9;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="255" y="105" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="t-cilres" value="cilium-resources" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="370" y="105" width="110" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="t-socks5" value="socks5-proxy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=9;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="495" y="105" width="90" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="t-clusterconf" value="cluster-config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=9;" vertex="1" parent="tower-svc-group">
+          <mxGeometry x="15" y="155" width="100" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ======== SANDBOX CLUSTER SERVICES ======== -->
+        <mxCell id="sandbox-svc-group" value="Sandbox Cluster Services (Kubespray K8s on bare-metal — workloads)" style="swimlane;startSize=25;fillColor=#E8F5E9;strokeColor=#82b366;fontStyle=1;fontSize=12;" vertex="1" parent="lan-group">
+          <mxGeometry x="670" y="400" width="680" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="s-cilium" value="Cilium&#xa;(CNI + kube-proxy&#xa;replacement)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=1;" vertex="1" parent="sandbox-svc-group">
+          <mxGeometry x="15" y="35" width="120" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s-certmgr" value="cert-manager" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="sandbox-svc-group">
+          <mxGeometry x="150" y="35" width="100" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s-kyverno" value="Kyverno&#xa;(Policy)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="sandbox-svc-group">
+          <mxGeometry x="265" y="35" width="100" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s-lpp" value="local-path&#xa;provisioner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="sandbox-svc-group">
+          <mxGeometry x="380" y="35" width="100" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s-rbac" value="RBAC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=10;" vertex="1" parent="sandbox-svc-group">
+          <mxGeometry x="495" y="35" width="80" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s-test" value="test-resources" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=9;" vertex="1" parent="sandbox-svc-group">
+          <mxGeometry x="590" y="35" width="80" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s-kyvpol" value="kyverno-policies" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="sandbox-svc-group">
+          <mxGeometry x="15" y="105" width="110" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="s-cilres" value="cilium-resources" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="sandbox-svc-group">
+          <mxGeometry x="140" y="105" width="110" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="s-clusterconf" value="cluster-config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=9;" vertex="1" parent="sandbox-svc-group">
+          <mxGeometry x="265" y="105" width="100" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- ======== GitOps Bootstrap Chain ======== -->
+        <mxCell id="gitops-title" value="GitOps Bootstrap Chain (ArgoCD)" style="text;html=1;fontSize=13;fontStyle=1;align=left;fontColor=#6c8ebf;" vertex="1" parent="lan-group">
+          <mxGeometry x="20" y="620" width="300" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-spread" value="spread.yaml&#xa;(Root Bootstrap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;fontStyle=1;" vertex="1" parent="lan-group">
+          <mxGeometry x="20" y="650" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="g-projects" value="AppProjects&#xa;tower / sandbox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="lan-group">
+          <mxGeometry x="200" y="650" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="g-tower-root" value="tower-root&#xa;Application" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;fontStyle=1;" vertex="1" parent="lan-group">
+          <mxGeometry x="360" y="645" width="110" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="g-sandbox-root" value="sandbox-root&#xa;Application" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;fontStyle=1;" vertex="1" parent="lan-group">
+          <mxGeometry x="510" y="645" width="110" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="g-tower-gen" value="tower generators&#xa;(ApplicationSets)&#xa;common + tower" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="lan-group">
+          <mxGeometry x="360" y="720" width="110" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="g-sandbox-gen" value="sandbox generators&#xa;(ApplicationSets)&#xa;common + sandbox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="lan-group">
+          <mxGeometry x="510" y="720" width="110" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- GitOps arrows -->
+        <mxCell id="ga1" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;" edge="1" parent="lan-group" source="g-spread" target="g-projects">
           <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ga2" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;" edge="1" parent="lan-group" source="g-spread" target="g-tower-root">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ga3" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;" edge="1" parent="lan-group" source="g-spread" target="g-sandbox-root">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ga4" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;" edge="1" parent="lan-group" source="g-tower-root" target="g-tower-gen">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ga5" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;" edge="1" parent="lan-group" source="g-sandbox-root" target="g-sandbox-gen">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Sync Waves -->
+        <mxCell id="sw-title" value="Sync Waves" style="text;html=1;fontSize=12;fontStyle=1;align=left;fontColor=#6c8ebf;" vertex="1" parent="lan-group">
+          <mxGeometry x="700" y="620" width="200" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="sw0" value="Wave 0: ArgoCD, cluster-config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="lan-group">
+          <mxGeometry x="700" y="645" width="250" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="sw1" value="Wave 1: Cilium, cert-manager, Kyverno, local-path-provisioner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="lan-group">
+          <mxGeometry x="700" y="680" width="310" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="sw2" value="Wave 2: cilium-resources, cert-issuers, kyverno-policies, test-resources" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="lan-group">
+          <mxGeometry x="700" y="715" width="340" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="sw3" value="Wave 3: cloudflared-tunnel, socks5-proxy, keycloak" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="lan-group">
+          <mxGeometry x="700" y="750" width="280" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="sw4" value="Wave 4: RBAC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;" vertex="1" parent="lan-group">
+          <mxGeometry x="700" y="785" width="120" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="swa01" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;strokeColor=#999999;" edge="1" parent="lan-group" source="sw0" target="sw1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="swa12" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;strokeColor=#999999;" edge="1" parent="lan-group" source="sw1" target="sw2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="swa23" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;strokeColor=#999999;" edge="1" parent="lan-group" source="sw2" target="sw3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="swa34" style="edgeStyle=orthogonalEdgeStyle;strokeWidth=1;strokeColor=#999999;" edge="1" parent="lan-group" source="sw3" target="sw4"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Tailscale Bastion -->
+        <mxCell id="tailscale" value="Tailscale Bastion&#xa;(playbox-0 → external)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=2;" vertex="1" parent="lan-group">
+          <mxGeometry x="20" y="830" width="180" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="legend" value="Legend" style="swimlane;startSize=20;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="lan-group">
+          <mxGeometry x="250" y="820" width="550" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1" value="Network (bond/bridge)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=8;" vertex="1" parent="legend">
+          <mxGeometry x="10" y="25" width="100" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2" value="K8s / Common App" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=8;" vertex="1" parent="legend">
+          <mxGeometry x="120" y="25" width="100" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="leg3" value="Tower / CF Tunnel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=8;" vertex="1" parent="legend">
+          <mxGeometry x="230" y="25" width="100" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="leg4" value="Auth / OIDC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=8;" vertex="1" parent="legend">
+          <mxGeometry x="340" y="25" width="90" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="leg5" value="Utility / Config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=8;" vertex="1" parent="legend">
+          <mxGeometry x="440" y="25" width="100" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- ============================== -->
+        <!-- Edges between top-level groups -->
+        <!-- ============================== -->
+
+        <!-- CF Edge → Tower cloudflared -->
+        <mxCell id="e-cf-to-tower" value="CF Tunnel" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#d6b656;fontStyle=2;fontSize=9;dashed=1;" edge="1" parent="1" source="cf-edge" target="tower-svc-group">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="700" y="200" />
+              <mxPoint x="100" y="200" />
+              <mxPoint x="100" y="620" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ArgoCD manages Sandbox -->
+        <mxCell id="e-argocd-sandbox" value="manages" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#d6b656;fontStyle=2;fontSize=9;dashed=1;dashPattern=8 4;" edge="1" parent="1" source="tower-svc-group" target="sandbox-svc-group">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Tailscale → external -->
+        <mxCell id="e-ts-ext" value="VPN mesh" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#9673a6;fontStyle=2;fontSize=9;dashed=1;" edge="1" parent="1" source="tailscale" target="tailscale-ext">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1400" y="1070" />
+              <mxPoint x="1400" y="155" />
+            </Array>
+          </mxGeometry>
         </mxCell>
 
       </root>
