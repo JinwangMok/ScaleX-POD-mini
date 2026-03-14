@@ -31,6 +31,7 @@ REPO_DIR=""
 NODE_COUNT=0
 POOL_COUNT=0
 CLUSTER_COUNT=0
+AUTO_MODE="${AUTO_MODE:-false}"
 
 # ============================================================================
 # Section 1: Utility Functions
@@ -114,6 +115,7 @@ tui_password() {
 }
 
 tui_yesno() {
+  [[ "$AUTO_MODE" == "true" ]] && return 0
   local title="$1" prompt="$2"
   case "$TUI" in
     whiptail) whiptail --title "$title" --yesno "$prompt" 10 72 3>&1 1>&2 2>&3; return $? ;;
@@ -185,6 +187,104 @@ validate_cidr() {
 }
 
 validate_not_empty() { [[ -n "${1:-}" ]]; }
+
+# --- SSH config generation ---
+# Generates ~/.ssh/config entries from .baremetal-init.yaml for libvirt qemu+ssh:// access.
+# Reads node topology and creates ProxyJump entries for non-direct nodes.
+generate_ssh_config() {
+  local repo_dir="${1:-.}"
+  local yaml_file="$repo_dir/credentials/.baremetal-init.yaml"
+  local env_file="$repo_dir/credentials/.env"
+  local ssh_config="$HOME/.ssh/config"
+  local marker="# --- ScaleX-POD-mini managed ---"
+  local end_marker="# --- End ScaleX-POD-mini ---"
+
+  [[ -f "$yaml_file" ]] || return 0
+
+  # Skip if already configured
+  if [[ -f "$ssh_config" ]] && grep -q "$marker" "$ssh_config"; then
+    log_info "SSH config 이미 설정됨 — 건너뜀"
+    return 0
+  fi
+
+  # Resolve SSH key path from .env
+  local ssh_key="$HOME/.ssh/id_ed25519"
+  if [[ -f "$env_file" ]]; then
+    local key_val; key_val=$(grep '^SSH_KEY_PATH=' "$env_file" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+    [[ -n "$key_val" ]] && ssh_key="$key_val"
+  fi
+
+  mkdir -p "$HOME/.ssh"
+  local config_block=""
+  config_block+="$marker"$'\n'
+
+  # Parse nodes from YAML (simple line-based parser)
+  local name="" ip="" reachable_ip="" user="" auth_mode="" via=""
+  local in_node=false
+
+  while IFS= read -r line; do
+    # Detect new node entry
+    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*name:[[:space:]]*\"?([^\"]+)\"? ]]; then
+      # Flush previous node
+      if [[ -n "$name" ]]; then
+        config_block+="Host $name"$'\n'
+        if [[ -n "$reachable_ip" ]]; then
+          config_block+="    HostName $reachable_ip"$'\n'
+        else
+          config_block+="    HostName $ip"$'\n'
+        fi
+        config_block+="    User $user"$'\n'
+        [[ "$auth_mode" == "key" ]] && config_block+="    IdentityFile $ssh_key"$'\n'
+        [[ -n "$via" ]] && config_block+="    ProxyJump $via"$'\n'
+        config_block+="    StrictHostKeyChecking no"$'\n'$'\n'
+      fi
+      name="${BASH_REMATCH[1]}"
+      ip="" reachable_ip="" user="" auth_mode="" via=""
+      in_node=true
+    elif $in_node; then
+      if [[ "$line" =~ reachable_node_ip:[[:space:]]*\"?([^\"]+)\"? ]]; then
+        reachable_ip="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ node_ip:[[:space:]]*\"?([^\"]+)\"? ]]; then
+        ip="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ adminUser:[[:space:]]*\"?([^\"]+)\"? ]]; then
+        user="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ sshAuthMode:[[:space:]]*\"?([^\"]+)\"? ]]; then
+        auth_mode="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ reachable_via:.*\"([^\"]+)\" ]]; then
+        via="${BASH_REMATCH[1]}"
+      fi
+    fi
+  done < "$yaml_file"
+
+  # Flush last node
+  if [[ -n "$name" ]]; then
+    config_block+="Host $name"$'\n'
+    if [[ -n "$reachable_ip" ]]; then
+      config_block+="    HostName $reachable_ip"$'\n'
+    else
+      config_block+="    HostName $ip"$'\n'
+    fi
+    config_block+="    User $user"$'\n'
+    [[ "$auth_mode" == "key" ]] && config_block+="    IdentityFile $ssh_key"$'\n'
+    [[ -n "$via" ]] && config_block+="    ProxyJump $via"$'\n'
+    config_block+="    StrictHostKeyChecking no"$'\n'$'\n'
+    # Add IP-based entry for libvirt provider (uses IP directly, needs ProxyJump via SSH config)
+    if [[ -n "$via" && -n "$ip" ]]; then
+      config_block+="Host $ip"$'\n'
+      config_block+="    User $user"$'\n'
+      [[ "$auth_mode" == "key" ]] && config_block+="    IdentityFile $ssh_key"$'\n'
+      config_block+="    ProxyJump $via"$'\n'
+      config_block+="    StrictHostKeyChecking no"$'\n'$'\n'
+    fi
+  fi
+
+  config_block+="$end_marker"$'\n'
+
+  # Append to existing config or create new
+  echo "$config_block" >> "$ssh_config"
+  chmod 600 "$ssh_config"
+  log_info "SSH config 생성 완료 (~/.ssh/config)"
+}
 
 # --- State management ---
 state_set() {
@@ -301,7 +401,7 @@ install_dep() {
       [[ "$arch" == "aarch64" ]] && arch="arm64"
       local os_name; os_name=$(uname -s | tr '[:upper:]' '[:lower:]')
       curl -fsSLo "$HOME/.local/bin/argocd" \
-        "https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}/${os_name}-${arch}"
+        "https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}/argocd-${os_name}-${arch}"
       chmod +x "$HOME/.local/bin/argocd" ;;
     sshpass)
       case "$os" in
@@ -327,15 +427,26 @@ phase_deps() {
   export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
   local deps=("git:git" "rust:cargo" "ansible:ansible" "python3:python3"
-               "opentofu:tofu" "kubectl:kubectl" "helm:helm" "argocd:argocd" "sshpass:sshpass")
+               "opentofu:tofu" "kubectl:kubectl" "helm:helm" "argocd:argocd")
+  local optional_deps=("sshpass:sshpass")
   local missing=()
   for entry in "${deps[@]}"; do
     local name="${entry%%:*}" cmd="${entry##*:}"
     if ! check_dep "$name" "$cmd"; then missing+=("$name"); fi
   done
 
+  # Check optional deps (warn only, don't block)
+  local opt_missing=()
+  for entry in "${optional_deps[@]}"; do
+    local name="${entry%%:*}" cmd="${entry##*:}"
+    if ! check_dep "$name" "$cmd"; then opt_missing+=("$name"); fi
+  done
+  if [[ ${#opt_missing[@]} -gt 0 ]]; then
+    log_warn "선택적 도구 누락 (password SSH 인증 시 필요): ${opt_missing[*]}"
+  fi
+
   if [[ ${#missing[@]} -eq 0 ]]; then
-    log_info "모든 의존성이 설치되어 있습니다."
+    log_info "모든 필수 의존성이 설치되어 있습니다."
     state_save_phase 0
     return 0
   fi
@@ -347,6 +458,10 @@ phase_deps() {
         error_msg "$name 설치 실패" "패키지 매니저 오류 또는 네트워크 문제" "수동 설치 후 다시 실행하세요"
         return 1
       }
+    done
+    # Install optional deps (best-effort, don't fail)
+    for name in "${opt_missing[@]}"; do
+      install_dep "$name" "$os" || log_warn "$name 설치 실패 — password SSH 미사용 시 무시 가능"
     done
     # Re-source cargo env if rust was installed
     [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" 2>/dev/null || true
@@ -909,6 +1024,7 @@ run_step() {
   else
     echo -e "  ${RED}FAIL${NC}"
     log_error "Step ${step_num} failed: $desc"
+    if [[ "$AUTO_MODE" == "true" ]]; then return 1; fi
     if tui_yesno "재시도" "${desc} 실패. 재시도하시겠습니까?"; then
       "$@"
     else
@@ -944,30 +1060,34 @@ phase_provision() {
   echo -e "  ${GREEN}OK${NC} — $REPO_DIR"
   state_set REPO_DIR "$REPO_DIR"
 
-  # Step 2: Copy generated config files
+  # Step 2: Copy generated config files (skip in auto mode — repo already has correct config)
   echo -e "${CYAN}[Phase 4/4] [Step 2/${total_steps}]${NC} 구성 파일 복사..."
-  mkdir -p "$REPO_DIR/credentials" "$REPO_DIR/config"
-  if [[ -f "$GEN_DIR/credentials/.baremetal-init.yaml" ]]; then
-    cp "$GEN_DIR/credentials/.baremetal-init.yaml" "$REPO_DIR/credentials/"
-    chmod 600 "$REPO_DIR/credentials/.baremetal-init.yaml"
-  fi
-  if [[ -f "$GEN_DIR/credentials/.env" ]]; then
-    cp "$GEN_DIR/credentials/.env" "$REPO_DIR/credentials/"
-    chmod 600 "$REPO_DIR/credentials/.env"
-  fi
-  if [[ -f "$GEN_DIR/credentials/secrets.yaml" ]]; then
-    cp "$GEN_DIR/credentials/secrets.yaml" "$REPO_DIR/credentials/"
-    chmod 600 "$REPO_DIR/credentials/secrets.yaml"
-  fi
-  if [[ -f "$GEN_DIR/credentials/cloudflare-tunnel.json" ]]; then
-    cp "$GEN_DIR/credentials/cloudflare-tunnel.json" "$REPO_DIR/credentials/"
-    chmod 600 "$REPO_DIR/credentials/cloudflare-tunnel.json"
-  fi
-  if [[ -f "$GEN_DIR/config/sdi-specs.yaml" ]]; then
-    cp "$GEN_DIR/config/sdi-specs.yaml" "$REPO_DIR/config/"
-  fi
-  if [[ -f "$GEN_DIR/config/k8s-clusters.yaml" ]]; then
-    cp "$GEN_DIR/config/k8s-clusters.yaml" "$REPO_DIR/config/"
+  if [[ "$AUTO_MODE" == "true" ]]; then
+    log_info "자동 모드: 기존 구성 파일 유지 (덮어쓰기 건너뜀)"
+  else
+    mkdir -p "$REPO_DIR/credentials" "$REPO_DIR/config"
+    if [[ -f "$GEN_DIR/credentials/.baremetal-init.yaml" ]]; then
+      cp "$GEN_DIR/credentials/.baremetal-init.yaml" "$REPO_DIR/credentials/"
+      chmod 600 "$REPO_DIR/credentials/.baremetal-init.yaml"
+    fi
+    if [[ -f "$GEN_DIR/credentials/.env" ]]; then
+      cp "$GEN_DIR/credentials/.env" "$REPO_DIR/credentials/"
+      chmod 600 "$REPO_DIR/credentials/.env"
+    fi
+    if [[ -f "$GEN_DIR/credentials/secrets.yaml" ]]; then
+      cp "$GEN_DIR/credentials/secrets.yaml" "$REPO_DIR/credentials/"
+      chmod 600 "$REPO_DIR/credentials/secrets.yaml"
+    fi
+    if [[ -f "$GEN_DIR/credentials/cloudflare-tunnel.json" ]]; then
+      cp "$GEN_DIR/credentials/cloudflare-tunnel.json" "$REPO_DIR/credentials/"
+      chmod 600 "$REPO_DIR/credentials/cloudflare-tunnel.json"
+    fi
+    if [[ -f "$GEN_DIR/config/sdi-specs.yaml" ]]; then
+      cp "$GEN_DIR/config/sdi-specs.yaml" "$REPO_DIR/config/"
+    fi
+    if [[ -f "$GEN_DIR/config/k8s-clusters.yaml" ]]; then
+      cp "$GEN_DIR/config/k8s-clusters.yaml" "$REPO_DIR/config/"
+    fi
   fi
   echo -e "  ${GREEN}OK${NC}"
 
@@ -1011,6 +1131,11 @@ phase_provision() {
         echo -e "  ${GREEN}OK${NC}"
       else
         log_error "프로비저닝 실패: $cmd"
+        # Auto mode: stop on first failure (steps are sequential dependencies)
+        if [[ "$AUTO_MODE" == "true" ]]; then
+          log_error "자동 모드: 프로비저닝 중단 (이전 단계 실패)"
+          return 1
+        fi
         if ! tui_yesno "계속" "${cmd} 실패. 다음 단계로 계속하시겠습니까?"; then
           break
         fi
@@ -1137,8 +1262,19 @@ post_install_summary() {
   echo ""
 }
 
+parse_args() {
+  for arg in "$@"; do
+    case "$arg" in
+      --auto) AUTO_MODE=true ;;
+    esac
+  done
+  # Auto-enable when stdin is not a terminal (curl|bash, wget|bash)
+  [[ ! -t 0 ]] && AUTO_MODE=true
+}
+
 main() {
   init_dirs
+  parse_args "$@"
 
   echo -e "\n${BOLD}${BLUE}"
   echo "  ____            _       __  __     ____   ___  ____                   _       _ "
@@ -1154,6 +1290,62 @@ main() {
   log_raw "=== ScaleX-POD-mini Installer v${VERSION} started ==="
   log_raw "OS: $(uname -srm), TUI: ${TUI}"
 
+  # --- Auto mode: skip TUI phases, run deps + provision directly ---
+  if [[ "$AUTO_MODE" == "true" ]]; then
+    log_info "자동 모드 활성화 — Phases 1-3 건너뜀"
+
+    # Locate repo: env var > well-known path > current dir
+    local repo="${SCALEX_REPO_DIR:-}"
+    if [[ -z "$repo" ]]; then
+      if [[ -d "$HOME/local-workspace/ScaleX-POD-mini/.git" ]]; then
+        repo="$HOME/local-workspace/ScaleX-POD-mini"
+      elif [[ -d "$(pwd)/.git" && -f "$(pwd)/install.sh" ]]; then
+        repo="$(pwd)"
+      fi
+    fi
+
+    # Pre-flight: validate required config files
+    local required_files=(
+      "credentials/.baremetal-init.yaml"
+      "credentials/.env"
+      "config/sdi-specs.yaml"
+      "config/k8s-clusters.yaml"
+    )
+    for f in "${required_files[@]}"; do
+      local check_path="${repo:-.}/$f"
+      if [[ ! -f "$check_path" ]]; then
+        error_msg "필수 파일 없음: $f" \
+          "자동 모드는 사전 구성된 config 파일이 필요합니다" \
+          "bash install.sh (대화형 모드)로 먼저 설정하세요"
+        return 1
+      fi
+    done
+    log_info "필수 구성 파일 확인 완료"
+
+    # Generate ~/.ssh/config for ProxyJump nodes (required by libvirt qemu+ssh://)
+    generate_ssh_config "$repo"
+
+    # Clone kubespray if not present (not a submodule — runtime dependency)
+    if [[ -n "$repo" && ! -f "$repo/kubespray/kubespray/cluster.yml" ]]; then
+      log_info "Kubespray v2.30.0 클론 중..."
+      git clone --branch v2.30.0 --depth 1 \
+        https://github.com/kubernetes-sigs/kubespray.git \
+        "$repo/kubespray/kubespray" 2>&1 | tail -3
+    fi
+
+    # Run Phase 0 (dependencies) + Phase 4 (build & provision)
+    phase_deps
+    REPO_DIR="${repo:-$HOME/ScaleX-POD-mini}"
+    state_set REPO_DIR "$REPO_DIR"
+    phase_provision
+
+    show_dashboard
+    post_install_summary
+    log_raw "=== Installation completed successfully (auto mode) ==="
+    return 0
+  fi
+
+  # --- Normal interactive flow ---
   resume_check
 
   local completed; completed=$(state_get_phase)

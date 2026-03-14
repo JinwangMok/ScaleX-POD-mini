@@ -299,7 +299,98 @@ fn run_init(
             .first()
             .map(|n| n.admin_user.as_str())
             .unwrap_or("root");
-        let hcl = tofu::generate_tofu_main(&spec, ssh_user);
+        let mut hcl = tofu::generate_tofu_main(&spec, ssh_user);
+
+        // The libvirt Go provider uses its own SSH client (not system OpenSSH),
+        // so it cannot use ~/.ssh/config ProxyJump. For non-direct nodes we set up
+        // SSH port-forward tunnels and rewrite the provider URI to localhost:<port>.
+        // For direct/Tailscale nodes we just use the reachable IP.
+        let mut tunnel_pids: Vec<u32> = Vec::new();
+        let mut local_port: u16 = 22101;
+        for node in &bm_config.target_nodes {
+            if node.reachable_via.is_some() {
+                // ProxyJump node: set up SSH tunnel via first hop
+                let proxy_name = node.reachable_via.as_ref().unwrap().first().unwrap();
+                let proxy_node = bm_config
+                    .target_nodes
+                    .iter()
+                    .find(|n| n.name == *proxy_name)
+                    .unwrap();
+                let proxy_ip = proxy_node
+                    .reachable_node_ip
+                    .as_deref()
+                    .unwrap_or(&proxy_node.node_ip);
+
+                println!(
+                    "[sdi] Setting up SSH tunnel for {} (localhost:{} -> {}:22 via {})",
+                    node.name, local_port, node.node_ip, proxy_ip
+                );
+                let mut tunnel_args = vec![
+                    "-fN".to_string(),
+                    "-o".to_string(),
+                    "StrictHostKeyChecking=no".to_string(),
+                    "-o".to_string(),
+                    "ExitOnForwardFailure=yes".to_string(),
+                    format!("-L{}:{}:22", local_port, node.node_ip),
+                ];
+                if let Some(ref key_path) = proxy_node.ssh_key_path {
+                    tunnel_args.push("-i".to_string());
+                    tunnel_args.push(key_path.clone());
+                }
+                tunnel_args.push(format!("{}@{}", proxy_node.admin_user, proxy_ip));
+
+                let status = std::process::Command::new("ssh")
+                    .args(&tunnel_args)
+                    .status()
+                    .map_err(|e| anyhow::anyhow!("Failed to create SSH tunnel: {}", e))?;
+                if !status.success() {
+                    anyhow::bail!("SSH tunnel setup failed for {}", node.name);
+                }
+                // Find the tunnel PID
+                if let Ok(out) = std::process::Command::new("lsof")
+                    .args(["-ti", &format!(":{}", local_port)])
+                    .output()
+                {
+                    if let Ok(pid_str) = String::from_utf8(out.stdout) {
+                        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                            tunnel_pids.push(pid);
+                        }
+                    }
+                }
+
+                // Rewrite provider URI to use the local tunnel
+                // Also add host key to known_hosts for localhost
+                let _ = std::process::Command::new("ssh-keygen")
+                    .args(["-R", &format!("[127.0.0.1]:{}", local_port)])
+                    .output();
+                let _ = std::process::Command::new("bash")
+                    .args([
+                        "-c",
+                        &format!(
+                            "ssh -o StrictHostKeyChecking=accept-new -p {} {}@127.0.0.1 true 2>/dev/null || true",
+                            local_port, node.admin_user
+                        ),
+                    ])
+                    .status();
+
+                hcl = hcl.replace(
+                    &format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, node.name),
+                    &format!("qemu+ssh://{}@127.0.0.1:{}/system?no_verify=1", ssh_user, local_port),
+                );
+                local_port += 1;
+            } else {
+                // Direct or Tailscale node: use the reachable IP directly
+                let ip = node
+                    .reachable_node_ip
+                    .as_deref()
+                    .unwrap_or(&node.node_ip);
+                hcl = hcl.replace(
+                    &format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, node.name),
+                    &format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, ip),
+                );
+            }
+        }
+
         let main_tf = output_dir.join("main.tf");
         if dry_run {
             println!(
@@ -357,10 +448,27 @@ fn run_init(
 
         // Run tofu init + apply
         if !dry_run {
+            // Remove stale lock file to allow provider version changes
+            let lock_file = output_dir.join(".terraform.lock.hcl");
+            if lock_file.exists() {
+                std::fs::remove_file(&lock_file).ok();
+            }
             println!("[sdi] Running OpenTofu init...");
             run_tofu_command(&output_dir, &["init"])?;
             println!("[sdi] Running OpenTofu apply...");
-            run_tofu_command(&output_dir, &["apply", "-auto-approve"])?;
+            let apply_result = run_tofu_command(&output_dir, &["apply", "-auto-approve"]);
+
+            // Clean up SSH tunnels regardless of apply result
+            for pid in &tunnel_pids {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+            if !tunnel_pids.is_empty() {
+                println!("[sdi] Cleaned up {} SSH tunnel(s)", tunnel_pids.len());
+            }
+
+            apply_result?;
         } else {
             println!("[dry-run] Would run: tofu init && tofu apply -auto-approve");
         }

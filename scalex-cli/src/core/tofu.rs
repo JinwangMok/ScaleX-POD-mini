@@ -29,7 +29,7 @@ pub fn generate_tofu_host_infra(
         hcl.push_str(&format!(
             r#"provider "libvirt" {{
   alias = "{name}"
-  uri   = "qemu+ssh://{ssh_user}@{ip}/system"
+  uri   = "qemu+ssh://{ssh_user}@{ip}/system?no_verify=1"
 }}
 "#,
             name = host.name,
@@ -153,7 +153,7 @@ fn generate_terraform_block() -> String {
   required_providers {
     libvirt = {
       source  = "dmacvicar/libvirt"
-      version = "~> 0.8"
+      version = "~> 0.7.0"
     }
   }
 }
@@ -290,12 +290,6 @@ resource "libvirt_domain" "{name}" {{
     bridge         = "{bridge}"
     wait_for_lease = false
   }}{xml_block}
-
-  console {{
-    type        = "pty"
-    target_port = "0"
-    target_type = "serial"
-  }}
 }}
 "#,
         ip = node.ip,

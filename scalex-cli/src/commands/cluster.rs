@@ -261,8 +261,11 @@ fn load_sdi_spec_from_options(
 }
 
 fn run_kubespray(cluster_dir: &std::path::Path, cluster_name: &str) -> anyhow::Result<()> {
-    let inventory_path = cluster_dir.join("inventory.ini");
-    let vars_path = cluster_dir.join("cluster-vars.yml");
+    // Use absolute paths since current_dir changes to kubespray dir
+    let inventory_path = std::fs::canonicalize(cluster_dir.join("inventory.ini"))
+        .unwrap_or_else(|_| cluster_dir.join("inventory.ini"));
+    let vars_path = std::fs::canonicalize(cluster_dir.join("cluster-vars.yml"))
+        .unwrap_or_else(|_| cluster_dir.join("cluster-vars.yml"));
 
     let output = std::process::Command::new("ansible-playbook")
         .args([
