@@ -173,7 +173,7 @@ fn generate_provider_block(host: &str, ssh_user: &str) -> String {
         format!(
             r#"provider "libvirt" {{
   alias = "{host}"
-  uri   = "qemu+ssh://{ssh_user}@{host}/system"
+  uri   = "qemu+ssh://{ssh_user}@{host}/system?no_verify=1"
 }}
 "#
         )
@@ -515,7 +515,7 @@ mod tests {
         let hcl = generate_tofu_main(&spec, "jinwang");
         // Must use admin_user, not hardcoded root
         assert!(
-            hcl.contains("qemu+ssh://jinwang@playbox-0/system"),
+            hcl.contains("qemu+ssh://jinwang@playbox-0/system?no_verify=1"),
             "SSH URI must use admin_user 'jinwang', not 'root'. Got:\n{}",
             hcl
         );
@@ -649,7 +649,7 @@ mod tests {
 
         // Must use correct ssh_user
         assert!(
-            hcl.contains("qemu+ssh://admin@single-node/system"),
+            hcl.contains("qemu+ssh://admin@single-node/system?no_verify=1"),
             "SSH URI must use provided ssh_user"
         );
 

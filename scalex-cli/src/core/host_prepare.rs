@@ -8,8 +8,8 @@ pub fn generate_kvm_install_script() -> String {
 set -euo pipefail
 
 echo "[scalex] Installing KVM/libvirt packages..."
-apt-get update -qq
-apt-get install -y -qq \
+sudo apt-get update -qq
+sudo apt-get install -y -qq \
     qemu-kvm \
     libvirt-daemon-system \
     libvirt-clients \
@@ -19,7 +19,7 @@ apt-get install -y -qq \
     genisoimage
 
 echo "[scalex] Enabling libvirtd..."
-systemctl enable --now libvirtd
+sudo systemctl enable --now libvirtd
 
 echo "[scalex] Verifying KVM support..."
 kvm-ok || echo "WARNING: KVM acceleration may not be available"
@@ -44,9 +44,9 @@ set -euo pipefail
 echo "[scalex] Setting up br0 bridge on NIC: {primary_nic}"
 
 # Backup existing netplan
-cp /etc/netplan/*.yaml /etc/netplan/backup/ 2>/dev/null || mkdir -p /etc/netplan/backup && cp /etc/netplan/*.yaml /etc/netplan/backup/
+sudo cp /etc/netplan/*.yaml /etc/netplan/backup/ 2>/dev/null || sudo mkdir -p /etc/netplan/backup && sudo cp /etc/netplan/*.yaml /etc/netplan/backup/
 
-cat > /etc/netplan/50-scalex-bridge.yaml << 'NETPLAN'
+sudo tee /etc/netplan/50-scalex-bridge.yaml > /dev/null << 'NETPLAN'
 network:
   version: 2
   renderer: networkd
@@ -70,7 +70,7 @@ network:
 NETPLAN
 
 echo "[scalex] Applying netplan with 120s timeout (auto-revert on failure)..."
-netplan try --timeout 120
+sudo netplan try --timeout 120
 
 echo "[scalex] br0 bridge setup complete."
 "#
