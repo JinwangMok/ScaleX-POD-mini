@@ -6,3 +6,4 @@ pub mod kernel_tune;
 pub mod sdi;
 pub mod secrets;
 pub mod status;
+pub mod validate;

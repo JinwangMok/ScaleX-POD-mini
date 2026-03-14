@@ -29,6 +29,8 @@ enum Commands {
     Status(commands::status::StatusArgs),
     /// Generate kernel tuning parameters for K8s nodes
     KernelTune(commands::kernel_tune::KernelTuneArgs),
+    /// Validate configuration files before provisioning
+    Validate(commands::validate::ValidateArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -43,5 +45,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Bootstrap(args) => commands::bootstrap::run(args),
         Commands::Status(args) => commands::status::run(args),
         Commands::KernelTune(args) => commands::kernel_tune::run(args),
+        Commands::Validate(args) => commands::validate::run(args),
     }
 }

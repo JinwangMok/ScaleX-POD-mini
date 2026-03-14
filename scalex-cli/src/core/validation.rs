@@ -6879,6 +6879,7 @@ config:
             "bootstrap",
             "status",
             "kernel-tune",
+            "validate",
         ];
 
         let mut unknown_commands = Vec::new();
