@@ -2,7 +2,7 @@
 name = "scalex"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.78"
 description = "Multi-cluster SDI platform CLI for bare-metal Kubernetes provisioning"
 
 [dependencies]
