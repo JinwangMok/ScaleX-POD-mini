@@ -187,16 +187,9 @@ fn generate_base_volume(host: &str, source: &str, format: &str) -> String {
         format!("\n  provider = libvirt.{host}")
     };
     format!(
-        r#"resource "libvirt_volume" "base_{host}" {{
-  name   = "base-ubuntu-{host}.{format}"
-  pool      = "default"
-  source = "{source}"
-  format = "{format}"{alias}
+        r#"# Base volume is pre-created via virsh (SSH upload avoids provider timeout)
+# Referenced by name in disk volumes via base_volume_name
 
-  timeouts {{
-    create = "90m"
-  }}
-}}
 "#
     )
 }
@@ -258,10 +251,11 @@ fn generate_vm_resource(node: &NodeSpec, host: &str, bridge: &str, gateway: &str
 
     format!(
         r#"resource "libvirt_volume" "disk_{name}" {{
-  name           = "{name}.qcow2"
-  pool      = "default"
-  base_volume_id = libvirt_volume.base_{host}.id
-  size           = {disk_gb}{provider}
+  name             = "{name}.qcow2"
+  pool             = "default"
+  base_volume_name = "base-ubuntu-{host}.qcow2"
+  base_volume_pool = "default"
+  size             = {disk_gb}{provider}
 }}
 
 resource "libvirt_cloudinit_disk" "init_{name}" {{

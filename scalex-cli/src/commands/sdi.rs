@@ -405,10 +405,8 @@ fn run_init(
                     let pool_name = output.trim();
                     if !pool_name.is_empty() && pool_name != "default" {
                         println!("[sdi] Detected storage pool: '{}' (replacing 'default')", pool_name);
-                        hcl = hcl.replace(
-                            "pool      = \"default\"",
-                            &format!("pool      = \"{}\"", pool_name),
-                        );
+                        // Replace all pool references regardless of spacing
+                        hcl = hcl.replace("= \"default\"", &format!("= \"{}\"", pool_name));
                     }
                 }
             }
@@ -441,12 +439,87 @@ fn run_init(
                 }
             }
 
-            // Replace URL with local path in HCL (all base volumes use the same source)
-            if local_image_path.exists() {
-                hcl = hcl.replace(
-                    &format!("source = \"{}\"", image_url),
-                    &format!("source = \"{}\"", local_image_path.display()),
-                );
+            // Pre-create base volumes on each host via virsh (bypass provider timeout).
+            // The HCL references these by name instead of creating them.
+            let unique_hosts = tofu::collect_unique_hosts(&spec);
+            for host_name in &unique_hosts {
+                let node = bm_config
+                    .target_nodes
+                    .iter()
+                    .find(|n| n.name == *host_name);
+                if let Some(node) = node {
+                    let vol_name = format!("base-ubuntu-{}.qcow2", host_name);
+                    // Check if volume already exists
+                    let check_script = format!(
+                        "sudo virsh -c qemu:///system vol-info '{}' --pool images >/dev/null 2>&1 && echo EXISTS || echo MISSING",
+                        vol_name
+                    );
+                    let check_cmd = crate::core::ssh::build_ssh_command(node, &check_script, &bm_config.target_nodes);
+                    let vol_exists = check_cmd.ok()
+                        .and_then(|cmd| crate::core::ssh::execute_ssh(&cmd).ok())
+                        .map(|o| o.trim() == "EXISTS")
+                        .unwrap_or(false);
+
+                    if vol_exists {
+                        println!("[sdi] Base volume '{}' already exists on {}", vol_name, host_name);
+                    } else {
+                        // Upload image via SCP then create volume with virsh
+                        println!("[sdi] Creating base volume '{}' on {} via SCP + virsh...", vol_name, host_name);
+
+                        // Get pool directory
+                        let pool_dir_script = "sudo virsh -c qemu:///system pool-dumpxml images 2>/dev/null | grep -oP '(?<=<path>).*(?=</path>)' | head -1";
+                        let pool_dir_cmd = crate::core::ssh::build_ssh_command(node, pool_dir_script, &bm_config.target_nodes);
+                        let pool_dir = pool_dir_cmd.ok()
+                            .and_then(|cmd| crate::core::ssh::execute_ssh(&cmd).ok())
+                            .map(|o| o.trim().to_string())
+                            .unwrap_or_else(|| "/var/lib/libvirt/images".to_string());
+
+                        // Upload image via SSH pipe (uses SSH config for ProxyJump)
+                        let remote_path = format!("{}/{}", pool_dir, vol_name);
+                        println!("[sdi]   Uploading image via SSH to {}:{}...", host_name, remote_path);
+
+                        // Use scalex SSH to stream the file: cat local | ssh remote "sudo tee file"
+                        let upload_script = format!(
+                            "cat > /tmp/scalex-upload.img && sudo mv /tmp/scalex-upload.img '{}' && sudo virsh -c qemu:///system pool-refresh images && echo VOLUME_CREATED",
+                            remote_path
+                        );
+                        let upload_cmd = crate::core::ssh::build_ssh_command(node, &upload_script, &bm_config.target_nodes);
+                        match upload_cmd {
+                            Ok(cmd) => {
+                                // Build the full SSH command and pipe the file into it
+                                let mut ssh_args = if cmd.use_sshpass {
+                                    vec!["sshpass".to_string(), "-e".to_string(), "ssh".to_string()]
+                                } else {
+                                    vec!["ssh".to_string()]
+                                };
+                                ssh_args.extend(cmd.args.clone());
+
+                                let file = std::fs::File::open(&local_image_path);
+                                match file {
+                                    Ok(f) => {
+                                        let status = std::process::Command::new(&ssh_args[0])
+                                            .args(&ssh_args[1..])
+                                            .stdin(f)
+                                            .status();
+                                        match status {
+                                            Ok(s) if s.success() => {
+                                                println!("[sdi]   {} — VOLUME_CREATED", host_name);
+                                                // Fix permissions so qemu (libvirt-qemu) can read the base image
+                                                let chmod_script = format!("sudo chmod 644 '{}'", remote_path);
+                                                if let Ok(cmd) = crate::core::ssh::build_ssh_command(node, &chmod_script, &bm_config.target_nodes) {
+                                                    let _ = crate::core::ssh::execute_ssh(&cmd);
+                                                }
+                                            }
+                                            _ => println!("[sdi]   WARNING: upload failed for {}", host_name),
+                                        }
+                                    }
+                                    Err(e) => println!("[sdi]   WARNING: can't open local image: {}", e),
+                                }
+                            }
+                            Err(e) => println!("[sdi]   WARNING: SSH command build failed for {}: {}", host_name, e),
+                        }
+                    }
+                }
             }
         }
 
