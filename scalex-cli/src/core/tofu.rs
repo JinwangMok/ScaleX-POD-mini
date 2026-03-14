@@ -192,6 +192,10 @@ fn generate_base_volume(host: &str, source: &str, format: &str) -> String {
   pool      = "default"
   source = "{source}"
   format = "{format}"{alias}
+
+  timeouts {{
+    create = "90m"
+  }}
 }}
 "#
     )
