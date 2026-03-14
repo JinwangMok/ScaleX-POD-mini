@@ -14,7 +14,11 @@ pub fn build_ssh_command(
         "-o".to_string(),
         "StrictHostKeyChecking=no".to_string(),
         "-o".to_string(),
-        "ConnectTimeout=10".to_string(),
+        "ConnectTimeout=30".to_string(),
+        "-o".to_string(),
+        "ServerAliveInterval=30".to_string(),
+        "-o".to_string(),
+        "ServerAliveCountMax=10".to_string(),
     ];
 
     // Handle auth mode

@@ -267,14 +267,18 @@ generate_ssh_config() {
     config_block+="    User $user"$'\n'
     [[ "$auth_mode" == "key" ]] && config_block+="    IdentityFile $ssh_key"$'\n'
     [[ -n "$via" ]] && config_block+="    ProxyJump $via"$'\n'
-    config_block+="    StrictHostKeyChecking no"$'\n'$'\n'
+    config_block+="    StrictHostKeyChecking no"$'\n'
+    config_block+="    ServerAliveInterval 30"$'\n'
+    config_block+="    ServerAliveCountMax 10"$'\n'$'\n'
     # Add IP-based entry for libvirt provider (uses IP directly, needs ProxyJump via SSH config)
     if [[ -n "$via" && -n "$ip" ]]; then
       config_block+="Host $ip"$'\n'
       config_block+="    User $user"$'\n'
       [[ "$auth_mode" == "key" ]] && config_block+="    IdentityFile $ssh_key"$'\n'
       config_block+="    ProxyJump $via"$'\n'
-      config_block+="    StrictHostKeyChecking no"$'\n'$'\n'
+      config_block+="    StrictHostKeyChecking no"$'\n'
+      config_block+="    ServerAliveInterval 30"$'\n'
+      config_block+="    ServerAliveCountMax 10"$'\n'$'\n'
     fi
   fi
 
