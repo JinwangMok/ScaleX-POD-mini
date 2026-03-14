@@ -25,7 +25,7 @@ pub fn generate_inventory(cluster: &ClusterDef, sdi_spec: &SdiSpec) -> Result<St
     ini.push_str("[all]\n");
     for node in &pool.node_specs {
         ini.push_str(&format!(
-            "{name} ansible_host={ip} ip={ip} etcd_member_name={name}\n",
+            "{name} ansible_host={ip} ip={ip} etcd_member_name={name} ansible_user=ubuntu ansible_ssh_common_args='-o StrictHostKeyChecking=no -o ProxyJump=playbox-0'\n",
             name = node.node_name,
             ip = node.ip,
         ));
@@ -295,7 +295,7 @@ pub fn generate_inventory_baremetal(cluster: &ClusterDef) -> Result<String, Stri
     ini.push_str("[all]\n");
     for node in &cluster.baremetal_nodes {
         ini.push_str(&format!(
-            "{name} ansible_host={ip} ip={ip} etcd_member_name={name}\n",
+            "{name} ansible_host={ip} ip={ip} etcd_member_name={name} ansible_user=ubuntu ansible_ssh_common_args='-o StrictHostKeyChecking=no -o ProxyJump=playbox-0'\n",
             name = node.node_name,
             ip = node.ip,
         ));
