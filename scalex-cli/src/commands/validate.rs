@@ -217,8 +217,7 @@ pub fn run(args: ValidateArgs) -> anyhow::Result<()> {
             }
         },
         {
-            let errors =
-                validation::validate_sdi_hosts_exist(&sdi_spec, &baremetal_node_names);
+            let errors = validation::validate_sdi_hosts_exist(&sdi_spec, &baremetal_node_names);
             if errors.is_empty() {
                 CheckResult::pass("SDI hosts exist in baremetal inventory")
             } else {
