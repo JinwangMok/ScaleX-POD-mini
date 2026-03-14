@@ -224,9 +224,10 @@ phase_label() {
 
 detect_os() {
   if [[ -f /etc/os-release ]]; then
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    case "$ID" in
+    # Read ID from os-release without sourcing (avoids readonly VERSION conflict)
+    local _os_id
+    _os_id=$(grep -oP '^ID=\K.*' /etc/os-release | tr -d '"')
+    case "$_os_id" in
       ubuntu|debian|linuxmint|pop) echo "debian" ;;
       centos|rhel|rocky|alma|fedora) echo "rhel" ;;
       arch|manjaro|endeavouros) echo "arch" ;;
