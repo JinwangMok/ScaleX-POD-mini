@@ -189,6 +189,7 @@ fn generate_base_volume(host: &str, source: &str, format: &str) -> String {
     format!(
         r#"resource "libvirt_volume" "base_{host}" {{
   name   = "base-ubuntu-{host}.{format}"
+  pool      = "default"
   source = "{source}"
   format = "{format}"{alias}
 }}
@@ -254,6 +255,7 @@ fn generate_vm_resource(node: &NodeSpec, host: &str, bridge: &str, gateway: &str
     format!(
         r#"resource "libvirt_volume" "disk_{name}" {{
   name           = "{name}.qcow2"
+  pool      = "default"
   base_volume_id = libvirt_volume.base_{host}.id
   size           = {disk_gb}{provider}
 }}

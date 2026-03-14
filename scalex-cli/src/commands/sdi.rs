@@ -391,6 +391,29 @@ fn run_init(
             }
         }
 
+        // Detect the actual libvirt storage pool name on the first host
+        // (the HCL defaults to "default" but Ubuntu systems often use "images")
+        {
+            let first_host = &bm_config.target_nodes[0];
+            let pool_check = crate::core::ssh::build_ssh_command(
+                first_host,
+                "virsh -c qemu:///system pool-list --name 2>/dev/null | head -1",
+                &bm_config.target_nodes,
+            );
+            if let Ok(cmd) = pool_check {
+                if let Ok(output) = crate::core::ssh::execute_ssh(&cmd) {
+                    let pool_name = output.trim();
+                    if !pool_name.is_empty() && pool_name != "default" {
+                        println!("[sdi] Detected storage pool: '{}' (replacing 'default')", pool_name);
+                        hcl = hcl.replace(
+                            "pool      = \"default\"",
+                            &format!("pool      = \"{}\"", pool_name),
+                        );
+                    }
+                }
+            }
+        }
+
         let main_tf = output_dir.join("main.tf");
         if dry_run {
             println!(
