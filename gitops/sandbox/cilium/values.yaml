@@ -1,4 +1,4 @@
-k8sServiceHost: "PLACEHOLDER_SANDBOX_CP_IP"
+k8sServiceHost: "192.168.88.110"
 k8sServicePort: 6443
 kubeProxyReplacement: true
 operator:

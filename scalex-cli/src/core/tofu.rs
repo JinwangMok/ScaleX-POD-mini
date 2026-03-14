@@ -658,18 +658,10 @@ mod tests {
         assert!(hcl.contains("sandbox-cp-0"), "missing sandbox CP VM");
         assert!(hcl.contains("sandbox-w-0"), "missing sandbox worker VM");
 
-        // Only 1 base volume (single host)
-        let base_vol_count = hcl.matches("libvirt_volume\" \"base_").count();
-        assert_eq!(
-            base_vol_count, 1,
-            "Single-node must have 1 base volume, got {}",
-            base_vol_count
-        );
-
-        // All VMs reference the same host's base volume
+        // Base volumes are pre-created via virsh, HCL references them by name
         assert!(
-            hcl.contains("libvirt_volume.base_single-node.id"),
-            "All VMs must reference single host's base volume"
+            hcl.contains("base_volume_name = \"base-ubuntu-single-node.qcow2\""),
+            "All VMs must reference base volume by name"
         );
     }
 

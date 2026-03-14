@@ -175,8 +175,7 @@ pub fn generate_argocd_cluster_add_args(
         cluster_name.to_string(),
         "--kubeconfig".to_string(),
         cluster_kubeconfig.to_string(),
-        "--server-kubeconfig".to_string(),
-        tower_kubeconfig.to_string(),
+        "--core".to_string(),
         "--name".to_string(),
         cluster_name.to_string(),
         "-y".to_string(),
@@ -323,7 +322,7 @@ mod tests {
             joined
         );
         assert!(
-            joined.contains("--server-kubeconfig /tower/kube.yaml"),
+            joined.contains("--core"),
             "Must use tower kubeconfig for ArgoCD server — got: {}",
             joined
         );
@@ -397,8 +396,8 @@ mod tests {
             "Helm must target tower"
         );
         assert!(
-            register.contains(&tower_kc.to_string()),
-            "Cluster add must reference tower for ArgoCD server"
+            register.contains(&"--core".to_string()),
+            "Cluster add must use --core mode"
         );
         assert!(
             apply.contains(&tower_kc.to_string()),

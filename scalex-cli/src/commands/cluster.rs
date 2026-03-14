@@ -1395,10 +1395,10 @@ config:
             }
         }
 
-        // HCL must reference the OS image
+        // HCL must reference base volume by name (pre-created via virsh)
         assert!(
-            hcl.contains(&sdi_spec.os_image.source),
-            "HCL must reference OS image source"
+            hcl.contains("base_volume_name"),
+            "HCL must reference base volume by name"
         );
 
         // HCL must reference the network bridge
