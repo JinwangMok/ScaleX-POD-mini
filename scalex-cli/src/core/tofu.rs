@@ -124,7 +124,7 @@ pub fn generate_tofu_main(spec: &SdiSpec, ssh_user: &str) -> String {
 }
 
 /// Collect all unique host names from the spec
-fn collect_unique_hosts(spec: &SdiSpec) -> Vec<String> {
+pub fn collect_unique_hosts(spec: &SdiSpec) -> Vec<String> {
     let mut hosts = Vec::new();
     for pool in &spec.spec.sdi_pools {
         for node in &pool.node_specs {

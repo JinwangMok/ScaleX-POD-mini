@@ -414,6 +414,64 @@ fn run_init(
             }
         }
 
+        // Pre-download base image on each host via SSH to avoid slow qemu+ssh download.
+        // Then replace the URL in HCL with the local file path on each host.
+        if !dry_run {
+            let image_url = &spec.os_image.source;
+            let image_filename = image_url.rsplit('/').next().unwrap_or("cloud-image.img");
+
+            // Collect unique hosts and their pool directories
+            let unique_hosts = tofu::collect_unique_hosts(&spec);
+            for host_name in &unique_hosts {
+                let node = bm_config
+                    .target_nodes
+                    .iter()
+                    .find(|n| n.name == *host_name);
+                if let Some(node) = node {
+                    // Get pool directory from the host
+                    let pool_dir_cmd = crate::core::ssh::build_ssh_command(
+                        node,
+                        "virsh -c qemu:///system pool-dumpxml images 2>/dev/null | grep -oP '(?<=<path>).*(?=</path>)' | head -1",
+                        &bm_config.target_nodes,
+                    );
+                    let pool_dir = if let Ok(cmd) = pool_dir_cmd {
+                        crate::core::ssh::execute_ssh(&cmd)
+                            .map(|o| o.trim().to_string())
+                            .unwrap_or_else(|_| "/var/lib/libvirt/images".to_string())
+                    } else {
+                        "/var/lib/libvirt/images".to_string()
+                    };
+
+                    let remote_path = format!("{}/{}", pool_dir, image_filename);
+                    let download_script = format!(
+                        "test -f '{}' && echo EXISTS || (wget -q -O '/tmp/{}' '{}' && sudo mv '/tmp/{}' '{}' && echo DOWNLOADED)",
+                        remote_path, image_filename, image_url, image_filename, remote_path
+                    );
+
+                    println!("[sdi] Pre-downloading base image on {}...", host_name);
+                    let dl_cmd = crate::core::ssh::build_ssh_command(
+                        node,
+                        &download_script,
+                        &bm_config.target_nodes,
+                    );
+                    if let Ok(cmd) = dl_cmd {
+                        match crate::core::ssh::execute_ssh(&cmd) {
+                            Ok(out) => println!("[sdi] {} — {}", host_name, out.trim()),
+                            Err(e) => println!("[sdi] WARNING: image download on {} failed: {}", host_name, e),
+                        }
+                    }
+
+                    // Replace URL with local path in base volume for this host
+                    hcl = hcl.replace(
+                        &format!("resource \"libvirt_volume\" \"base_{}\" {{\n  name   = \"base-ubuntu-{}.{}\"\n  pool      = \"images\"\n  source = \"{}\"",
+                            host_name, host_name, spec.os_image.format, image_url),
+                        &format!("resource \"libvirt_volume\" \"base_{}\" {{\n  name   = \"base-ubuntu-{}.{}\"\n  pool      = \"images\"\n  source = \"{}\"",
+                            host_name, host_name, spec.os_image.format, remote_path),
+                    );
+                }
+            }
+        }
+
         let main_tf = output_dir.join("main.tf");
         if dry_run {
             println!(
