@@ -3078,15 +3078,16 @@ spec:
         );
     }
 
-    /// Cloudflare tunnel values.yaml must expose all required services.
+    /// Cloudflare tunnel configmap.yaml must expose all required services.
     #[test]
     fn test_cloudflare_tunnel_ingress_completeness() {
-        let content = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
+        let content = include_str!("../../../gitops/tower/cloudflared-tunnel/configmap.yaml");
+        let deployment = include_str!("../../../gitops/tower/cloudflared-tunnel/deployment.yaml");
 
         // Must have tunnel name
         assert!(
             content.contains("playbox-admin-static"),
-            "CF tunnel values.yaml missing tunnel name 'playbox-admin-static'"
+            "CF tunnel configmap.yaml missing tunnel name 'playbox-admin-static'"
         );
 
         // Must expose K8s API for external kubectl access
@@ -3121,10 +3122,10 @@ spec:
             "CF tunnel missing catch-all 404 fallback"
         );
 
-        // Must reference existing secret for credentials (under tunnelSecrets)
+        // Must reference secret for credentials (via secretName in deployment)
         assert!(
-            content.contains("existingConfigJsonFileSecret"),
-            "CF tunnel must reference existingConfigJsonFileSecret for credentials"
+            deployment.contains("cloudflared-tunnel-credentials"),
+            "CF tunnel deployment must reference cloudflared-tunnel-credentials secret"
         );
 
         // Must have noTLSVerify for K8s API (self-signed cert)
@@ -3791,10 +3792,10 @@ spec:
     }
 
     /// CL-2, CL-14 (G-2): Cloudflare tunnel routing rules must match documented domains.
-    /// Verifies that values.yaml ingress hostnames correspond to documented access paths.
+    /// Verifies that configmap.yaml ingress hostnames correspond to documented access paths.
     #[test]
     fn test_cloudflare_tunnel_routes_match_docs() {
-        let values = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
+        let values = include_str!("../../../gitops/tower/cloudflared-tunnel/configmap.yaml");
         let ops_guide = include_str!("../../../docs/ops-guide.md");
 
         // Required routing rules per CL-14
@@ -3803,7 +3804,7 @@ spec:
         for hostname in &required_hostnames {
             assert!(
                 values.contains(hostname),
-                "CF tunnel values.yaml must contain hostname '{}'",
+                "CF tunnel configmap.yaml must contain hostname '{}'",
                 hostname
             );
             assert!(
@@ -4853,10 +4854,10 @@ config:
     // Sprint 13c: CF Tunnel + External Access Verification Tests
     // =========================================================================
 
-    /// G-9: Verify CF Tunnel values.yaml contains all required routing domains.
+    /// G-9: Verify CF Tunnel configmap.yaml contains all required routing domains.
     #[test]
     fn test_checklist_cf_tunnel_routing_domains() {
-        let cf_values = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
+        let cf_values = include_str!("../../../gitops/tower/cloudflared-tunnel/configmap.yaml");
 
         // Required domains per checklist #14
         let required_routes = ["api.k8s.jinwang.dev", "auth.jinwang.dev", "cd.jinwang.dev"];
@@ -4864,7 +4865,7 @@ config:
         for domain in &required_routes {
             assert!(
                 cf_values.contains(domain),
-                "CF Tunnel values.yaml must contain route for '{}'",
+                "CF Tunnel configmap.yaml must contain route for '{}'",
                 domain
             );
         }
@@ -5548,7 +5549,7 @@ config:
     fn test_checklist_two_layer_domains_consistency() {
         // k8s-clusters.yaml defines domains; these must be used in gitops CF tunnel config
         let k8s_clusters = include_str!("../../../config/k8s-clusters.yaml.example");
-        let cf_values = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
+        let cf_values = include_str!("../../../gitops/tower/cloudflared-tunnel/configmap.yaml");
 
         // Extract domain values from k8s-clusters
         let domains = ["auth.jinwang.dev", "cd.jinwang.dev", "api.k8s.jinwang.dev"];
@@ -5560,7 +5561,7 @@ config:
             );
             assert!(
                 cf_values.contains(domain),
-                "CF tunnel values.yaml must route domain '{}'",
+                "CF tunnel configmap.yaml must route domain '{}'",
                 domain
             );
         }
@@ -8601,25 +8602,26 @@ cloudflare:
             .find(|s| s.name.contains("cloudflared"))
             .expect("management cluster must generate a cloudflared secret");
 
-        // 2. Parse the actual values.yaml from gitops/
-        let values_yaml = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
+        // 2. Parse the actual deployment.yaml from gitops/
+        let deployment_yaml =
+            include_str!("../../../gitops/tower/cloudflared-tunnel/deployment.yaml");
 
-        // 3. Extract secret name from tunnelSecrets.existingConfigJsonFileSecret.name
-        let existing_secret_line = values_yaml
+        // 3. Extract secret name from secretName field in deployment volumes
+        let secret_name_line = deployment_yaml
             .lines()
-            .find(|l| l.trim().starts_with("name:") && values_yaml[..values_yaml.find(l.trim()).unwrap()].contains("existingConfigJsonFileSecret"))
-            .expect("values.yaml must contain existingConfigJsonFileSecret with name");
-        let existing_secret_value = existing_secret_line
+            .find(|l| l.trim().starts_with("secretName:"))
+            .expect("deployment.yaml must contain a secretName field");
+        let secret_name_value = secret_name_line
             .split(':')
             .nth(1)
-            .expect("existingConfigJsonFileSecret.name must have a value")
+            .expect("secretName must have a value")
             .trim();
 
         // 4. Cross-validate: secret name must match
         assert_eq!(
-            cf_secret.name, existing_secret_value,
+            cf_secret.name, secret_name_value,
             "Secret name from secrets_for_cluster('management') must match \
-             existingSecret in gitops/tower/cloudflared-tunnel/values.yaml"
+             secretName in gitops/tower/cloudflared-tunnel/deployment.yaml"
         );
 
         // 5. Namespace must match kustomization.yaml
