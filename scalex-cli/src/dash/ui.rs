@@ -118,7 +118,23 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(vi, &idx)| {
             let node = &app.tree[idx];
-            let is_selected = vi == app.tree_cursor && is_active;
+            let is_cursor = vi == app.tree_cursor && is_active;
+
+            // Check if this node is the actively selected context (US-005)
+            let is_active_selection = match &node.node_type {
+                NodeType::Cluster(name) => {
+                    app.selected_cluster.as_ref() == Some(name) && app.selected_namespace.is_none()
+                }
+                NodeType::Namespace { cluster, namespace } => {
+                    app.selected_cluster.as_ref() == Some(cluster)
+                        && if namespace == "All Namespaces" {
+                            app.selected_namespace.is_none()
+                        } else {
+                            app.selected_namespace.as_ref() == Some(namespace)
+                        }
+                }
+                _ => false,
+            };
 
             let icon = match (&node.node_type, node.expanded) {
                 (NodeType::Root, true) => "v ",
@@ -131,6 +147,13 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 (NodeType::InfraItem(_), _) => "  ",
             };
 
+            // Selection marker: show ● for the active selection
+            let marker = if is_active_selection && !is_cursor {
+                "● "
+            } else {
+                ""
+            };
+
             let indent = "  ".repeat(node.depth);
             let label_color = match &node.node_type {
                 NodeType::Root => theme::BRIGHT_ORANGE,
@@ -140,10 +163,17 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 NodeType::InfraItem(_) => theme::FG3,
             };
 
-            let style = if is_selected {
+            let style = if is_cursor {
+                // Cursor: yellow bg highlight
                 Style::default()
                     .fg(theme::BG_HARD)
                     .bg(theme::BRIGHT_YELLOW)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_active_selection {
+                // Active selection: bold with bright color, no bg change
+                Style::default()
+                    .fg(theme::BRIGHT_AQUA)
+                    .bg(theme::BG_HARD)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(label_color).bg(theme::BG_HARD)
@@ -151,6 +181,10 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
             Line::from(vec![
                 Span::styled(indent, Style::default().bg(theme::BG_HARD)),
+                Span::styled(
+                    marker,
+                    Style::default().fg(theme::BRIGHT_AQUA).bg(theme::BG_HARD),
+                ),
                 Span::styled(icon, style),
                 Span::styled(&node.label, style),
             ])
@@ -232,9 +266,13 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
     let snapshot = match app.current_snapshot() {
         Some(s) => s,
         None => {
-            let msg = Paragraph::new("Select a cluster from the sidebar")
-                .style(Style::default().fg(theme::FG4));
-            f.render_widget(msg, area);
+            let msg = if app.snapshots.is_empty() {
+                "Loading cluster data..."
+            } else {
+                "Select a cluster and press Enter"
+            };
+            let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+            f.render_widget(paragraph, area);
             return;
         }
     };
@@ -569,9 +607,13 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
     let snapshot = match app.current_snapshot() {
         Some(s) => s,
         None => {
-            let msg = Paragraph::new("Select a cluster to view resource utilization")
-                .style(Style::default().fg(theme::FG4));
-            f.render_widget(msg, area);
+            let msg = if app.snapshots.is_empty() {
+                "Loading cluster data..."
+            } else {
+                "Select a cluster and press Enter"
+            };
+            let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+            f.render_widget(paragraph, area);
             return;
         }
     };
@@ -671,8 +713,14 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     // Line 1: cluster health indicators + pod/node counts
-    let mut health_spans: Vec<Span> =
-        vec![Span::styled(" Clusters: ", Style::default().fg(theme::FG4))];
+    let mut health_spans: Vec<Span> = if app.snapshots.is_empty() {
+        vec![Span::styled(
+            " Connecting to clusters...",
+            Style::default().fg(theme::BRIGHT_YELLOW),
+        )]
+    } else {
+        vec![Span::styled(" Clusters: ", Style::default().fg(theme::FG4))]
+    };
 
     for snapshot in &app.snapshots {
         let (symbol, color) = match snapshot.health {
@@ -762,7 +810,7 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  j/k     ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Navigate up/down", Style::default().fg(theme::FG)),
+            Span::styled("Move cursor (no selection)", Style::default().fg(theme::FG)),
         ]),
         Line::from(vec![
             Span::styled("  h/l     ", Style::default().fg(theme::BRIGHT_AQUA)),
@@ -770,7 +818,7 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Enter   ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Select / Toggle", Style::default().fg(theme::FG)),
+            Span::styled("Select cluster/namespace", Style::default().fg(theme::FG)),
         ]),
         Line::from(vec![
             Span::styled("  Tab     ", Style::default().fg(theme::BRIGHT_AQUA)),
