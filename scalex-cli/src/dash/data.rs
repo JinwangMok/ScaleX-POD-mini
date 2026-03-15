@@ -124,6 +124,10 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
                 .map(|s| s.container_statuses.clone().unwrap_or_default())
                 .unwrap_or_default();
 
+            // Derive effective status: check container waiting reasons
+            // (e.g., CrashLoopBackOff shows phase=Running but container is waiting)
+            let effective_status = derive_effective_status(&phase, &container_statuses);
+
             let ready_count = container_statuses.iter().filter(|c| c.ready).count();
             let total_count = container_statuses.len();
             let restarts: i32 = container_statuses.iter().map(|c| c.restart_count).sum();
@@ -137,7 +141,7 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
             PodInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 namespace: meta.namespace.clone().unwrap_or_default(),
-                status: phase,
+                status: effective_status,
                 ready: format!("{}/{}", ready_count, total_count),
                 restarts,
                 age,
@@ -419,6 +423,42 @@ pub fn compute_resource_usage(nodes: &[NodeInfo], pods: &[PodInfo]) -> ResourceU
     }
 }
 
+/// Derive effective pod status by checking container waiting reasons.
+/// K8s reports phase=Running even when containers are in CrashLoopBackOff.
+fn derive_effective_status(
+    phase: &str,
+    container_statuses: &[k8s_openapi::api::core::v1::ContainerStatus],
+) -> String {
+    // Check for waiting containers with error reasons
+    for cs in container_statuses {
+        if let Some(state) = &cs.state {
+            if let Some(waiting) = &state.waiting {
+                if let Some(reason) = &waiting.reason {
+                    match reason.as_str() {
+                        "CrashLoopBackOff"
+                        | "ImagePullBackOff"
+                        | "ErrImagePull"
+                        | "CreateContainerConfigError"
+                        | "InvalidImageName" => {
+                            return reason.clone();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Check for terminated containers with error
+            if let Some(terminated) = &state.terminated {
+                if let Some(reason) = &terminated.reason {
+                    if reason == "Error" || reason == "OOMKilled" {
+                        return reason.clone();
+                    }
+                }
+            }
+        }
+    }
+    phase.to_string()
+}
+
 fn format_age(now: chrono::DateTime<Utc>, created: chrono::DateTime<Utc>) -> String {
     let duration = now.signed_duration_since(created);
     let secs = duration.num_seconds();
@@ -509,5 +549,63 @@ mod tests {
         let now = Utc::now();
         let created = now - chrono::Duration::days(3);
         assert_eq!(format_age(now, created), "3d");
+    }
+
+    #[test]
+    fn derive_status_returns_phase_when_no_waiting() {
+        let statuses = vec![];
+        assert_eq!(derive_effective_status("Running", &statuses), "Running");
+    }
+
+    #[test]
+    fn derive_status_detects_crashloopbackoff() {
+        use k8s_openapi::api::core::v1::{ContainerState, ContainerStateWaiting, ContainerStatus};
+
+        let statuses = vec![ContainerStatus {
+            name: "app".into(),
+            ready: false,
+            restart_count: 5,
+            image: "test:latest".into(),
+            image_id: "".into(),
+            state: Some(ContainerState {
+                waiting: Some(ContainerStateWaiting {
+                    reason: Some("CrashLoopBackOff".into()),
+                    message: None,
+                }),
+                running: None,
+                terminated: None,
+            }),
+            ..Default::default()
+        }];
+        assert_eq!(
+            derive_effective_status("Running", &statuses),
+            "CrashLoopBackOff"
+        );
+    }
+
+    #[test]
+    fn derive_status_detects_oomkilled() {
+        use k8s_openapi::api::core::v1::{
+            ContainerState, ContainerStateTerminated, ContainerStatus,
+        };
+
+        let statuses = vec![ContainerStatus {
+            name: "app".into(),
+            ready: false,
+            restart_count: 1,
+            image: "test:latest".into(),
+            image_id: "".into(),
+            state: Some(ContainerState {
+                waiting: None,
+                running: None,
+                terminated: Some(ContainerStateTerminated {
+                    reason: Some("OOMKilled".into()),
+                    exit_code: 137,
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        }];
+        assert_eq!(derive_effective_status("Running", &statuses), "OOMKilled");
     }
 }

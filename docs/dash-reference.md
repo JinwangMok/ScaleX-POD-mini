@@ -114,64 +114,88 @@ _generated/clusters/
 ### Full output (`scalex dash --headless`)
 
 ```json
-[
-  {
-    "name": "tower",
-    "health": "green",
-    "namespaces": ["default", "kube-system", "argocd"],
-    "nodes": [
-      {
-        "name": "tower-cp-0",
-        "status": "Ready",
-        "roles": ["control-plane"],
-        "cpu_capacity": "4",
-        "mem_capacity": "8Gi",
-        "cpu_allocatable": "3800m",
-        "mem_allocatable": "7Gi"
+{
+  "clusters": [
+    {
+      "name": "tower",
+      "health": "green",
+      "namespaces": ["default", "kube-system", "argocd"],
+      "nodes": [
+        {
+          "name": "tower-cp-0",
+          "status": "Ready",
+          "roles": ["control-plane"],
+          "cpu_capacity": "4",
+          "mem_capacity": "8Gi",
+          "cpu_allocatable": "3800m",
+          "mem_allocatable": "7Gi"
+        }
+      ],
+      "pods": [
+        {
+          "name": "coredns-abc123",
+          "namespace": "kube-system",
+          "status": "Running",
+          "ready": "1/1",
+          "restarts": 0,
+          "age": "5d",
+          "node": "tower-cp-0"
+        }
+      ],
+      "deployments": [
+        {
+          "name": "coredns",
+          "namespace": "kube-system",
+          "ready": "2/2",
+          "up_to_date": 2,
+          "available": 2,
+          "age": "5d"
+        }
+      ],
+      "services": [
+        {
+          "name": "kubernetes",
+          "namespace": "default",
+          "svc_type": "ClusterIP",
+          "cluster_ip": "10.233.0.1",
+          "ports": "443/TCP",
+          "age": "5d"
+        }
+      ],
+      "resource_usage": {
+        "cpu_percent": 0.0,
+        "mem_percent": 0.0,
+        "total_pods": 15,
+        "running_pods": 15,
+        "failed_pods": 0,
+        "total_nodes": 1,
+        "ready_nodes": 1
       }
-    ],
-    "pods": [
-      {
-        "name": "coredns-abc123",
-        "namespace": "kube-system",
-        "status": "Running",
-        "ready": "1/1",
-        "restarts": 0,
-        "age": "5d",
-        "node": "tower-cp-0"
-      }
-    ],
-    "deployments": [
-      {
-        "name": "coredns",
-        "namespace": "kube-system",
-        "ready": "2/2",
-        "up_to_date": 2,
-        "available": 2,
-        "age": "5d"
-      }
-    ],
-    "services": [
-      {
-        "name": "kubernetes",
-        "namespace": "default",
-        "svc_type": "ClusterIP",
-        "cluster_ip": "10.233.0.1",
-        "ports": "443/TCP",
-        "age": "5d"
-      }
-    ],
-    "resource_usage": {
-      "cpu_percent": 0.0,
-      "mem_percent": 0.0,
-      "total_pods": 15,
-      "running_pods": 15,
-      "failed_pods": 0,
-      "total_nodes": 1,
-      "ready_nodes": 1
     }
+  ],
+  "infrastructure": {
+    "sdi_pools": [
+      {
+        "pool_name": "tower",
+        "purpose": "management",
+        "nodes": [
+          {
+            "name": "tower-cp-0",
+            "ip": "10.0.0.100",
+            "host": "node-0",
+            "cpu": 2,
+            "mem_gb": 4,
+            "disk_gb": 30,
+            "status": "running",
+            "gpu": false
+          }
+        ]
+      }
+    ],
+    "total_vms": 1,
+    "running_vms": 1
   }
-]
+}
 ```
 
 ### Filtered output (`scalex dash --headless --resource pods`)
