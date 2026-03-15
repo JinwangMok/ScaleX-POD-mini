@@ -286,6 +286,23 @@ fn wait_for_cloud_init(cluster_dir: &std::path::Path, cluster_name: &str) -> any
         return Ok(());
     }
 
+    // Parse ansible_user and ssh args from inventory for ProxyJump support
+    let default_user = "ubuntu".to_string();
+    let mut ssh_user = default_user.clone();
+    let mut proxy_jump = String::new();
+    for line in content.lines() {
+        if let Some(u) = line.split_whitespace().find(|s| s.starts_with("ansible_user=")) {
+            if let Some(user) = u.strip_prefix("ansible_user=") {
+                ssh_user = user.to_string();
+            }
+        }
+        if line.contains("ProxyJump=") {
+            if let Some(pj) = line.split("ProxyJump=").nth(1) {
+                proxy_jump = pj.trim_end_matches('\'').to_string();
+            }
+        }
+    }
+
     println!(
         "[cluster] Waiting for cloud-init on {} ({} nodes)...",
         cluster_name,
@@ -295,17 +312,23 @@ fn wait_for_cloud_init(cluster_dir: &std::path::Path, cluster_name: &str) -> any
     let max_attempts = 60; // 5 minutes (60 * 5s)
     for ip in &ips {
         for attempt in 1..=max_attempts {
+            let mut ssh_args = vec![
+                "-o".to_string(),
+                "ConnectTimeout=5".to_string(),
+                "-o".to_string(),
+                "StrictHostKeyChecking=no".to_string(),
+                "-o".to_string(),
+                "BatchMode=yes".to_string(),
+            ];
+            if !proxy_jump.is_empty() {
+                ssh_args.push("-o".to_string());
+                ssh_args.push(format!("ProxyJump={}", proxy_jump));
+            }
+            ssh_args.push(format!("{}@{}", ssh_user, ip));
+            ssh_args.push("cloud-init status --wait 2>/dev/null || test -f /var/lib/cloud/instance/boot-finished".to_string());
+
             let result = std::process::Command::new("ssh")
-                .args([
-                    "-o",
-                    "ConnectTimeout=5",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "BatchMode=yes",
-                    &format!("jinwang@{}", ip),
-                    "cloud-init status --wait 2>/dev/null || test -f /var/lib/cloud/instance/boot-finished",
-                ])
+                .args(&ssh_args)
                 .output();
 
             match result {
