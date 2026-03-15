@@ -279,6 +279,10 @@ resource "libvirt_domain" "{name}" {{
   memory = {mem}
   vcpu   = {vcpu}{provider}
 
+  cpu {{
+    mode = "host-passthrough"
+  }}
+
   cloudinit = libvirt_cloudinit_disk.init_{name}.id
 
   disk {{
