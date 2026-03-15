@@ -111,14 +111,21 @@ set -euo pipefail
 
 echo "[scalex] Setting up br0 bridge on NIC: {primary_nic} (bond={is_bond})"
 
+# Idempotency: skip if br0 already exists with the correct IP
+if ip addr show br0 2>/dev/null | grep -q '{ip_address}/{cidr_prefix}'; then
+    echo "[scalex] br0 already configured with {ip_address}/{cidr_prefix} — skipping"
+    exit 0
+fi
+
 # Backup existing netplan
 sudo mkdir -p /etc/netplan/backup
 sudo cp /etc/netplan/*.yaml /etc/netplan/backup/ 2>/dev/null || true
 {strip_bond_ip}
 
-sudo tee /etc/netplan/50-scalex-bridge.yaml > /dev/null << 'NETPLAN'
+sudo bash -c 'cat > /etc/netplan/50-scalex-bridge.yaml << NETPLAN_EOF
 {netplan_body}
-NETPLAN
+NETPLAN_EOF
+chmod 600 /etc/netplan/50-scalex-bridge.yaml'
 
 echo "[scalex] Applying netplan with 120s timeout (auto-revert on failure)..."
 sudo netplan try --timeout 120
