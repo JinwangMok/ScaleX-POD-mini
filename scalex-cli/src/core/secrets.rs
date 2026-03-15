@@ -92,7 +92,10 @@ pub fn secrets_for_cluster(cluster_role: &str, secrets: &SecretsConfig) -> Vec<K
                 K8sSecretSpec {
                     name: "keycloak-db".to_string(),
                     namespace: "keycloak".to_string(),
-                    data: vec![("password".to_string(), secrets.keycloak.db_password.clone())],
+                    data: vec![
+                        ("username".to_string(), "keycloak".to_string()),
+                        ("password".to_string(), secrets.keycloak.db_password.clone()),
+                    ],
                 },
             ];
             // Cloudflare tunnel credentials (only if credentials_file is set)
