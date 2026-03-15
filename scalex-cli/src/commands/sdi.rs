@@ -316,9 +316,9 @@ fn run_init(
         let mut tunnel_pids: Vec<u32> = Vec::new();
         let mut local_port: u16 = 22101;
         for node in &bm_config.target_nodes {
-            if node.reachable_via.is_some() {
+            if let Some(reachable_via) = &node.reachable_via {
                 // ProxyJump node: set up SSH tunnel via first hop
-                let proxy_name = node.reachable_via.as_ref().unwrap().first().unwrap();
+                let proxy_name = reachable_via.first().unwrap();
                 let proxy_node = bm_config
                     .target_nodes
                     .iter()

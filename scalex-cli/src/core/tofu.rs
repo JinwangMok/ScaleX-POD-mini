@@ -180,18 +180,12 @@ fn generate_provider_block(host: &str, ssh_user: &str) -> String {
     }
 }
 
-fn generate_base_volume(host: &str, source: &str, format: &str) -> String {
-    let alias = if host == "localhost" {
-        String::new()
-    } else {
-        format!("\n  provider = libvirt.{host}")
-    };
-    format!(
-        r#"# Base volume is pre-created via virsh (SSH upload avoids provider timeout)
+fn generate_base_volume(_host: &str, _source: &str, _format: &str) -> String {
+    r#"# Base volume is pre-created via virsh (SSH upload avoids provider timeout)
 # Referenced by name in disk volumes via base_volume_name
 
 "#
-    )
+    .to_string()
 }
 
 fn generate_cloudinit_data(spec: &SdiSpec) -> String {
