@@ -5,4 +5,3 @@ namespace: kube-tunnel
 
 resources:
   - deployment.yaml
-  - configmap.yaml
