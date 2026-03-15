@@ -24,7 +24,7 @@ spec:
     spec:
       containers:
         - name: postgresql
-          image: postgres:15
+          image: postgres:17.9
           ports:
             - containerPort: 5432
           volumeMounts:
