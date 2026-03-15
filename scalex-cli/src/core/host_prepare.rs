@@ -452,7 +452,8 @@ mod tests {
 
     #[test]
     fn test_generate_bridge_script_ethernet() {
-        let script = generate_bridge_setup_script("eno1", "192.168.88.10", "192.168.88.1", 24, false);
+        let script =
+            generate_bridge_setup_script("eno1", "192.168.88.10", "192.168.88.1", 24, false);
         assert!(script.contains("br0"));
         assert!(script.contains("eno1"));
         assert!(script.contains("ethernets:"));
@@ -461,10 +462,14 @@ mod tests {
 
     #[test]
     fn test_generate_bridge_script_bond() {
-        let script = generate_bridge_setup_script("bond0", "192.168.88.10", "192.168.88.1", 24, true);
+        let script =
+            generate_bridge_setup_script("bond0", "192.168.88.10", "192.168.88.1", 24, true);
         assert!(script.contains("br0"));
         assert!(script.contains("bond0"));
-        assert!(!script.contains("ethernets:"), "bond bridge must not have ethernets section");
+        assert!(
+            !script.contains("ethernets:"),
+            "bond bridge must not have ethernets section"
+        );
         assert!(script.contains("netplan try"));
         assert!(script.contains("bond=true"));
     }

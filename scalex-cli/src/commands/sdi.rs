@@ -383,15 +383,15 @@ fn run_init(
 
                 hcl = hcl.replace(
                     &format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, node.name),
-                    &format!("qemu+ssh://{}@127.0.0.1:{}/system?no_verify=1", ssh_user, local_port),
+                    &format!(
+                        "qemu+ssh://{}@127.0.0.1:{}/system?no_verify=1",
+                        ssh_user, local_port
+                    ),
                 );
                 local_port += 1;
             } else {
                 // Direct or Tailscale node: use the reachable IP directly
-                let ip = node
-                    .reachable_node_ip
-                    .as_deref()
-                    .unwrap_or(&node.node_ip);
+                let ip = node.reachable_node_ip.as_deref().unwrap_or(&node.node_ip);
                 hcl = hcl.replace(
                     &format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, node.name),
                     &format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, ip),
@@ -412,7 +412,10 @@ fn run_init(
                 if let Ok(output) = crate::core::ssh::execute_ssh(&cmd) {
                     let pool_name = output.trim();
                     if !pool_name.is_empty() && pool_name != "default" {
-                        println!("[sdi] Detected storage pool: '{}' (replacing 'default')", pool_name);
+                        println!(
+                            "[sdi] Detected storage pool: '{}' (replacing 'default')",
+                            pool_name
+                        );
                         // Replace all pool references regardless of spacing
                         hcl = hcl.replace("= \"default\"", &format!("= \"{}\"", pool_name));
                     }
@@ -425,10 +428,9 @@ fn run_init(
         if !dry_run {
             let image_url = &spec.os_image.source;
             let image_filename = image_url.rsplit('/').next().unwrap_or("cloud-image.img");
-            let local_cache_dir = std::path::PathBuf::from(
-                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-            )
-            .join(".scalex/images");
+            let local_cache_dir =
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+                    .join(".scalex/images");
             std::fs::create_dir_all(&local_cache_dir).ok();
             let local_image_path = local_cache_dir.join(image_filename);
 
@@ -442,8 +444,13 @@ fn run_init(
                     .arg(image_url)
                     .status();
                 match dl {
-                    Ok(s) if s.success() => println!("[sdi] Base image downloaded: {}", local_image_path.display()),
-                    _ => println!("[sdi] WARNING: image download failed, tofu will use URL directly"),
+                    Ok(s) if s.success() => println!(
+                        "[sdi] Base image downloaded: {}",
+                        local_image_path.display()
+                    ),
+                    _ => {
+                        println!("[sdi] WARNING: image download failed, tofu will use URL directly")
+                    }
                 }
             }
 
@@ -451,10 +458,7 @@ fn run_init(
             // The HCL references these by name instead of creating them.
             let unique_hosts = tofu::collect_unique_hosts(&spec);
             for host_name in &unique_hosts {
-                let node = bm_config
-                    .target_nodes
-                    .iter()
-                    .find(|n| n.name == *host_name);
+                let node = bm_config.target_nodes.iter().find(|n| n.name == *host_name);
                 if let Some(node) = node {
                     let vol_name = format!("base-ubuntu-{}.qcow2", host_name);
                     // Check if volume already exists
@@ -462,36 +466,59 @@ fn run_init(
                         "sudo virsh -c qemu:///system vol-info '{}' --pool images >/dev/null 2>&1 && echo EXISTS || echo MISSING",
                         vol_name
                     );
-                    let check_cmd = crate::core::ssh::build_ssh_command(node, &check_script, &bm_config.target_nodes);
-                    let vol_exists = check_cmd.ok()
+                    let check_cmd = crate::core::ssh::build_ssh_command(
+                        node,
+                        &check_script,
+                        &bm_config.target_nodes,
+                    );
+                    let vol_exists = check_cmd
+                        .ok()
                         .and_then(|cmd| crate::core::ssh::execute_ssh(&cmd).ok())
                         .map(|o| o.trim() == "EXISTS")
                         .unwrap_or(false);
 
                     if vol_exists {
-                        println!("[sdi] Base volume '{}' already exists on {}", vol_name, host_name);
+                        println!(
+                            "[sdi] Base volume '{}' already exists on {}",
+                            vol_name, host_name
+                        );
                     } else {
                         // Upload image via SCP then create volume with virsh
-                        println!("[sdi] Creating base volume '{}' on {} via SCP + virsh...", vol_name, host_name);
+                        println!(
+                            "[sdi] Creating base volume '{}' on {} via SCP + virsh...",
+                            vol_name, host_name
+                        );
 
                         // Get pool directory
                         let pool_dir_script = "sudo virsh -c qemu:///system pool-dumpxml images 2>/dev/null | grep -oP '(?<=<path>).*(?=</path>)' | head -1";
-                        let pool_dir_cmd = crate::core::ssh::build_ssh_command(node, pool_dir_script, &bm_config.target_nodes);
-                        let pool_dir = pool_dir_cmd.ok()
+                        let pool_dir_cmd = crate::core::ssh::build_ssh_command(
+                            node,
+                            pool_dir_script,
+                            &bm_config.target_nodes,
+                        );
+                        let pool_dir = pool_dir_cmd
+                            .ok()
                             .and_then(|cmd| crate::core::ssh::execute_ssh(&cmd).ok())
                             .map(|o| o.trim().to_string())
                             .unwrap_or_else(|| "/var/lib/libvirt/images".to_string());
 
                         // Upload image via SSH pipe (uses SSH config for ProxyJump)
                         let remote_path = format!("{}/{}", pool_dir, vol_name);
-                        println!("[sdi]   Uploading image via SSH to {}:{}...", host_name, remote_path);
+                        println!(
+                            "[sdi]   Uploading image via SSH to {}:{}...",
+                            host_name, remote_path
+                        );
 
                         // Use scalex SSH to stream the file: cat local | ssh remote "sudo tee file"
                         let upload_script = format!(
                             "cat > /tmp/scalex-upload.img && sudo mv /tmp/scalex-upload.img '{}' && sudo virsh -c qemu:///system pool-refresh images && echo VOLUME_CREATED",
                             remote_path
                         );
-                        let upload_cmd = crate::core::ssh::build_ssh_command(node, &upload_script, &bm_config.target_nodes);
+                        let upload_cmd = crate::core::ssh::build_ssh_command(
+                            node,
+                            &upload_script,
+                            &bm_config.target_nodes,
+                        );
                         match upload_cmd {
                             Ok(cmd) => {
                                 // Build the full SSH command and pipe the file into it
@@ -513,18 +540,31 @@ fn run_init(
                                             Ok(s) if s.success() => {
                                                 println!("[sdi]   {} — VOLUME_CREATED", host_name);
                                                 // Fix permissions so qemu (libvirt-qemu) can read the base image
-                                                let chmod_script = format!("sudo chmod 644 '{}'", remote_path);
-                                                if let Ok(cmd) = crate::core::ssh::build_ssh_command(node, &chmod_script, &bm_config.target_nodes) {
+                                                let chmod_script =
+                                                    format!("sudo chmod 644 '{}'", remote_path);
+                                                if let Ok(cmd) = crate::core::ssh::build_ssh_command(
+                                                    node,
+                                                    &chmod_script,
+                                                    &bm_config.target_nodes,
+                                                ) {
                                                     let _ = crate::core::ssh::execute_ssh(&cmd);
                                                 }
                                             }
-                                            _ => println!("[sdi]   WARNING: upload failed for {}", host_name),
+                                            _ => println!(
+                                                "[sdi]   WARNING: upload failed for {}",
+                                                host_name
+                                            ),
                                         }
                                     }
-                                    Err(e) => println!("[sdi]   WARNING: can't open local image: {}", e),
+                                    Err(e) => {
+                                        println!("[sdi]   WARNING: can't open local image: {}", e)
+                                    }
                                 }
                             }
-                            Err(e) => println!("[sdi]   WARNING: SSH command build failed for {}: {}", host_name, e),
+                            Err(e) => println!(
+                                "[sdi]   WARNING: SSH command build failed for {}: {}",
+                                host_name, e
+                            ),
                         }
                     }
                 }
