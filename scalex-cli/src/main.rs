@@ -1,5 +1,6 @@
 mod commands;
 mod core;
+mod dash;
 mod models;
 
 use clap::{Parser, Subcommand};
@@ -33,6 +34,8 @@ enum Commands {
     Validate(commands::validate::ValidateArgs),
     /// Plan VM placement based on available resources
     Plan(commands::plan::PlanArgs),
+    /// Multi-cluster Kubernetes TUI dashboard (interactive & headless)
+    Dash(commands::dash::DashArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -49,5 +52,6 @@ fn main() -> anyhow::Result<()> {
         Commands::KernelTune(args) => commands::kernel_tune::run(args),
         Commands::Validate(args) => commands::validate::run(args),
         Commands::Plan(args) => commands::plan::run(args),
+        Commands::Dash(args) => commands::dash::run(args),
     }
 }
