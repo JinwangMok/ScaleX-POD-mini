@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: keycloak
-          image: quay.io/keycloak/keycloak:26.0
+          image: quay.io/keycloak/keycloak:24.0
           args:
             - start
             - --hostname=auth.jinwang.dev
