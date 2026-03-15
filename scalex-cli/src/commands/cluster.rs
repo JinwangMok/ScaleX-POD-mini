@@ -565,10 +565,30 @@ fn collect_kubeconfig(
             }
         }
         _ => {
-            eprintln!(
-                "[cluster] Failed to collect kubeconfig from {} for {}",
-                ip, cluster_name
-            );
+            // Fallback: kubespray artifacts (kubeconfig_localhost: true)
+            let artifacts_path = cluster_dir.join("artifacts").join("admin.conf");
+            if artifacts_path.exists() {
+                println!(
+                    "[cluster] SCP failed, using kubespray artifacts for {}",
+                    cluster_name
+                );
+                if let Ok(content) = std::fs::read_to_string(&artifacts_path) {
+                    let fixed =
+                        content.replace("https://127.0.0.1:", &format!("https://{}:", ip));
+                    let _ = std::fs::write(&local_path, &fixed);
+                    println!(
+                        "[cluster] kubeconfig for {} -> {} (server: {}, from artifacts)",
+                        cluster_name,
+                        local_path.display(),
+                        ip
+                    );
+                }
+            } else {
+                eprintln!(
+                    "[cluster] Failed to collect kubeconfig from {} for {}",
+                    ip, cluster_name
+                );
+            }
         }
     }
 
