@@ -3121,10 +3121,10 @@ spec:
             "CF tunnel missing catch-all 404 fallback"
         );
 
-        // Must reference existing secret for credentials
+        // Must reference existing secret for credentials (under tunnelSecrets)
         assert!(
-            content.contains("existingSecret"),
-            "CF tunnel must reference existingSecret for credentials"
+            content.contains("existingConfigJsonFileSecret"),
+            "CF tunnel must reference existingConfigJsonFileSecret for credentials"
         );
 
         // Must have noTLSVerify for K8s API (self-signed cert)
@@ -8604,15 +8604,15 @@ cloudflare:
         // 2. Parse the actual values.yaml from gitops/
         let values_yaml = include_str!("../../../gitops/tower/cloudflared-tunnel/values.yaml");
 
-        // 3. Extract existingSecret value from values.yaml
+        // 3. Extract secret name from tunnelSecrets.existingConfigJsonFileSecret.name
         let existing_secret_line = values_yaml
             .lines()
-            .find(|l| l.contains("existingSecret"))
-            .expect("values.yaml must contain existingSecret");
+            .find(|l| l.trim().starts_with("name:") && values_yaml[..values_yaml.find(l.trim()).unwrap()].contains("existingConfigJsonFileSecret"))
+            .expect("values.yaml must contain existingConfigJsonFileSecret with name");
         let existing_secret_value = existing_secret_line
             .split(':')
             .nth(1)
-            .expect("existingSecret must have a value")
+            .expect("existingConfigJsonFileSecret.name must have a value")
             .trim();
 
         // 4. Cross-validate: secret name must match
