@@ -119,6 +119,13 @@ pub struct App {
     // Help overlay
     pub show_help: bool,
 
+    // Search
+    pub search_active: bool,
+    pub search_query: Option<String>,
+
+    // Self-monitoring (sampled at refresh interval, not per-tick)
+    pub self_rss_mb: Option<f64>,
+
     #[allow(dead_code)]
     pub refresh_secs: u64,
 }
@@ -180,11 +187,59 @@ impl App {
             infra: InfraSnapshot::default(),
             api_latency_ms: 0,
             show_help: false,
+            search_active: false,
+            search_query: None,
+            self_rss_mb: None,
             refresh_secs,
         }
     }
 
     pub fn handle_event(&mut self, evt: AppEvent) {
+        // Search-mode: intercept all events as text input (mirrors show_help pattern)
+        if self.search_active {
+            match evt {
+                AppEvent::Enter => {
+                    // Submit search — keep query as filter, exit search mode
+                    self.search_active = false;
+                }
+                AppEvent::Quit | AppEvent::Help => {
+                    // Cancel search — clear query and exit
+                    self.search_active = false;
+                    self.search_query = None;
+                    self.table_cursor = 0;
+                }
+                AppEvent::ResourceType(c) => {
+                    // In search mode, treat as literal character
+                    self.search_query.get_or_insert_with(String::new).push(c);
+                    self.table_cursor = 0;
+                }
+                AppEvent::Up => {
+                    self.search_query.get_or_insert_with(String::new).push('k');
+                }
+                AppEvent::Down => {
+                    self.search_query.get_or_insert_with(String::new).push('j');
+                }
+                AppEvent::Left => {
+                    // Backspace behavior in search
+                    if let Some(q) = &mut self.search_query {
+                        q.pop();
+                        if q.is_empty() {
+                            self.search_query = None;
+                        }
+                    }
+                    self.table_cursor = 0;
+                }
+                AppEvent::Refresh => {
+                    self.search_query.get_or_insert_with(String::new).push('r');
+                }
+                AppEvent::Search => {
+                    self.search_query.get_or_insert_with(String::new).push('/');
+                }
+                _ => {}
+            }
+            return;
+        }
+
         if self.show_help {
             if matches!(evt, AppEvent::Help | AppEvent::Quit | AppEvent::Enter) {
                 self.show_help = false;
@@ -225,7 +280,21 @@ impl App {
                 }
             }
             AppEvent::Help => self.show_help = true,
-            AppEvent::Refresh | AppEvent::Tick | AppEvent::None | AppEvent::Search => {}
+            AppEvent::Search => {
+                // Activate search mode
+                self.search_active = true;
+                self.search_query = Some(String::new());
+                self.table_cursor = 0;
+            }
+            AppEvent::Refresh | AppEvent::Tick | AppEvent::None => {}
+        }
+    }
+
+    /// Check if a name matches the current search query (case-insensitive)
+    pub fn matches_search(&self, name: &str) -> bool {
+        match &self.search_query {
+            Some(q) if !q.is_empty() => name.to_lowercase().contains(&q.to_lowercase()),
+            _ => true,
         }
     }
 
@@ -479,6 +548,32 @@ impl App {
 }
 
 // ---------------------------------------------------------------------------
+// Self-monitoring (Linux only, no external dependencies)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+pub fn read_self_rss_mb() -> Option<f64> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .find(|line| line.starts_with("VmRSS:"))
+                .and_then(|line| {
+                    line.split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .map(|kb| kb / 1024.0) // kB -> MB
+                })
+        })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn read_self_rss_mb() -> Option<f64> {
+    None
+}
+
+// ---------------------------------------------------------------------------
 // TUI entry point
 // ---------------------------------------------------------------------------
 
@@ -518,6 +613,7 @@ pub async fn run_tui(args: DashArgs, clusters: Vec<ClusterClient>) -> Result<()>
                             pods: vec![],
                             deployments: vec![],
                             services: vec![],
+                            configmaps: vec![],
                             resource_usage: Default::default(),
                         });
                         let _ = e; // logged in status bar as Unknown health
@@ -528,6 +624,7 @@ pub async fn run_tui(args: DashArgs, clusters: Vec<ClusterClient>) -> Result<()>
             app.snapshots = snapshots;
             app.sync_tree_from_snapshots();
             app.load_infra();
+            app.self_rss_mb = read_self_rss_mb();
             last_refresh = Instant::now();
         }
 

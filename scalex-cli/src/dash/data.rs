@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Namespace, Node, Pod, Service};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Node, Pod, Service};
 use kube::api::ListParams;
 use kube::{Api, Client};
 use serde::Serialize;
@@ -19,6 +19,7 @@ pub struct ClusterSnapshot {
     pub pods: Vec<PodInfo>,
     pub deployments: Vec<DeploymentInfo>,
     pub services: Vec<ServiceInfo>,
+    pub configmaps: Vec<ConfigMapInfo>,
     pub resource_usage: ResourceUsage,
 }
 
@@ -70,6 +71,14 @@ pub struct ServiceInfo {
     pub svc_type: String,
     pub cluster_ip: String,
     pub ports: String,
+    pub age: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigMapInfo {
+    pub name: String,
+    pub namespace: String,
+    pub data_keys_count: usize,
     pub age: String,
 }
 
@@ -260,6 +269,41 @@ pub async fn fetch_deployments(
         .collect())
 }
 
+pub async fn fetch_configmaps(
+    client: &Client,
+    namespace: Option<&str>,
+) -> Result<Vec<ConfigMapInfo>> {
+    let api: Api<ConfigMap> = match namespace {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let cm_list = api.list(&ListParams::default()).await?;
+    let now = Utc::now();
+
+    Ok(cm_list
+        .items
+        .iter()
+        .map(|cm| {
+            let meta = &cm.metadata;
+            let data_keys_count = cm.data.as_ref().map(|d| d.len()).unwrap_or(0)
+                + cm.binary_data.as_ref().map(|d| d.len()).unwrap_or(0);
+
+            let age = meta
+                .creation_timestamp
+                .as_ref()
+                .map(|ts| format_age(now, ts.0))
+                .unwrap_or_else(|| "<unknown>".into());
+
+            ConfigMapInfo {
+                name: meta.name.clone().unwrap_or_default(),
+                namespace: meta.namespace.clone().unwrap_or_default(),
+                data_keys_count,
+                age,
+            }
+        })
+        .collect())
+}
+
 pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<Vec<ServiceInfo>> {
     let api: Api<Service> = match namespace {
         Some(ns) => Api::namespaced(client.clone(), ns),
@@ -334,9 +378,15 @@ pub async fn fetch_cluster_snapshot(
         .await
         .unwrap_or_default();
     let services = fetch_services(client, namespace).await.unwrap_or_default();
+    let configmaps = fetch_configmaps(client, namespace)
+        .await
+        .unwrap_or_default();
+
+    // Metrics scaffolding: try fetching node metrics (requires metrics-server)
+    let node_metrics = fetch_node_metrics(client).await.ok();
 
     let health = compute_health(&nodes, &pods);
-    let resource_usage = compute_resource_usage(&nodes, &pods);
+    let resource_usage = compute_resource_usage(&nodes, &pods, node_metrics.as_deref());
 
     Ok(ClusterSnapshot {
         name: cluster_name.to_string(),
@@ -346,6 +396,7 @@ pub async fn fetch_cluster_snapshot(
         pods,
         deployments,
         services,
+        configmaps,
         resource_usage,
     })
 }
@@ -370,6 +421,9 @@ pub fn filter_snapshot_by_resource(
                 }
                 "nodes" => {
                     obj["nodes"] = serde_json::to_value(&s.nodes).unwrap_or_default();
+                }
+                "configmaps" => {
+                    obj["configmaps"] = serde_json::to_value(&s.configmaps).unwrap_or_default();
                 }
                 _ => {
                     obj["error"] =
@@ -402,7 +456,79 @@ pub fn compute_health(nodes: &[NodeInfo], pods: &[PodInfo]) -> HealthStatus {
     }
 }
 
-pub fn compute_resource_usage(nodes: &[NodeInfo], pods: &[PodInfo]) -> ResourceUsage {
+/// Parse a Kubernetes resource quantity string to a base value (cores for CPU, bytes for memory).
+/// CPU: "100m" -> 0.1, "250000000n" -> 0.25, "2" -> 2.0
+/// Memory: "1Gi" -> 1073741824.0, "512Mi" -> 536870912.0, "1024Ki" -> 1048576.0, "1000" -> 1000.0
+pub fn parse_k8s_quantity(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(v) = s.strip_suffix("Ti") {
+        v.parse::<f64>()
+            .ok()
+            .map(|n| n * 1024.0 * 1024.0 * 1024.0 * 1024.0)
+    } else if let Some(v) = s.strip_suffix("Gi") {
+        v.parse::<f64>().ok().map(|n| n * 1024.0 * 1024.0 * 1024.0)
+    } else if let Some(v) = s.strip_suffix("Mi") {
+        v.parse::<f64>().ok().map(|n| n * 1024.0 * 1024.0)
+    } else if let Some(v) = s.strip_suffix("Ki") {
+        v.parse::<f64>().ok().map(|n| n * 1024.0)
+    } else if let Some(v) = s.strip_suffix('n') {
+        v.parse::<f64>().ok().map(|n| n / 1_000_000_000.0)
+    } else if let Some(v) = s.strip_suffix('m') {
+        v.parse::<f64>().ok().map(|n| n / 1000.0)
+    } else {
+        s.parse::<f64>().ok()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeMetrics {
+    pub name: String,
+    pub cpu_usage: f64, // cores
+    pub mem_usage: f64, // bytes
+}
+
+/// Fetch node metrics from metrics.k8s.io/v1beta1 (requires metrics-server).
+/// Returns empty vec if metrics API is unavailable.
+pub async fn fetch_node_metrics(client: &Client) -> Result<Vec<NodeMetrics>> {
+    use kube::api::ApiResource;
+    use kube::api::DynamicObject;
+
+    let ar = ApiResource {
+        group: "metrics.k8s.io".into(),
+        version: "v1beta1".into(),
+        api_version: "metrics.k8s.io/v1beta1".into(),
+        kind: "NodeMetrics".into(),
+        plural: "nodes".into(),
+    };
+
+    let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
+    let list = api.list(&ListParams::default()).await?;
+
+    Ok(list
+        .items
+        .iter()
+        .filter_map(|obj| {
+            let name = obj.metadata.name.clone().unwrap_or_default();
+            let usage = obj.data.get("usage")?;
+            let cpu_str = usage.get("cpu")?.as_str()?;
+            let mem_str = usage.get("memory")?.as_str()?;
+            Some(NodeMetrics {
+                name,
+                cpu_usage: parse_k8s_quantity(cpu_str)?,
+                mem_usage: parse_k8s_quantity(mem_str)?,
+            })
+        })
+        .collect())
+}
+
+pub fn compute_resource_usage(
+    nodes: &[NodeInfo],
+    pods: &[PodInfo],
+    node_metrics: Option<&[NodeMetrics]>,
+) -> ResourceUsage {
     let total_nodes = nodes.len();
     let ready_nodes = nodes.iter().filter(|n| n.status == "Ready").count();
     let total_pods = pods.len();
@@ -412,9 +538,37 @@ pub fn compute_resource_usage(nodes: &[NodeInfo], pods: &[PodInfo]) -> ResourceU
         .filter(|p| matches!(p.status.as_str(), "Failed" | "CrashLoopBackOff" | "Error"))
         .count();
 
+    // Compute CPU/Mem percentages from metrics-server data if available
+    let (cpu_percent, mem_percent) = node_metrics
+        .filter(|m| !m.is_empty())
+        .map(|metrics| {
+            let total_cpu_usage: f64 = metrics.iter().map(|m| m.cpu_usage).sum();
+            let total_mem_usage: f64 = metrics.iter().map(|m| m.mem_usage).sum();
+            let total_cpu_capacity: f64 = nodes
+                .iter()
+                .filter_map(|n| parse_k8s_quantity(&n.cpu_capacity))
+                .sum();
+            let total_mem_capacity: f64 = nodes
+                .iter()
+                .filter_map(|n| parse_k8s_quantity(&n.mem_capacity))
+                .sum();
+            let cpu_pct = if total_cpu_capacity > 0.0 {
+                (total_cpu_usage / total_cpu_capacity) * 100.0
+            } else {
+                0.0
+            };
+            let mem_pct = if total_mem_capacity > 0.0 {
+                (total_mem_usage / total_mem_capacity) * 100.0
+            } else {
+                0.0
+            };
+            (cpu_pct, mem_pct)
+        })
+        .unwrap_or((0.0, 0.0));
+
     ResourceUsage {
-        cpu_percent: 0.0, // metrics-server data when available
-        mem_percent: 0.0,
+        cpu_percent,
+        mem_percent,
         total_pods,
         running_pods,
         failed_pods,
@@ -581,6 +735,98 @@ mod tests {
             derive_effective_status("Running", &statuses),
             "CrashLoopBackOff"
         );
+    }
+
+    #[test]
+    fn parse_k8s_quantity_cpu_millicores() {
+        assert!((parse_k8s_quantity("100m").unwrap() - 0.1).abs() < 1e-9);
+        assert!((parse_k8s_quantity("250m").unwrap() - 0.25).abs() < 1e-9);
+        assert!((parse_k8s_quantity("1000m").unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_k8s_quantity_cpu_nanocores() {
+        assert!((parse_k8s_quantity("250000000n").unwrap() - 0.25).abs() < 1e-6);
+        assert!((parse_k8s_quantity("1000000000n").unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_k8s_quantity_cpu_cores() {
+        assert!((parse_k8s_quantity("2").unwrap() - 2.0).abs() < 1e-9);
+        assert!((parse_k8s_quantity("4").unwrap() - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_k8s_quantity_memory() {
+        assert!((parse_k8s_quantity("1Gi").unwrap() - 1_073_741_824.0).abs() < 1.0);
+        assert!((parse_k8s_quantity("512Mi").unwrap() - 536_870_912.0).abs() < 1.0);
+        assert!((parse_k8s_quantity("1024Ki").unwrap() - 1_048_576.0).abs() < 1.0);
+        assert!((parse_k8s_quantity("1000").unwrap() - 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_k8s_quantity_empty() {
+        assert!(parse_k8s_quantity("").is_none());
+        assert!(parse_k8s_quantity("  ").is_none());
+    }
+
+    #[test]
+    fn configmap_info_serialization() {
+        let cm = ConfigMapInfo {
+            name: "test-cm".into(),
+            namespace: "default".into(),
+            data_keys_count: 3,
+            age: "1h".into(),
+        };
+        let json = serde_json::to_value(&cm).unwrap();
+        assert_eq!(json["name"], "test-cm");
+        assert_eq!(json["data_keys_count"], 3);
+    }
+
+    #[test]
+    fn compute_resource_usage_without_metrics() {
+        let nodes = vec![NodeInfo {
+            name: "n1".into(),
+            status: "Ready".into(),
+            roles: vec![],
+            cpu_capacity: "4".into(),
+            mem_capacity: "8Gi".into(),
+            cpu_allocatable: "4".into(),
+            mem_allocatable: "8Gi".into(),
+        }];
+        let pods = vec![PodInfo {
+            name: "p1".into(),
+            namespace: "default".into(),
+            status: "Running".into(),
+            ready: "1/1".into(),
+            restarts: 0,
+            age: "1h".into(),
+            node: "n1".into(),
+        }];
+        let usage = compute_resource_usage(&nodes, &pods, None);
+        assert!((usage.cpu_percent - 0.0).abs() < 1e-9);
+        assert_eq!(usage.running_pods, 1);
+    }
+
+    #[test]
+    fn compute_resource_usage_with_metrics() {
+        let nodes = vec![NodeInfo {
+            name: "n1".into(),
+            status: "Ready".into(),
+            roles: vec![],
+            cpu_capacity: "4".into(),
+            mem_capacity: "8Gi".into(),
+            cpu_allocatable: "4".into(),
+            mem_allocatable: "8Gi".into(),
+        }];
+        let metrics = vec![NodeMetrics {
+            name: "n1".into(),
+            cpu_usage: 2.0,
+            mem_usage: 4.0 * 1024.0 * 1024.0 * 1024.0,
+        }];
+        let usage = compute_resource_usage(&nodes, &[], Some(&metrics));
+        assert!((usage.cpu_percent - 50.0).abs() < 1e-6);
+        assert!((usage.mem_percent - 50.0).abs() < 1e-6);
     }
 
     #[test]
