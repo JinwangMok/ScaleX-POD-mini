@@ -152,7 +152,7 @@ echo '---BRIDGES---'
 brctl show 2>/dev/null | tail -n +2 | awk '{print $1}' | sort -u || ip -j link show type bridge 2>/dev/null | python3 -c "import json,sys; [print(d['ifname']) for d in json.load(sys.stdin)]" 2>/dev/null || true
 
 echo '---BONDS---'
-ls /sys/class/net/bonding_masters 2>/dev/null && cat /sys/class/net/bonding_masters 2>/dev/null || true
+cat /sys/class/net/bonding_masters 2>/dev/null || true
 
 echo '---KERNEL_PARAMS---'
 sysctl net.ipv4.ip_forward net.bridge.bridge-nf-call-iptables net.bridge.bridge-nf-call-ip6tables 2>/dev/null || true
@@ -307,6 +307,7 @@ fn parse_facts_output(node_name: &str, raw: &str) -> Result<NodeFacts, ScalexErr
         .filter(|l| !l.is_empty() && !l.contains("No such file"))
         .flat_map(|l| {
             l.split_whitespace()
+                .filter(|s| !s.contains('/') && *s != "bonding_masters")
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>()
         })
