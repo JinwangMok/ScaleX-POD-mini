@@ -128,6 +128,9 @@ pub struct App {
 
     #[allow(dead_code)]
     pub refresh_secs: u64,
+
+    /// Set to true to force a data refresh on next tick (e.g., on view switch)
+    pub needs_refresh: bool,
 }
 
 impl App {
@@ -191,6 +194,7 @@ impl App {
             search_query: None,
             self_rss_mb: None,
             refresh_secs,
+            needs_refresh: false,
         }
     }
 
@@ -274,8 +278,11 @@ impl App {
             AppEvent::ResourceType(c) => {
                 if self.active_panel == ActivePanel::Center {
                     if let Some(rv) = ResourceView::from_char(c) {
-                        self.resource_view = rv;
-                        self.table_cursor = 0;
+                        if self.resource_view != rv {
+                            self.resource_view = rv;
+                            self.table_cursor = 0;
+                            self.needs_refresh = true;
+                        }
                     }
                 }
             }
@@ -398,9 +405,7 @@ impl App {
         let idx = visible[self.tree_cursor];
         if !self.tree[idx].expanded {
             self.tree[idx].expanded = true;
-            if let NodeType::Cluster(name) = &self.tree[idx].node_type {
-                self.selected_cluster = Some(name.clone());
-            }
+            // Note: no selection change — expand only. Use Enter to select.
         }
     }
 
@@ -548,6 +553,194 @@ impl App {
 }
 
 // ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a minimal App with two clusters for testing navigation
+    fn test_app() -> App {
+        // Simulate two clusters without real kube clients
+        let mut app = App {
+            running: true,
+            active_panel: ActivePanel::Sidebar,
+            active_tab: 0,
+            tabs: vec![
+                Tab {
+                    name: "Resources".into(),
+                    closable: false,
+                },
+                Tab {
+                    name: "Top".into(),
+                    closable: false,
+                },
+            ],
+            resource_view: ResourceView::Pods,
+            tree: vec![
+                TreeNode {
+                    label: "ScaleX".into(),
+                    depth: 0,
+                    expanded: true,
+                    node_type: NodeType::Root,
+                    children_loaded: true,
+                },
+                TreeNode {
+                    label: "tower".into(),
+                    depth: 1,
+                    expanded: false,
+                    node_type: NodeType::Cluster("tower".into()),
+                    children_loaded: false,
+                },
+                TreeNode {
+                    label: "sandbox".into(),
+                    depth: 1,
+                    expanded: false,
+                    node_type: NodeType::Cluster("sandbox".into()),
+                    children_loaded: false,
+                },
+                TreeNode {
+                    label: "Infrastructure".into(),
+                    depth: 0,
+                    expanded: false,
+                    node_type: NodeType::InfraHeader,
+                    children_loaded: false,
+                },
+            ],
+            tree_cursor: 0,
+            table_cursor: 0,
+            selected_cluster: None,
+            selected_namespace: None,
+            clusters: vec![],
+            snapshots: vec![],
+            infra: InfraSnapshot::default(),
+            api_latency_ms: 0,
+            show_help: false,
+            search_active: false,
+            search_query: None,
+            self_rss_mb: None,
+            refresh_secs: 5,
+            needs_refresh: false,
+        };
+        // Move cursor to first cluster (tower)
+        app.tree_cursor = 1;
+        app
+    }
+
+    #[test]
+    fn move_up_does_not_change_selection() {
+        let mut app = test_app();
+        app.selected_cluster = Some("tower".into());
+        app.tree_cursor = 2; // on sandbox
+
+        app.handle_event(AppEvent::Up);
+
+        assert_eq!(app.tree_cursor, 1); // moved to tower
+        assert_eq!(app.selected_cluster, Some("tower".into())); // unchanged
+    }
+
+    #[test]
+    fn move_down_does_not_change_selection() {
+        let mut app = test_app();
+        app.selected_cluster = Some("tower".into());
+        app.tree_cursor = 1; // on tower
+
+        app.handle_event(AppEvent::Down);
+
+        assert_eq!(app.tree_cursor, 2); // moved to sandbox
+        assert_eq!(app.selected_cluster, Some("tower".into())); // unchanged
+    }
+
+    #[test]
+    fn expand_node_does_not_set_selection() {
+        let mut app = test_app();
+        app.tree_cursor = 1; // on tower cluster
+        assert!(app.selected_cluster.is_none());
+
+        app.handle_event(AppEvent::Right); // expand tower
+
+        assert!(app.tree[1].expanded); // tree expanded
+        assert!(app.selected_cluster.is_none()); // selection unchanged
+    }
+
+    #[test]
+    fn collapse_node_does_not_change_selection() {
+        let mut app = test_app();
+        app.tree[1].expanded = true; // tower expanded
+        app.selected_cluster = Some("tower".into());
+        app.tree_cursor = 1;
+
+        app.handle_event(AppEvent::Left); // collapse tower
+
+        assert!(!app.tree[1].expanded);
+        assert_eq!(app.selected_cluster, Some("tower".into())); // unchanged
+    }
+
+    #[test]
+    fn enter_on_cluster_sets_selection() {
+        let mut app = test_app();
+        app.tree_cursor = 2; // on sandbox
+        assert!(app.selected_cluster.is_none());
+
+        app.handle_event(AppEvent::Enter);
+
+        assert_eq!(app.selected_cluster, Some("sandbox".into()));
+    }
+
+    #[test]
+    fn enter_on_namespace_sets_selection() {
+        let mut app = test_app();
+        // Simulate expanded tower with namespace children
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        app.tree.insert(
+            2,
+            TreeNode {
+                label: "kube-system".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "kube-system".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        app.tree_cursor = 2; // on kube-system namespace
+
+        app.handle_event(AppEvent::Enter);
+
+        assert_eq!(app.selected_cluster, Some("tower".into()));
+        assert_eq!(app.selected_namespace, Some("kube-system".into()));
+    }
+
+    #[test]
+    fn view_switch_sets_needs_refresh() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Pods;
+        assert!(!app.needs_refresh);
+
+        app.handle_event(AppEvent::ResourceType('d')); // switch to Deployments
+
+        assert_eq!(app.resource_view, ResourceView::Deployments);
+        assert!(app.needs_refresh);
+    }
+
+    #[test]
+    fn same_view_does_not_trigger_refresh() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Pods;
+
+        app.handle_event(AppEvent::ResourceType('p')); // same view
+
+        assert!(!app.needs_refresh);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Self-monitoring (Linux only, no external dependencies)
 // ---------------------------------------------------------------------------
 
@@ -588,25 +781,39 @@ pub async fn run_tui(args: DashArgs, clusters: Vec<ClusterClient>) -> Result<()>
     let mut app = App::new(clusters.clone(), args.refresh);
     let tick_rate = Duration::from_millis(100);
     let refresh_interval = Duration::from_secs(args.refresh);
-    let mut last_refresh = Instant::now() - refresh_interval; // trigger immediate refresh
+    let mut last_refresh = Instant::now() - refresh_interval; // trigger refresh after first draw
 
     let result = loop {
-        // Refresh data if needed
-        if last_refresh.elapsed() >= refresh_interval {
+        // Draw first — shows skeleton UI instantly on startup (US-004)
+        terminal.draw(|f| ui::render(f, &app))?;
+
+        // Handle events
+        let evt = event::poll_event(tick_rate)?;
+        if evt == AppEvent::Refresh {
+            app.needs_refresh = true;
+        }
+        app.handle_event(evt);
+
+        if !app.running {
+            break Ok(());
+        }
+
+        // Refresh data if interval elapsed or forced (view switch, manual refresh)
+        if last_refresh.elapsed() >= refresh_interval || app.needs_refresh {
+            app.needs_refresh = false;
             let start = Instant::now();
-            let mut snapshots = Vec::new();
+
+            // Fetch all clusters in parallel (US-002)
+            let mut handles = Vec::new();
             for cluster in &clusters {
-                match data::fetch_cluster_snapshot(
-                    &cluster.client,
-                    &cluster.name,
-                    app.selected_namespace.as_deref(),
-                )
-                .await
-                {
-                    Ok(snapshot) => snapshots.push(snapshot),
-                    Err(e) => {
-                        snapshots.push(ClusterSnapshot {
-                            name: cluster.name.clone(),
+                let client = cluster.client.clone();
+                let name = cluster.name.clone();
+                let ns = app.selected_namespace.clone();
+                handles.push(tokio::spawn(async move {
+                    match data::fetch_cluster_snapshot(&client, &name, ns.as_deref()).await {
+                        Ok(snapshot) => snapshot,
+                        Err(_) => ClusterSnapshot {
+                            name,
                             health: HealthStatus::Unknown,
                             namespaces: vec![],
                             nodes: vec![],
@@ -615,31 +822,24 @@ pub async fn run_tui(args: DashArgs, clusters: Vec<ClusterClient>) -> Result<()>
                             services: vec![],
                             configmaps: vec![],
                             resource_usage: Default::default(),
-                        });
-                        let _ = e; // logged in status bar as Unknown health
+                        },
                     }
+                }));
+            }
+
+            let mut snapshots = Vec::new();
+            for handle in handles {
+                if let Ok(snapshot) = handle.await {
+                    snapshots.push(snapshot);
                 }
             }
+
             app.api_latency_ms = start.elapsed().as_millis() as u64;
             app.snapshots = snapshots;
             app.sync_tree_from_snapshots();
             app.load_infra();
             app.self_rss_mb = read_self_rss_mb();
             last_refresh = Instant::now();
-        }
-
-        // Draw
-        terminal.draw(|f| ui::render(f, &app))?;
-
-        // Handle events
-        let evt = event::poll_event(tick_rate)?;
-        if evt == AppEvent::Refresh {
-            last_refresh = Instant::now() - refresh_interval; // force refresh
-        }
-        app.handle_event(evt);
-
-        if !app.running {
-            break Ok(());
         }
     };
 

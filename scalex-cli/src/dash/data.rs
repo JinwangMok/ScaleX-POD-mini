@@ -371,19 +371,24 @@ pub async fn fetch_cluster_snapshot(
     cluster_name: &str,
     namespace: Option<&str>,
 ) -> Result<ClusterSnapshot> {
-    let namespaces = fetch_namespaces(client).await.unwrap_or_default();
-    let nodes = fetch_nodes(client).await.unwrap_or_default();
-    let pods = fetch_pods(client, namespace).await.unwrap_or_default();
-    let deployments = fetch_deployments(client, namespace)
-        .await
-        .unwrap_or_default();
-    let services = fetch_services(client, namespace).await.unwrap_or_default();
-    let configmaps = fetch_configmaps(client, namespace)
-        .await
-        .unwrap_or_default();
-
-    // Metrics scaffolding: try fetching node metrics (requires metrics-server)
-    let node_metrics = fetch_node_metrics(client).await.ok();
+    // Fetch all resources in parallel for maximum throughput
+    let (namespaces, nodes, pods, deployments, services, configmaps, node_metrics) = tokio::join!(
+        async { fetch_namespaces(client).await.unwrap_or_default() },
+        async { fetch_nodes(client).await.unwrap_or_default() },
+        async { fetch_pods(client, namespace).await.unwrap_or_default() },
+        async {
+            fetch_deployments(client, namespace)
+                .await
+                .unwrap_or_default()
+        },
+        async { fetch_services(client, namespace).await.unwrap_or_default() },
+        async {
+            fetch_configmaps(client, namespace)
+                .await
+                .unwrap_or_default()
+        },
+        async { fetch_node_metrics(client).await.ok() },
+    );
 
     let health = compute_health(&nodes, &pods);
     let resource_usage = compute_resource_usage(&nodes, &pods, node_metrics.as_deref());
