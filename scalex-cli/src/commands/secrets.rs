@@ -144,9 +144,25 @@ fn run_apply(
         cluster_role
     );
 
+    // Auto-detect kubeconfig from _generated/clusters/ if not explicitly provided
+    let resolved_kubeconfig = kubeconfig.or_else(|| {
+        let cluster_dir = match cluster_role.as_str() {
+            "management" => "tower",
+            "workload" => "sandbox",
+            _ => return None,
+        };
+        let path = format!("_generated/clusters/{}/kubeconfig.yaml", cluster_dir);
+        if std::path::Path::new(&path).exists() {
+            println!("[secrets] Using kubeconfig: {}", path);
+            Some(path)
+        } else {
+            None
+        }
+    });
+
     let mut cmd = std::process::Command::new("kubectl");
     cmd.args(["apply", "-f", "-"]);
-    if let Some(ref kc) = kubeconfig {
+    if let Some(ref kc) = resolved_kubeconfig {
         cmd.args(["--kubeconfig", kc]);
     }
     cmd.stdin(std::process::Stdio::piped());

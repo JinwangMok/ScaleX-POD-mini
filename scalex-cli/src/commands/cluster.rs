@@ -447,11 +447,25 @@ fn collect_kubeconfig(
 
     match output {
         Ok(out) if out.status.success() => {
-            println!(
-                "[cluster] kubeconfig for {} -> {}",
-                cluster_name,
-                local_path.display()
-            );
+            // Replace 127.0.0.1 with the control plane IP so kubeconfig works from bastion
+            if let Ok(content) = std::fs::read_to_string(&local_path) {
+                let fixed = content.replace("https://127.0.0.1:", &format!("https://{}:", ip));
+                if fixed != content {
+                    let _ = std::fs::write(&local_path, &fixed);
+                    println!(
+                        "[cluster] kubeconfig for {} -> {} (server: {})",
+                        cluster_name,
+                        local_path.display(),
+                        ip
+                    );
+                } else {
+                    println!(
+                        "[cluster] kubeconfig for {} -> {}",
+                        cluster_name,
+                        local_path.display()
+                    );
+                }
+            }
         }
         _ => {
             eprintln!(

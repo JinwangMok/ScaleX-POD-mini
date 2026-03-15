@@ -272,8 +272,8 @@ systemctl disable libvirtd 2>/dev/null || true
 
 echo "[scalex] Removing KVM/libvirt packages..."
 apt-get purge -y -qq qemu-kvm libvirt-daemon-system libvirt-clients virtinst bridge-utils 2>/dev/null || true
-rm -rf /var/lib/libvirt
-rm -rf /etc/libvirt
+rm -rf /var/lib/libvirt || true
+rm -rf /etc/libvirt || true
 
 # ─── Phase 3: Bridge cleanup ───
 echo "[scalex] Phase 3: Removing br0 bridge configuration..."
