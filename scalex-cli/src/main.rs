@@ -31,6 +31,8 @@ enum Commands {
     KernelTune(commands::kernel_tune::KernelTuneArgs),
     /// Validate configuration files before provisioning
     Validate(commands::validate::ValidateArgs),
+    /// Plan VM placement based on available resources
+    Plan(commands::plan::PlanArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -46,5 +48,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Status(args) => commands::status::run(args),
         Commands::KernelTune(args) => commands::kernel_tune::run(args),
         Commands::Validate(args) => commands::validate::run(args),
+        Commands::Plan(args) => commands::plan::run(args),
     }
 }
