@@ -52,7 +52,18 @@ pub fn render(f: &mut Frame, app: &App) {
 // ---------------------------------------------------------------------------
 
 fn render_tab_bar(f: &mut Frame, app: &App, area: Rect) {
-    let spans: Vec<Span> = app
+    let mut spans: Vec<Span> = vec![
+        Span::styled(
+            " ScaleX ",
+            Style::default()
+                .fg(theme::BG_HARD)
+                .bg(theme::BRIGHT_ORANGE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", Style::default().bg(theme::BG)),
+    ];
+
+    let tab_spans: Vec<Span> = app
         .tabs
         .iter()
         .enumerate()
@@ -73,6 +84,8 @@ fn render_tab_bar(f: &mut Frame, app: &App, area: Rect) {
             ]
         })
         .collect();
+
+    spans.extend(tab_spans);
 
     let line = Line::from(spans);
     let bar = Paragraph::new(line).style(Style::default().bg(theme::BG));

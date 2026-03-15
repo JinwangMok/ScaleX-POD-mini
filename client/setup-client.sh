@@ -2,7 +2,7 @@
 # setup-client.sh — Client setup helper
 set -euo pipefail
 
-echo "=== ScaleX-POD-mini Client Setup ==="
+echo "=== ScaleX Client Setup ==="
 echo ""
 
 # Check prerequisites

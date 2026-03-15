@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — ScaleX-POD-mini Interactive TUI Installer
+# install.sh — ScaleX Interactive TUI Installer
 # Usage: bash install.sh              # Interactive TUI mode
 #        bash install.sh --auto       # Unattended mode (requires pre-configured config files)
 #        SCALEX_REPO_URL=https://github.com/yourfork/ScaleX-POD-mini.git bash install.sh
@@ -366,8 +366,8 @@ generate_ssh_config() {
   local yaml_file="$repo_dir/credentials/.baremetal-init.yaml"
   local env_file="$repo_dir/credentials/.env"
   local ssh_config="$HOME/.ssh/config"
-  local marker="# --- ScaleX-POD-mini managed ---"
-  local end_marker="# --- End ScaleX-POD-mini ---"
+  local marker="# --- ScaleX managed ---"
+  local end_marker="# --- End ScaleX ---"
 
   [[ -f "$yaml_file" ]] || return 0
 
@@ -1445,7 +1445,7 @@ show_dashboard() {
 
   echo ""
   echo -e "${BOLD}${BLUE}+------------------------------------------------------+${NC}"
-  echo -e "${BOLD}${BLUE}|  ScaleX-POD-mini Installer                    v${VERSION}  |${NC}"
+  echo -e "${BOLD}${BLUE}|  ScaleX Installer                             v${VERSION}  |${NC}"
   echo -e "${BOLD}${BLUE}+------------------------------------------------------+${NC}"
   echo -e "$lines"
   echo -e "${BOLD}${BLUE}+------------------------------------------------------+${NC}"
@@ -1491,7 +1491,7 @@ post_install_summary() {
 
   echo ""
   echo -e "${BOLD}${GREEN}============================================================${NC}"
-  echo -e "${BOLD}${GREEN}  $(i18n "ScaleX-POD-mini installation complete!" "ScaleX-POD-mini 설치 완료!")${NC}"
+  echo -e "${BOLD}${GREEN}  $(i18n "ScaleX installation complete!" "ScaleX 설치 완료!")${NC}"
   echo -e "${BOLD}${GREEN}============================================================${NC}"
   echo ""
   echo -e "  ${BOLD}$(i18n "Repository:" "리포지토리:")${NC}  ${repo_dir}"
@@ -1536,17 +1536,17 @@ main() {
   parse_args "$@"
 
   echo -e "\n${BOLD}${BLUE}"
-  echo "  ____            _       __  __     ____   ___  ____                   _       _ "
-  echo " / ___|  ___ __ _| | ___\ \/ /    |  _ \ / _ \|  _ \   _ __ ___  (_)_ __ (_)"
-  echo " \___ \ / __/ _\` | |/ _ \\\\  /_____| |_) | | | | | | | | '_ \` _ \\ | | '_ \\| |"
-  echo "  ___) | (_| (_| | |  __//  \\_____|  __/| |_| | |_| | | | | | | || | | | | |"
-  echo " |____/ \\___\\__,_|_|\\___/_/\\_\\     |_|    \\___/|____/  |_| |_| |_||_|_| |_|_|"
+  echo "  ____            _       __  __"
+  echo " / ___|  ___ __ _| | ___\ \/ /"
+  echo " \___ \ / __/ _\` | |/ _ \\\\  / "
+  echo "  ___) | (_| (_| | |  __//  \\ "
+  echo " |____/ \\___\\__,_|_|\\___/_/\\_\\"
   echo -e "${NC}"
-  echo -e "  ${BOLD}Interactive Installer v${VERSION}${NC}"
+  echo -e "  ${BOLD}ScaleX Interactive Installer v${VERSION}${NC}"
   echo ""
 
   detect_tui
-  log_raw "=== ScaleX-POD-mini Installer v${VERSION} started ==="
+  log_raw "=== ScaleX Installer v${VERSION} started ==="
   log_raw "OS: $(uname -srm), TUI: ${TUI}"
 
   # --- Auto mode: skip TUI phases, run deps + provision directly ---
@@ -1566,7 +1566,7 @@ main() {
     # Pre-flight: check repo was found
     if [[ -z "$repo" ]]; then
       error_msg "$(i18n "Repository not found" "리포지토리를 찾을 수 없음")" \
-        "$(i18n "No ScaleX-POD-mini repo detected in cwd, SCALEX_REPO_DIR, or \$HOME/ScaleX-POD-mini" "현재 디렉토리, SCALEX_REPO_DIR, \$HOME/ScaleX-POD-mini에서 리포를 찾을 수 없습니다")" \
+        "$(i18n "No ScaleX repo detected in cwd, SCALEX_REPO_DIR, or \$HOME/ScaleX-POD-mini" "현재 디렉토리, SCALEX_REPO_DIR, \$HOME/ScaleX-POD-mini에서 리포를 찾을 수 없습니다")" \
         "$(i18n "Clone the repo first or set SCALEX_REPO_DIR" "먼저 리포를 클론하거나 SCALEX_REPO_DIR을 설정하세요")"
       return 1
     fi
