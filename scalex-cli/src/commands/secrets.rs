@@ -160,6 +160,40 @@ fn run_apply(
         }
     });
 
+    // Ensure target namespaces exist before applying secrets
+    let namespaces: std::collections::HashSet<&str> = manifests
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("namespace: \"")
+                .and_then(|s| s.strip_suffix('"'))
+        })
+        .collect();
+    for ns in &namespaces {
+        let mut ns_cmd = std::process::Command::new("kubectl");
+        ns_cmd.args(["create", "namespace", ns, "--dry-run=client", "-o", "yaml"]);
+        if let Some(ref kc) = resolved_kubeconfig {
+            ns_cmd.args(["--kubeconfig", kc]);
+        }
+        let ns_yaml = ns_cmd.output();
+        if let Ok(output) = ns_yaml {
+            let mut apply_ns = std::process::Command::new("kubectl");
+            apply_ns.args(["apply", "-f", "-"]);
+            if let Some(ref kc) = resolved_kubeconfig {
+                apply_ns.args(["--kubeconfig", kc]);
+            }
+            apply_ns.stdin(std::process::Stdio::piped());
+            if let Ok(mut child) = apply_ns.spawn() {
+                if let Some(ref mut stdin) = child.stdin {
+                    use std::io::Write;
+                    let _ = stdin.write_all(&output.stdout);
+                }
+                let _ = child.wait();
+            }
+        }
+    }
+
     let mut cmd = std::process::Command::new("kubectl");
     cmd.args(["apply", "-f", "-"]);
     if let Some(ref kc) = resolved_kubeconfig {
