@@ -1735,6 +1735,7 @@ dependencies = [
  "dotenvy",
  "k8s-openapi",
  "kube",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",
