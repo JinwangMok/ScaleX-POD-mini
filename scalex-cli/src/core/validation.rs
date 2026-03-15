@@ -7459,12 +7459,7 @@ config:
         // ops-guide.md must have Tailscale, LAN, and CF Tunnel sections (SOCKS5 removed)
         let content = include_str!("../../../docs/ops-guide.md");
 
-        let required_sections = [
-            "Tailscale",
-            "LAN",
-            "Cloudflare Tunnel",
-            "Keycloak",
-        ];
+        let required_sections = ["Tailscale", "LAN", "Cloudflare Tunnel", "Keycloak"];
         for section in &required_sections {
             assert!(
                 content.contains(section),

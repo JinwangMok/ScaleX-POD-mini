@@ -76,24 +76,31 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
                 .join("inventory.ini");
             if let Ok(content) = std::fs::read_to_string(&inventory_path) {
                 for line in content.lines() {
-                    if let Some(host_part) = line.split_whitespace()
+                    if let Some(host_part) = line
+                        .split_whitespace()
                         .find(|s| s.starts_with("ansible_host="))
                     {
                         if let Some(ip) = host_part.strip_prefix("ansible_host=") {
-                            let ssh_args = content.lines()
+                            let ssh_args = content
+                                .lines()
                                 .find(|l| l.contains(ip))
                                 .and_then(|l| l.split("ProxyJump=").nth(1))
                                 .map(|pj| pj.trim_end_matches('\'').to_string());
-                            let user = content.lines()
+                            let user = content
+                                .lines()
                                 .find(|l| l.contains(ip))
-                                .and_then(|l| l.split_whitespace()
-                                    .find(|s| s.starts_with("ansible_user=")))
+                                .and_then(|l| {
+                                    l.split_whitespace()
+                                        .find(|s| s.starts_with("ansible_user="))
+                                })
                                 .and_then(|s| s.strip_prefix("ansible_user="))
                                 .unwrap_or("ubuntu");
 
                             let mut cmd_args = vec![
-                                "-o".to_string(), "StrictHostKeyChecking=no".to_string(),
-                                "-o".to_string(), "BatchMode=yes".to_string(),
+                                "-o".to_string(),
+                                "StrictHostKeyChecking=no".to_string(),
+                                "-o".to_string(),
+                                "BatchMode=yes".to_string(),
                             ];
                             if let Some(pj) = &ssh_args {
                                 cmd_args.push("-o".to_string());
@@ -102,9 +109,7 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
                             cmd_args.push(format!("{}@{}", user, ip));
                             cmd_args.push("sudo chmod 777 /opt/cni/bin".to_string());
 
-                            let _ = std::process::Command::new("ssh")
-                                .args(&cmd_args)
-                                .output();
+                            let _ = std::process::Command::new("ssh").args(&cmd_args).output();
                         }
                     }
                 }
@@ -136,10 +141,7 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
             println!("[dry-run] helm {}", cilium_args.join(" "));
         } else {
             run_helm_install(&cilium_args)?;
-            println!(
-                "[bootstrap] Cilium installed on '{}'",
-                cluster.cluster_name
-            );
+            println!("[bootstrap] Cilium installed on '{}'", cluster.cluster_name);
         }
     }
 
@@ -298,9 +300,7 @@ fn register_cluster_via_secret(
     let server = cluster["server"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("No server in kubeconfig"))?;
-    let ca_data = cluster["certificate-authority-data"]
-        .as_str()
-        .unwrap_or("");
+    let ca_data = cluster["certificate-authority-data"].as_str().unwrap_or("");
     let cert_data = user["client-certificate-data"].as_str().unwrap_or("");
     let key_data = user["client-key-data"].as_str().unwrap_or("");
 
@@ -326,13 +326,7 @@ stringData:
     );
 
     let output = std::process::Command::new("kubectl")
-        .args([
-            "apply",
-            "-f",
-            "-",
-            "--kubeconfig",
-            tower_kubeconfig,
-        ])
+        .args(["apply", "-f", "-", "--kubeconfig", tower_kubeconfig])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -379,7 +373,6 @@ fn run_helm_install(args: &[String]) -> anyhow::Result<()> {
         Err(e) => anyhow::bail!("Failed to run helm: {}. Is Helm installed?", e),
     }
 }
-
 
 /// Execute kubectl apply. I/O function.
 fn run_kubectl_apply(args: &[String]) -> anyhow::Result<()> {
@@ -545,8 +538,7 @@ mod tests {
             "8.1.1",
             "gitops/tower/argocd/values.yaml",
         );
-        let apply =
-            generate_kubectl_apply_args("/tower/kube.yaml", "gitops/bootstrap/spread.yaml");
+        let apply = generate_kubectl_apply_args("/tower/kube.yaml", "gitops/bootstrap/spread.yaml");
 
         // Phase 1: Cilium CNI (must be first — pods need CNI to schedule)
         assert!(cilium[0] == "upgrade" && cilium[1] == "--install");
@@ -603,7 +595,8 @@ mod tests {
         let args = generate_argocd_helm_install_args("/kube.yaml", "8.1.1", "v.yaml");
         let t_idx = args.iter().position(|a| a == "--timeout").unwrap();
         assert_eq!(
-            args[t_idx + 1], "600s",
+            args[t_idx + 1],
+            "600s",
             "ArgoCD needs longer timeout on resource-constrained nodes"
         );
     }

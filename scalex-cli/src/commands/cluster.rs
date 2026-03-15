@@ -275,7 +275,10 @@ fn wait_for_cloud_init(cluster_dir: &std::path::Path, cluster_name: &str) -> any
     let mut ips: Vec<String> = Vec::new();
     for line in content.lines() {
         // Parse lines like: tower-cp-0 ansible_host=192.168.88.100 ...
-        if let Some(ip_part) = line.split_whitespace().find(|s| s.starts_with("ansible_host=")) {
+        if let Some(ip_part) = line
+            .split_whitespace()
+            .find(|s| s.starts_with("ansible_host="))
+        {
             if let Some(ip) = ip_part.strip_prefix("ansible_host=") {
                 ips.push(ip.to_string());
             }
@@ -291,7 +294,10 @@ fn wait_for_cloud_init(cluster_dir: &std::path::Path, cluster_name: &str) -> any
     let mut ssh_user = default_user.clone();
     let mut proxy_jump = String::new();
     for line in content.lines() {
-        if let Some(u) = line.split_whitespace().find(|s| s.starts_with("ansible_user=")) {
+        if let Some(u) = line
+            .split_whitespace()
+            .find(|s| s.starts_with("ansible_user="))
+        {
             if let Some(user) = u.strip_prefix("ansible_user=") {
                 ssh_user = user.to_string();
             }
@@ -327,9 +333,7 @@ fn wait_for_cloud_init(cluster_dir: &std::path::Path, cluster_name: &str) -> any
             ssh_args.push(format!("{}@{}", ssh_user, ip));
             ssh_args.push("cloud-init status --wait 2>/dev/null || test -f /var/lib/cloud/instance/boot-finished".to_string());
 
-            let result = std::process::Command::new("ssh")
-                .args(&ssh_args)
-                .output();
+            let result = std::process::Command::new("ssh").args(&ssh_args).output();
 
             match result {
                 Ok(out) if out.status.success() => {
@@ -573,8 +577,7 @@ fn collect_kubeconfig(
                     cluster_name
                 );
                 if let Ok(content) = std::fs::read_to_string(&artifacts_path) {
-                    let fixed =
-                        content.replace("https://127.0.0.1:", &format!("https://{}:", ip));
+                    let fixed = content.replace("https://127.0.0.1:", &format!("https://{}:", ip));
                     let _ = std::fs::write(&local_path, &fixed);
                     println!(
                         "[cluster] kubeconfig for {} -> {} (server: {}, from artifacts)",
