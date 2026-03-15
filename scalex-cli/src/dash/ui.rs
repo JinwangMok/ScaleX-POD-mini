@@ -2,7 +2,7 @@ use crate::dash::app::{ActivePanel, App, NodeType, ResourceView};
 use crate::dash::data::HealthStatus;
 use crate::dash::theme;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 use ratatui::Frame;
@@ -176,14 +176,42 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Split inner area for search bar if active
+    let (content_area, search_area) = if app.search_active {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(1)])
+            .split(inner);
+        (split[0], Some(split[1]))
+    } else {
+        (inner, None)
+    };
+
     match app.active_tab {
-        0 => render_resources_tab(f, app, inner),
-        1 => render_top_tab(f, app, inner),
+        0 => render_resources_tab(f, app, content_area),
+        1 => render_top_tab(f, app, content_area),
         _ => {
             let msg = Paragraph::new("Custom tab (press ? for help)")
                 .style(Style::default().fg(theme::FG4));
-            f.render_widget(msg, inner);
+            f.render_widget(msg, content_area);
         }
+    }
+
+    // Render search bar
+    if let Some(area) = search_area {
+        let query = app.search_query.as_deref().unwrap_or("");
+        let search_line = Line::from(vec![
+            Span::styled(
+                "/ ",
+                Style::default()
+                    .fg(theme::BRIGHT_YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(query, Style::default().fg(theme::FG)),
+            Span::styled("_", Style::default().fg(theme::BRIGHT_YELLOW)),
+        ]);
+        let bar = Paragraph::new(search_line).style(Style::default().bg(theme::BG1));
+        f.render_widget(bar, area);
     }
 }
 
@@ -200,14 +228,10 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
 
     match app.resource_view {
         ResourceView::Pods => render_pods_table(f, app, &snapshot.pods, area),
-        ResourceView::Deployments => render_deployments_table(f, &snapshot.deployments, area),
-        ResourceView::Services => render_services_table(f, &snapshot.services, area),
-        ResourceView::Nodes => render_nodes_table(f, &snapshot.nodes, area),
-        ResourceView::ConfigMaps => {
-            let msg = Paragraph::new("ConfigMaps view (coming soon)")
-                .style(Style::default().fg(theme::FG4));
-            f.render_widget(msg, area);
-        }
+        ResourceView::Deployments => render_deployments_table(f, app, &snapshot.deployments, area),
+        ResourceView::Services => render_services_table(f, app, &snapshot.services, area),
+        ResourceView::Nodes => render_nodes_table(f, app, &snapshot.nodes, area),
+        ResourceView::ConfigMaps => render_configmaps_table(f, app, &snapshot.configmaps, area),
     }
 }
 
@@ -228,7 +252,12 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
     )
     .bottom_margin(0);
 
-    let rows: Vec<Row> = pods
+    let filtered: Vec<&crate::dash::data::PodInfo> = pods
+        .iter()
+        .filter(|p| app.matches_search(&p.name))
+        .collect();
+
+    let rows: Vec<Row> = filtered
         .iter()
         .enumerate()
         .map(|(i, pod)| {
@@ -283,6 +312,7 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
 
 fn render_deployments_table(
     f: &mut Frame,
+    app: &App,
     deployments: &[crate::dash::data::DeploymentInfo],
     area: Rect,
 ) {
@@ -300,18 +330,29 @@ fn render_deployments_table(
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows: Vec<Row> = deployments
+    let filtered: Vec<&crate::dash::data::DeploymentInfo> = deployments
         .iter()
-        .map(|dep| {
+        .filter(|d| app.matches_search(&d.name))
+        .collect();
+
+    let rows: Vec<Row> = filtered
+        .iter()
+        .enumerate()
+        .map(|(i, dep)| {
+            let is_selected = i == app.table_cursor && app.active_panel == ActivePanel::Center;
+            let base = if is_selected {
+                Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW)
+            } else {
+                Style::default().fg(theme::FG).bg(theme::BG)
+            };
             Row::new(vec![
-                Cell::from(dep.name.clone()),
-                Cell::from(dep.namespace.clone()),
-                Cell::from(dep.ready.clone()),
-                Cell::from(dep.up_to_date.to_string()),
-                Cell::from(dep.available.to_string()),
-                Cell::from(dep.age.clone()),
+                Cell::from(dep.name.as_str()).style(base),
+                Cell::from(dep.namespace.as_str()).style(base),
+                Cell::from(dep.ready.as_str()).style(base),
+                Cell::from(dep.up_to_date.to_string()).style(base),
+                Cell::from(dep.available.to_string()).style(base),
+                Cell::from(dep.age.as_str()).style(base),
             ])
-            .style(Style::default().fg(theme::FG))
         })
         .collect();
 
@@ -332,7 +373,12 @@ fn render_deployments_table(
     f.render_widget(table, area);
 }
 
-fn render_services_table(f: &mut Frame, services: &[crate::dash::data::ServiceInfo], area: Rect) {
+fn render_services_table(
+    f: &mut Frame,
+    app: &App,
+    services: &[crate::dash::data::ServiceInfo],
+    area: Rect,
+) {
     let header = Row::new(vec![
         "NAME",
         "NAMESPACE",
@@ -347,18 +393,29 @@ fn render_services_table(f: &mut Frame, services: &[crate::dash::data::ServiceIn
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows: Vec<Row> = services
+    let filtered: Vec<&crate::dash::data::ServiceInfo> = services
         .iter()
-        .map(|svc| {
+        .filter(|s| app.matches_search(&s.name))
+        .collect();
+
+    let rows: Vec<Row> = filtered
+        .iter()
+        .enumerate()
+        .map(|(i, svc)| {
+            let is_selected = i == app.table_cursor && app.active_panel == ActivePanel::Center;
+            let base = if is_selected {
+                Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW)
+            } else {
+                Style::default().fg(theme::FG).bg(theme::BG)
+            };
             Row::new(vec![
-                svc.name.as_str(),
-                svc.namespace.as_str(),
-                svc.svc_type.as_str(),
-                svc.cluster_ip.as_str(),
-                svc.ports.as_str(),
-                svc.age.as_str(),
+                Cell::from(svc.name.as_str()).style(base),
+                Cell::from(svc.namespace.as_str()).style(base),
+                Cell::from(svc.svc_type.as_str()).style(base),
+                Cell::from(svc.cluster_ip.as_str()).style(base),
+                Cell::from(svc.ports.as_str()).style(base),
+                Cell::from(svc.age.as_str()).style(base),
             ])
-            .style(Style::default().fg(theme::FG))
         })
         .collect();
 
@@ -379,31 +436,51 @@ fn render_services_table(f: &mut Frame, services: &[crate::dash::data::ServiceIn
     f.render_widget(table, area);
 }
 
-fn render_nodes_table(f: &mut Frame, nodes: &[crate::dash::data::NodeInfo], area: Rect) {
+fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::NodeInfo], area: Rect) {
     let header = Row::new(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY"]).style(
         Style::default()
             .fg(theme::BRIGHT_YELLOW)
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows: Vec<Row> = nodes
+    let filtered: Vec<&crate::dash::data::NodeInfo> = nodes
         .iter()
-        .map(|node| {
+        .filter(|n| app.matches_search(&n.name))
+        .collect();
+
+    let rows: Vec<Row> = filtered
+        .iter()
+        .enumerate()
+        .map(|(i, node)| {
+            let is_selected = i == app.table_cursor && app.active_panel == ActivePanel::Center;
             let status_color = if node.status == "Ready" {
                 theme::BRIGHT_GREEN
             } else {
                 theme::BRIGHT_RED
             };
 
-            Row::new(vec![
-                Cell::from(node.name.clone()).style(Style::default().fg(theme::FG)),
-                Cell::from(node.status.clone()).style(Style::default().fg(status_color)),
-                Cell::from(node.roles.join(",")).style(Style::default().fg(theme::FG3)),
-                Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
-                    .style(Style::default().fg(theme::BRIGHT_AQUA)),
-                Cell::from(format!("{}/{}", node.mem_allocatable, node.mem_capacity))
-                    .style(Style::default().fg(theme::BRIGHT_PURPLE)),
-            ])
+            if is_selected {
+                let base = Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW);
+                Row::new(vec![
+                    Cell::from(node.name.as_str()).style(base),
+                    Cell::from(node.status.as_str()).style(base),
+                    Cell::from(node.roles.join(",")).style(base),
+                    Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
+                        .style(base),
+                    Cell::from(format!("{}/{}", node.mem_allocatable, node.mem_capacity))
+                        .style(base),
+                ])
+            } else {
+                Row::new(vec![
+                    Cell::from(node.name.as_str()).style(Style::default().fg(theme::FG)),
+                    Cell::from(node.status.as_str()).style(Style::default().fg(status_color)),
+                    Cell::from(node.roles.join(",")).style(Style::default().fg(theme::FG3)),
+                    Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
+                        .style(Style::default().fg(theme::BRIGHT_AQUA)),
+                    Cell::from(format!("{}/{}", node.mem_allocatable, node.mem_capacity))
+                        .style(Style::default().fg(theme::BRIGHT_PURPLE)),
+                ])
+            }
         })
         .collect();
 
@@ -415,6 +492,58 @@ fn render_nodes_table(f: &mut Frame, nodes: &[crate::dash::data::NodeInfo], area
             Constraint::Percentage(18),
             Constraint::Percentage(20),
             Constraint::Percentage(25),
+        ],
+    )
+    .header(header)
+    .style(Style::default().bg(theme::BG));
+
+    f.render_widget(table, area);
+}
+
+fn render_configmaps_table(
+    f: &mut Frame,
+    app: &App,
+    configmaps: &[crate::dash::data::ConfigMapInfo],
+    area: Rect,
+) {
+    let header = Row::new(vec!["NAME", "NAMESPACE", "KEYS", "AGE"]).style(
+        Style::default()
+            .fg(theme::BRIGHT_YELLOW)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let filtered: Vec<&crate::dash::data::ConfigMapInfo> = configmaps
+        .iter()
+        .filter(|cm| app.matches_search(&cm.name))
+        .collect();
+
+    let rows: Vec<Row> = filtered
+        .iter()
+        .enumerate()
+        .map(|(i, cm)| {
+            let is_selected = i == app.table_cursor && app.active_panel == ActivePanel::Center;
+            let base = if is_selected {
+                Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW)
+            } else {
+                Style::default().fg(theme::FG).bg(theme::BG)
+            };
+
+            Row::new(vec![
+                Cell::from(cm.name.as_str()).style(base),
+                Cell::from(cm.namespace.as_str()).style(base),
+                Cell::from(cm.data_keys_count.to_string()).style(base),
+                Cell::from(cm.age.as_str()).style(base),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(35),
+            Constraint::Percentage(25),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
         ],
     )
     .header(header)
@@ -489,6 +618,36 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
 // Status bar
 // ---------------------------------------------------------------------------
 
+/// Render a compact utilization bar: `CPU [========--] 82%` or `CPU N/A`
+fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color) -> Vec<Span<'a>> {
+    if percent <= 0.0 {
+        return vec![
+            Span::styled(format!("{} ", label), Style::default().fg(theme::FG4)),
+            Span::styled("N/A ", Style::default().fg(theme::FG4)),
+        ];
+    }
+    let filled = ((percent / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let empty = width - filled;
+    let bar_color = if percent > 90.0 {
+        theme::BRIGHT_RED
+    } else if percent > 70.0 {
+        theme::BRIGHT_YELLOW
+    } else {
+        color
+    };
+
+    vec![
+        Span::styled(format!("{} [", label), Style::default().fg(theme::FG4)),
+        Span::styled("=".repeat(filled), Style::default().fg(bar_color)),
+        Span::styled("-".repeat(empty), Style::default().fg(theme::BG3)),
+        Span::styled(
+            format!("] {:>3.0}% ", percent),
+            Style::default().fg(theme::FG3),
+        ),
+    ]
+}
+
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::TOP)
@@ -498,7 +657,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Line 1: cluster health indicators
+    // Line 1: cluster health indicators + pod/node counts
     let mut health_spans: Vec<Span> =
         vec![Span::styled(" Clusters: ", Style::default().fg(theme::FG4))];
 
@@ -509,33 +668,50 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             HealthStatus::Red => ("●", theme::BRIGHT_RED),
             HealthStatus::Unknown => ("○", theme::FG4),
         };
+        let ru = &snapshot.resource_usage;
         health_spans.push(Span::styled(
             format!("{} ", symbol),
             Style::default().fg(color),
         ));
         health_spans.push(Span::styled(
-            format!("{}  ", snapshot.name),
-            Style::default().fg(theme::FG3),
-        ));
-    }
-
-    // Line 2: resource usage + overhead
-    let mut usage_spans: Vec<Span> =
-        vec![Span::styled(" Usage: ", Style::default().fg(theme::FG4))];
-
-    for snapshot in &app.snapshots {
-        let ru = &snapshot.resource_usage;
-        usage_spans.push(Span::styled(
             format!(
-                "{}: pods {}/{} nodes {}/{}  ",
+                "{} pods:{}/{} nodes:{}/{}  ",
                 snapshot.name, ru.running_pods, ru.total_pods, ru.ready_nodes, ru.total_nodes
             ),
             Style::default().fg(theme::FG3),
         ));
     }
 
+    // Line 2: CPU/Mem bars per cluster + self overhead + latency
+    let mut usage_spans: Vec<Span> = vec![Span::styled(" ", Style::default().fg(theme::FG4))];
+
+    for snapshot in &app.snapshots {
+        let ru = &snapshot.resource_usage;
+        usage_spans.push(Span::styled(
+            format!("{}: ", snapshot.name),
+            Style::default().fg(theme::FG3),
+        ));
+        usage_spans.extend(render_usage_bar(
+            "CPU",
+            ru.cpu_percent,
+            8,
+            theme::BRIGHT_AQUA,
+        ));
+        usage_spans.extend(render_usage_bar(
+            "MEM",
+            ru.mem_percent,
+            8,
+            theme::BRIGHT_PURPLE,
+        ));
+    }
+
+    // Self overhead
+    let rss_str = app
+        .self_rss_mb
+        .map(|mb| format!("{:.0}MB", mb))
+        .unwrap_or_else(|| "N/A".into());
     usage_spans.push(Span::styled(
-        format!("| latency: {}ms", app.api_latency_ms),
+        format!("| self: {} | latency: {}ms", rss_str, app.api_latency_ms),
         Style::default().fg(theme::BRIGHT_AQUA),
     ));
 
@@ -604,8 +780,16 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("Services view", Style::default().fg(theme::FG)),
         ]),
         Line::from(vec![
+            Span::styled("  c       ", Style::default().fg(theme::BRIGHT_AQUA)),
+            Span::styled("ConfigMaps view", Style::default().fg(theme::FG)),
+        ]),
+        Line::from(vec![
             Span::styled("  n       ", Style::default().fg(theme::BRIGHT_AQUA)),
             Span::styled("Nodes view", Style::default().fg(theme::FG)),
+        ]),
+        Line::from(vec![
+            Span::styled("  /       ", Style::default().fg(theme::BRIGHT_AQUA)),
+            Span::styled("Search (filter by name)", Style::default().fg(theme::FG)),
         ]),
         Line::from(vec![
             Span::styled("  r       ", Style::default().fg(theme::BRIGHT_AQUA)),

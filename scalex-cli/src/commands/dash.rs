@@ -20,7 +20,7 @@ pub struct DashArgs {
     #[arg(long)]
     pub namespace: Option<String>,
 
-    /// Resource type filter for headless mode (pods, deployments, services, nodes)
+    /// Resource type filter for headless mode (pods, deployments, services, nodes, configmaps, infra)
     #[arg(long)]
     pub resource: Option<String>,
 
