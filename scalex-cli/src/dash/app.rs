@@ -648,5 +648,8 @@ pub async fn run_tui(args: DashArgs, clusters: Vec<ClusterClient>) -> Result<()>
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
+    // Cleanup auto-tunnels
+    crate::dash::kube_client::cleanup_tunnels(&clusters);
+
     result
 }
