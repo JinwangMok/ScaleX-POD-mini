@@ -95,7 +95,8 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
         }
     }
 
-    // Step 2: Install ArgoCD on tower cluster
+    // Step 2: Install ArgoCD on tower cluster (with values for kustomize.buildOptions)
+    let argocd_values_path = "gitops/tower/argocd/values.yaml";
     println!(
         "[bootstrap] Phase 2: Installing ArgoCD on '{}'...",
         tower.cluster_name
@@ -104,6 +105,7 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
     let helm_args = generate_argocd_helm_install_args(
         &tower_kubeconfig.display().to_string(),
         &args.argocd_version,
+        argocd_values_path,
     );
 
     if args.dry_run {
@@ -132,16 +134,17 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
             .join(&cluster.cluster_name)
             .join("kubeconfig.yaml");
 
-        let register_args = generate_argocd_cluster_add_args(
-            &cluster.cluster_name,
-            &tower_kubeconfig.display().to_string(),
-            &cluster_kubeconfig.display().to_string(),
-        );
-
         if args.dry_run {
-            println!("[dry-run] argocd {}", register_args.join(" "));
+            println!(
+                "[dry-run] kubectl apply cluster-secret for {}",
+                cluster.cluster_name
+            );
         } else {
-            run_argocd_cluster_add(&register_args)?;
+            register_cluster_via_secret(
+                &tower_kubeconfig.display().to_string(),
+                &cluster.cluster_name,
+                &cluster_kubeconfig.display().to_string(),
+            )?;
             println!(
                 "[bootstrap] Registered '{}' in ArgoCD",
                 cluster.cluster_name
@@ -203,7 +206,12 @@ pub fn generate_cilium_helm_install_args(
 
 /// Generate Helm install arguments for ArgoCD.
 /// Pure function — no I/O, no side effects.
-pub fn generate_argocd_helm_install_args(kubeconfig: &str, chart_version: &str) -> Vec<String> {
+/// Includes values file for kustomize.buildOptions: --enable-helm.
+pub fn generate_argocd_helm_install_args(
+    kubeconfig: &str,
+    chart_version: &str,
+    values_path: &str,
+) -> Vec<String> {
     vec![
         "upgrade".to_string(),
         "--install".to_string(),
@@ -218,30 +226,85 @@ pub fn generate_argocd_helm_install_args(kubeconfig: &str, chart_version: &str) 
         "--create-namespace".to_string(),
         "--kubeconfig".to_string(),
         kubeconfig.to_string(),
+        "--values".to_string(),
+        values_path.to_string(),
         "--wait".to_string(),
         "--timeout".to_string(),
-        "300s".to_string(),
+        "600s".to_string(),
     ]
 }
 
-/// Generate argocd cluster add arguments.
-/// Pure function — no I/O, no side effects.
-pub fn generate_argocd_cluster_add_args(
+/// Register a remote cluster in ArgoCD via a cluster Secret.
+/// Reads the target cluster's kubeconfig and creates an ArgoCD cluster Secret
+/// on the tower cluster. This avoids needing the argocd CLI or server access.
+fn register_cluster_via_secret(
+    tower_kubeconfig: &str,
     cluster_name: &str,
-    _tower_kubeconfig: &str,
-    cluster_kubeconfig: &str,
-) -> Vec<String> {
-    vec![
-        "cluster".to_string(),
-        "add".to_string(),
-        format!("kubernetes-admin@{}", cluster_name),
-        "--kubeconfig".to_string(),
-        cluster_kubeconfig.to_string(),
-        "--core".to_string(),
-        "--name".to_string(),
-        cluster_name.to_string(),
-        "-y".to_string(),
-    ]
+    cluster_kubeconfig_path: &str,
+) -> anyhow::Result<()> {
+    let kc_content = std::fs::read_to_string(cluster_kubeconfig_path)?;
+    let kc: serde_yaml::Value = serde_yaml::from_str(&kc_content)?;
+
+    let cluster = &kc["clusters"][0]["cluster"];
+    let user = &kc["users"][0]["user"];
+    let server = cluster["server"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("No server in kubeconfig"))?;
+    let ca_data = cluster["certificate-authority-data"]
+        .as_str()
+        .unwrap_or("");
+    let cert_data = user["client-certificate-data"].as_str().unwrap_or("");
+    let key_data = user["client-key-data"].as_str().unwrap_or("");
+
+    let config_json = format!(
+        r#"{{"tlsClientConfig":{{"caData":"{}","certData":"{}","keyData":"{}"}}}}"#,
+        ca_data, cert_data, key_data
+    );
+
+    let secret_yaml = format!(
+        r#"apiVersion: v1
+kind: Secret
+metadata:
+  name: {cluster_name}-cluster
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+type: Opaque
+stringData:
+  name: "{cluster_name}"
+  server: "{server}"
+  config: '{config_json}'
+"#
+    );
+
+    let output = std::process::Command::new("kubectl")
+        .args([
+            "apply",
+            "-f",
+            "-",
+            "--kubeconfig",
+            tower_kubeconfig,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(ref mut stdin) = child.stdin {
+                stdin.write_all(secret_yaml.as_bytes())?;
+            }
+            child.wait_with_output()
+        });
+
+    match output {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            anyhow::bail!("kubectl apply cluster secret failed: {}", stderr);
+        }
+        Err(e) => anyhow::bail!("Failed to run kubectl: {}", e),
+    }
 }
 
 /// Generate kubectl apply arguments for spread.yaml.
@@ -269,18 +332,6 @@ fn run_helm_install(args: &[String]) -> anyhow::Result<()> {
     }
 }
 
-/// Execute argocd cluster add. I/O function.
-fn run_argocd_cluster_add(args: &[String]) -> anyhow::Result<()> {
-    let output = std::process::Command::new("argocd").args(args).output();
-    match output {
-        Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            anyhow::bail!("argocd cluster add failed: {}", stderr);
-        }
-        Err(e) => anyhow::bail!("Failed to run argocd CLI: {}. Is argocd CLI installed?", e),
-    }
-}
 
 /// Execute kubectl apply. I/O function.
 fn run_kubectl_apply(args: &[String]) -> anyhow::Result<()> {
@@ -303,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_helm_args_contain_namespace_argocd() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1", "values.yaml");
         let joined = args.join(" ");
         assert!(
             joined.contains("--namespace argocd"),
@@ -314,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_helm_args_contain_create_namespace() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1", "values.yaml");
         assert!(
             args.contains(&"--create-namespace".to_string()),
             "Must create namespace if not exists"
@@ -323,21 +374,21 @@ mod tests {
 
     #[test]
     fn test_helm_args_use_provided_kubeconfig() {
-        let args = generate_argocd_helm_install_args("/my/kubeconfig.yaml", "8.1.1");
+        let args = generate_argocd_helm_install_args("/my/kubeconfig.yaml", "8.1.1", "values.yaml");
         let kc_idx = args.iter().position(|a| a == "--kubeconfig").unwrap();
         assert_eq!(args[kc_idx + 1], "/my/kubeconfig.yaml");
     }
 
     #[test]
     fn test_helm_args_use_correct_chart_version() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1", "values.yaml");
         let ver_idx = args.iter().position(|a| a == "--version").unwrap();
         assert_eq!(args[ver_idx + 1], "8.1.1");
     }
 
     #[test]
     fn test_helm_args_use_upgrade_install_for_idempotency() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1", "values.yaml");
         assert_eq!(
             args[0], "upgrade",
             "Must use 'upgrade --install' for idempotency"
@@ -347,55 +398,17 @@ mod tests {
 
     #[test]
     fn test_helm_args_use_official_argo_helm_repo() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1", "values.yaml");
         let repo_idx = args.iter().position(|a| a == "--repo").unwrap();
         assert_eq!(args[repo_idx + 1], "https://argoproj.github.io/argo-helm");
     }
 
     #[test]
     fn test_helm_args_wait_for_readiness() {
-        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1");
+        let args = generate_argocd_helm_install_args("/tmp/kube.yaml", "8.1.1", "values.yaml");
         assert!(
             args.contains(&"--wait".to_string()),
             "Must wait for ArgoCD to be ready before proceeding"
-        );
-    }
-
-    // --- generate_argocd_cluster_add_args ---
-
-    #[test]
-    fn test_cluster_add_args_contain_cluster_name() {
-        let args =
-            generate_argocd_cluster_add_args("sandbox", "/tower/kube.yaml", "/sandbox/kube.yaml");
-        assert!(
-            args.contains(&"sandbox".to_string()),
-            "Must reference cluster name"
-        );
-    }
-
-    #[test]
-    fn test_cluster_add_args_use_correct_kubeconfigs() {
-        let args =
-            generate_argocd_cluster_add_args("sandbox", "/tower/kube.yaml", "/sandbox/kube.yaml");
-        let joined = args.join(" ");
-        assert!(
-            joined.contains("--kubeconfig /sandbox/kube.yaml"),
-            "Must use sandbox kubeconfig for the cluster being added — got: {}",
-            joined
-        );
-        assert!(
-            joined.contains("--core"),
-            "Must use tower kubeconfig for ArgoCD server — got: {}",
-            joined
-        );
-    }
-
-    #[test]
-    fn test_cluster_add_args_auto_confirm() {
-        let args = generate_argocd_cluster_add_args("sandbox", "/t.yaml", "/s.yaml");
-        assert!(
-            args.contains(&"-y".to_string()),
-            "Must auto-confirm to avoid interactive prompt"
         );
     }
 
@@ -472,16 +485,18 @@ mod tests {
     // --- Bootstrap pipeline integration ---
 
     #[test]
-    fn test_bootstrap_pipeline_order_cilium_then_argocd_then_register_then_apply() {
-        // Verify the 4-phase pipeline produces correct commands in order
+    fn test_bootstrap_pipeline_order_cilium_then_argocd_then_apply() {
+        // Verify the pipeline produces correct commands in order
         let cilium = generate_cilium_helm_install_args(
             "/tower/kube.yaml",
             "1.17.5",
             "gitops/tower/cilium/values.yaml",
         );
-        let helm = generate_argocd_helm_install_args("/tower/kube.yaml", "8.1.1");
-        let register =
-            generate_argocd_cluster_add_args("sandbox", "/tower/kube.yaml", "/sandbox/kube.yaml");
+        let helm = generate_argocd_helm_install_args(
+            "/tower/kube.yaml",
+            "8.1.1",
+            "gitops/tower/argocd/values.yaml",
+        );
         let apply =
             generate_kubectl_apply_args("/tower/kube.yaml", "gitops/bootstrap/spread.yaml");
 
@@ -489,13 +504,13 @@ mod tests {
         assert!(cilium[0] == "upgrade" && cilium[1] == "--install");
         assert!(cilium.contains(&"cilium".to_string()));
 
-        // Phase 2: Helm installs ArgoCD
+        // Phase 2: Helm installs ArgoCD with values
         assert!(helm[0] == "upgrade" && helm[1] == "--install");
         assert!(helm.contains(&"argocd".to_string()));
-
-        // Phase 3: Register sandbox
-        assert!(register[0] == "cluster" && register[1] == "add");
-        assert!(register.contains(&"sandbox".to_string()));
+        assert!(
+            helm.contains(&"gitops/tower/argocd/values.yaml".to_string()),
+            "ArgoCD must use values.yaml for kustomize.buildOptions"
+        );
 
         // Phase 4: Apply spread.yaml
         assert!(apply[0] == "apply");
@@ -506,8 +521,7 @@ mod tests {
     fn test_bootstrap_all_commands_target_tower_kubeconfig() {
         let tower_kc = "/clusters/tower/kubeconfig.yaml";
         let cilium = generate_cilium_helm_install_args(tower_kc, "1.17.5", "values.yaml");
-        let helm = generate_argocd_helm_install_args(tower_kc, "8.1.1");
-        let register = generate_argocd_cluster_add_args("sandbox", tower_kc, "/sandbox/kube.yaml");
+        let helm = generate_argocd_helm_install_args(tower_kc, "8.1.1", "values.yaml");
         let apply = generate_kubectl_apply_args(tower_kc, "spread.yaml");
 
         // All phases must reference tower kubeconfig
@@ -520,12 +534,29 @@ mod tests {
             "Helm must target tower"
         );
         assert!(
-            register.contains(&"--core".to_string()),
-            "Cluster add must use --core mode"
-        );
-        assert!(
             apply.contains(&tower_kc.to_string()),
             "kubectl apply must target tower"
+        );
+    }
+
+    #[test]
+    fn test_argocd_helm_includes_values_file() {
+        let args = generate_argocd_helm_install_args(
+            "/kube.yaml",
+            "8.1.1",
+            "gitops/tower/argocd/values.yaml",
+        );
+        let val_idx = args.iter().position(|a| a == "--values").unwrap();
+        assert_eq!(args[val_idx + 1], "gitops/tower/argocd/values.yaml");
+    }
+
+    #[test]
+    fn test_argocd_helm_timeout_600s() {
+        let args = generate_argocd_helm_install_args("/kube.yaml", "8.1.1", "v.yaml");
+        let t_idx = args.iter().position(|a| a == "--timeout").unwrap();
+        assert_eq!(
+            args[t_idx + 1], "600s",
+            "ArgoCD needs longer timeout on resource-constrained nodes"
         );
     }
 }

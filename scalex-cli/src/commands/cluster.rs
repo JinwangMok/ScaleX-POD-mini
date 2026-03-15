@@ -1675,6 +1675,7 @@ net.ipv4.ip_forward = 1
         let helm_args = crate::commands::bootstrap::generate_argocd_helm_install_args(
             &expected_kubeconfig_pattern,
             "7.8.13",
+            "gitops/tower/argocd/values.yaml",
         );
 
         assert!(
