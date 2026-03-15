@@ -88,7 +88,7 @@ pub fn run(args: PlanArgs) -> anyhow::Result<()> {
             "  {} ({}): {} vCPU, {} MB RAM, {} MB disk",
             est.cluster_name,
             est.cluster_role,
-            (est.total.cpu_millicores + 999) / 1000,
+            est.total.cpu_millicores.div_ceil(1000),
             est.total.memory_mb,
             est.total.disk_mb
         );
