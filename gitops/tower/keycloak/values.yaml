@@ -8,6 +8,8 @@ service:
   ports:
     http: 80
 postgresql:
+  image:
+    tag: 17.4.0-debian-12-r25
   auth:
     existingSecret: keycloak-db
     secretKeys:
