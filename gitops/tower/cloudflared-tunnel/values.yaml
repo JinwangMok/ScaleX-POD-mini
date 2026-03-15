@@ -1,6 +1,9 @@
+tunnelSecrets:
+  existingConfigJsonFileSecret:
+    name: cloudflared-tunnel-credentials
+    key: credentials.json
 tunnelConfig:
   name: "playbox-admin-static"
-  existingSecret: cloudflared-tunnel-credentials
 ingress:
   - hostname: "api.k8s.jinwang.dev"
     service: "https://kubernetes.default.svc:443"

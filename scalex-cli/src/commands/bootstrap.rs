@@ -172,7 +172,7 @@ pub fn generate_argocd_cluster_add_args(
     vec![
         "cluster".to_string(),
         "add".to_string(),
-        cluster_name.to_string(),
+        format!("kubernetes-admin@{}", cluster_name),
         "--kubeconfig".to_string(),
         cluster_kubeconfig.to_string(),
         "--core".to_string(),

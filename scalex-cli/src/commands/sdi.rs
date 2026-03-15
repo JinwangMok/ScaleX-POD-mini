@@ -188,12 +188,19 @@ fn run_init(
                     host_prepare::PrepStep::SetupBridge => {
                         println!("[sdi] {} — setting up br0 bridge", node.name);
                         if !dry_run {
-                            // Find primary NIC from facts
-                            let primary_nic = facts
-                                .nics
-                                .first()
-                                .map(|n| n.name.as_str())
-                                .unwrap_or("eno1");
+                            // Prefer bond interface if present, otherwise first physical NIC
+                            let (primary_nic, is_bond) = if let Some(bond) = facts.bonds.first() {
+                                (bond.as_str(), true)
+                            } else {
+                                (
+                                    facts
+                                        .nics
+                                        .first()
+                                        .map(|n| n.name.as_str())
+                                        .unwrap_or("eno1"),
+                                    false,
+                                )
+                            };
                             let net = resolve_network_config(
                                 spec_file
                                     .as_deref()
@@ -212,6 +219,7 @@ fn run_init(
                                 &node.node_ip,
                                 &net.gateway,
                                 cidr_prefix,
+                                is_bond,
                             );
                             let ssh_cmd =
                                 build_ssh_command(node, &script, &bm_config.target_nodes)?;
@@ -932,11 +940,18 @@ fn run_sync(
                         }
                         host_prepare::PrepStep::SetupBridge => {
                             println!("[sdi] {} — setting up br0 bridge", node_name);
-                            let primary_nic = facts
-                                .nics
-                                .first()
-                                .map(|n| n.name.as_str())
-                                .unwrap_or("eno1");
+                            let (primary_nic, is_bond) = if let Some(bond) = facts.bonds.first() {
+                                (bond.as_str(), true)
+                            } else {
+                                (
+                                    facts
+                                        .nics
+                                        .first()
+                                        .map(|n| n.name.as_str())
+                                        .unwrap_or("eno1"),
+                                    false,
+                                )
+                            };
                             let bm_net =
                                 bm_config
                                     .network_defaults
@@ -959,6 +974,7 @@ fn run_sync(
                                 &node.node_ip,
                                 &sync_net.gateway,
                                 cidr_prefix,
+                                is_bond,
                             );
                             let ssh_cmd =
                                 build_ssh_command(node, &script, &bm_config.target_nodes)?;

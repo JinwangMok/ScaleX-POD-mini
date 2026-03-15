@@ -30,24 +30,38 @@ echo "[scalex] KVM/libvirt installation complete."
 }
 
 /// Generate the shell script to set up br0 bridge on a host.
-/// Pure function: takes NIC name and current IP config as input.
+/// Pure function: takes NIC name, IP config, and whether the NIC is a bond interface.
+/// When `is_bond` is true, the netplan omits the ethernets section and strips the
+/// IP from any existing bond netplan config so the bridge takes over addressing.
 pub fn generate_bridge_setup_script(
     primary_nic: &str,
     ip_address: &str,
     gateway: &str,
     cidr_prefix: u8,
+    is_bond: bool,
 ) -> String {
-    format!(
-        r#"#!/bin/bash
-set -euo pipefail
-
-echo "[scalex] Setting up br0 bridge on NIC: {primary_nic}"
-
-# Backup existing netplan
-sudo cp /etc/netplan/*.yaml /etc/netplan/backup/ 2>/dev/null || sudo mkdir -p /etc/netplan/backup && sudo cp /etc/netplan/*.yaml /etc/netplan/backup/
-
-sudo tee /etc/netplan/50-scalex-bridge.yaml > /dev/null << 'NETPLAN'
-network:
+    let netplan_body = if is_bond {
+        format!(
+            r#"network:
+  version: 2
+  renderer: networkd
+  bridges:
+    br0:
+      interfaces: [{primary_nic}]
+      addresses:
+        - {ip_address}/{cidr_prefix}
+      routes:
+        - to: default
+          via: {gateway}
+      nameservers:
+        addresses: [8.8.8.8, 8.8.4.4]
+      parameters:
+        stp: false
+        forward-delay: 0"#
+        )
+    } else {
+        format!(
+            r#"network:
   version: 2
   renderer: networkd
   ethernets:
@@ -66,7 +80,44 @@ network:
         addresses: [8.8.8.8, 8.8.4.4]
       parameters:
         stp: false
-        forward-delay: 0
+        forward-delay: 0"#
+        )
+    };
+
+    let strip_bond_ip = if is_bond {
+        format!(
+            r#"
+# Strip IP addresses/routes from existing bond netplan so br0 takes over
+echo "[scalex] Removing IP config from {primary_nic} in existing netplan files..."
+for f in /etc/netplan/*.yaml; do
+    [ "$f" = "/etc/netplan/50-scalex-bridge.yaml" ] && continue
+    if grep -q '{primary_nic}' "$f" 2>/dev/null; then
+        sudo sed -i '/{primary_nic}/,/^[^ ]/ {{
+            /addresses:/,/^[^ ]/{{ /addresses:/d; /^ *- /d; }}
+            /routes:/,/^[^ ]/{{ /routes:/d; /^ *- /d; /^ *to:/d; /^ *via:/d; }}
+            /gateway4:/d
+            /dhcp4:/d
+        }}' "$f"
+    fi
+done"#
+        )
+    } else {
+        String::new()
+    };
+
+    format!(
+        r#"#!/bin/bash
+set -euo pipefail
+
+echo "[scalex] Setting up br0 bridge on NIC: {primary_nic} (bond={is_bond})"
+
+# Backup existing netplan
+sudo mkdir -p /etc/netplan/backup
+sudo cp /etc/netplan/*.yaml /etc/netplan/backup/ 2>/dev/null || true
+{strip_bond_ip}
+
+sudo tee /etc/netplan/50-scalex-bridge.yaml > /dev/null << 'NETPLAN'
+{netplan_body}
 NETPLAN
 
 echo "[scalex] Applying netplan with 120s timeout (auto-revert on failure)..."
@@ -400,11 +451,22 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_bridge_script() {
-        let script = generate_bridge_setup_script("eno1", "192.168.88.10", "192.168.88.1", 24);
+    fn test_generate_bridge_script_ethernet() {
+        let script = generate_bridge_setup_script("eno1", "192.168.88.10", "192.168.88.1", 24, false);
         assert!(script.contains("br0"));
         assert!(script.contains("eno1"));
+        assert!(script.contains("ethernets:"));
         assert!(script.contains("netplan try"));
+    }
+
+    #[test]
+    fn test_generate_bridge_script_bond() {
+        let script = generate_bridge_setup_script("bond0", "192.168.88.10", "192.168.88.1", 24, true);
+        assert!(script.contains("br0"));
+        assert!(script.contains("bond0"));
+        assert!(!script.contains("ethernets:"), "bond bridge must not have ethernets section");
+        assert!(script.contains("netplan try"));
+        assert!(script.contains("bond=true"));
     }
 
     #[test]
