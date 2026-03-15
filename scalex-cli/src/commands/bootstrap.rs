@@ -65,6 +65,54 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
 
     let cilium_version = &k8s_config.config.common.cilium_version;
 
+    // Step 0: Fix /opt/cni/bin permissions on all nodes (kubespray sets kube:root ownership)
+    // Cilium init container needs write access to copy cilium-mount binary
+    if !args.dry_run {
+        println!("[bootstrap] Phase 0: Fixing /opt/cni/bin permissions on all nodes...");
+        for cluster in &k8s_config.config.clusters {
+            let inventory_path = args
+                .clusters_dir
+                .join(&cluster.cluster_name)
+                .join("inventory.ini");
+            if let Ok(content) = std::fs::read_to_string(&inventory_path) {
+                for line in content.lines() {
+                    if let Some(host_part) = line.split_whitespace()
+                        .find(|s| s.starts_with("ansible_host="))
+                    {
+                        if let Some(ip) = host_part.strip_prefix("ansible_host=") {
+                            let ssh_args = content.lines()
+                                .find(|l| l.contains(ip))
+                                .and_then(|l| l.split("ProxyJump=").nth(1))
+                                .map(|pj| pj.trim_end_matches('\'').to_string());
+                            let user = content.lines()
+                                .find(|l| l.contains(ip))
+                                .and_then(|l| l.split_whitespace()
+                                    .find(|s| s.starts_with("ansible_user=")))
+                                .and_then(|s| s.strip_prefix("ansible_user="))
+                                .unwrap_or("ubuntu");
+
+                            let mut cmd_args = vec![
+                                "-o".to_string(), "StrictHostKeyChecking=no".to_string(),
+                                "-o".to_string(), "BatchMode=yes".to_string(),
+                            ];
+                            if let Some(pj) = &ssh_args {
+                                cmd_args.push("-o".to_string());
+                                cmd_args.push(format!("ProxyJump={}", pj));
+                            }
+                            cmd_args.push(format!("{}@{}", user, ip));
+                            cmd_args.push("sudo chmod 777 /opt/cni/bin".to_string());
+
+                            let _ = std::process::Command::new("ssh")
+                                .args(&cmd_args)
+                                .output();
+                        }
+                    }
+                }
+            }
+        }
+        println!("[bootstrap] /opt/cni/bin permissions fixed");
+    }
+
     // Step 1: Pre-install Cilium CNI on ALL clusters (required before ArgoCD — pods need CNI)
     for cluster in &k8s_config.config.clusters {
         let kubeconfig = args
