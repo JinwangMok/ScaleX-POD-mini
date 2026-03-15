@@ -67,7 +67,7 @@ cargo fmt --check                        # Format check
 ## Key Patterns
 
 - **GitOps-First**: Post-bootstrap, ArgoCD manages all cluster state via ApplicationSets.
-- **Sync waves**: 0=ArgoCD/cluster-config, 1=Cilium/cert-manager/Kyverno/storage, 2=cilium-resources/cert-issuers/kyverno-policies, 3=tunnel/keycloak, 4=RBAC.
+- **Sync waves**: 0=ArgoCD/cluster-config, 1=Cilium/cert-manager/Kyverno/local-path-provisioner, 2=cilium-resources/cert-issuers/kyverno-policies, 3=tunnel/keycloak, 4=RBAC.
 - **Idempotent**: Every CLI operation safe to re-run.
 - **Pure Functions**: Rust CLI uses pure functions for HCL/inventory/vars generation. No side effects in generators.
 - **Secrets**: Created by CLI, stored in `credentials/` (gitignored). Templates in `credentials/*.example`.
