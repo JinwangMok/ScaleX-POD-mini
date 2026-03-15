@@ -332,25 +332,6 @@ kubectl get nodes
 - 포트 미러링: 네트워크 디버깅 시 스위치의 모니터링 포트 활용
 - PoE: 일부 장비 PoE 지원 시 UPS 연결 권장
 
-### SOCKS5 프록시 사용 가이드
-
-Tower 클러스터에 SOCKS5 프록시(`socks5-proxy`)가 배포됩니다. 이 프록시는 **ClusterIP** Service로
-배포되므로 외부에서 직접 접근할 수 없습니다. LAN 또는 Tailscale 경유로 kubectl port-forward를 통해 사용합니다.
-
-```bash
-# 1. Tower 클러스터에 kubectl 접근 (LAN 또는 Tailscale)
-export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
-
-# 2. SOCKS5 프록시 port-forward (로컬 1080 → 클러스터 내 SOCKS5)
-kubectl -n kube-tunnel port-forward svc/socks5-proxy 1080:1080 &
-
-# 3. SOCKS5 프록시를 통한 클러스터 내부 서비스 접근
-curl --socks5-hostname localhost:1080 http://argocd-server.argocd:8080/healthz
-```
-
-> **보안 참고**: SOCKS5 프록시는 인증 없이 동작하므로, 외부에 직접 노출(NodePort/LoadBalancer)하면
-> 안 됩니다. ClusterIP + port-forward 방식이 보안상 올바른 접근 경로입니다.
-
 ---
 
 ## 5. Sandbox Access Architecture (C-5)
