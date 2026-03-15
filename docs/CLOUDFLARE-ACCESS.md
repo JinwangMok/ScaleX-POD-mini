@@ -6,7 +6,8 @@ Cloudflare Tunnel provides secure external access without exposing ports. Three 
 
 | Domain | Service | Purpose |
 |--------|---------|---------|
-| api.k8s.jinwang.dev | K8s API | kubectl access |
+| api.tower.jinwang.dev | Tower K8s API | kubectl access (tower cluster) |
+| api.sandbox.jinwang.dev | Sandbox K8s API | kubectl access (sandbox cluster) |
 | auth.jinwang.dev | Keycloak | OIDC authentication |
 | cd.jinwang.dev | ArgoCD | GitOps dashboard |
 
@@ -23,7 +24,8 @@ Cloudflare Tunnel provides secure external access without exposing ports. Three 
 ### 2. DNS Records
 Cloudflare automatically creates CNAME records when tunnel is configured.
 Verify in DNS dashboard:
-- `api.k8s.jinwang.dev` → tunnel CNAME
+- `api.tower.jinwang.dev` → tunnel CNAME
+- `api.sandbox.jinwang.dev` → tunnel CNAME
 - `auth.jinwang.dev` → tunnel CNAME
 - `cd.jinwang.dev` → tunnel CNAME
 

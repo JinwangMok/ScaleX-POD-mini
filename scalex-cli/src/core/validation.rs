@@ -3092,8 +3092,8 @@ spec:
 
         // Routing is dashboard-managed; verify ops-guide documents required hostnames
         assert!(
-            ops_guide.contains("api.k8s.jinwang.dev"),
-            "ops-guide.md must document K8s API hostname 'api.k8s.jinwang.dev'"
+            ops_guide.contains("api.tower.jinwang.dev"),
+            "ops-guide.md must document K8s API hostname 'api.tower.jinwang.dev'"
         );
         assert!(
             ops_guide.contains("cd.jinwang.dev"),
@@ -3768,7 +3768,11 @@ spec:
         let ops_guide = include_str!("../../../docs/ops-guide.md");
 
         // Required routing rules per CL-14 — verified via ops-guide since routing is dashboard-managed
-        let required_hostnames = ["api.k8s.jinwang.dev", "auth.jinwang.dev", "cd.jinwang.dev"];
+        let required_hostnames = [
+            "api.tower.jinwang.dev",
+            "auth.jinwang.dev",
+            "cd.jinwang.dev",
+        ];
 
         for hostname in &required_hostnames {
             assert!(
@@ -4799,7 +4803,11 @@ config:
         let ops_guide = include_str!("../../../docs/ops-guide.md");
 
         // Required domains per checklist #14 — verified via ops-guide since routing is dashboard-managed
-        let required_routes = ["api.k8s.jinwang.dev", "auth.jinwang.dev", "cd.jinwang.dev"];
+        let required_routes = [
+            "api.tower.jinwang.dev",
+            "auth.jinwang.dev",
+            "cd.jinwang.dev",
+        ];
 
         for domain in &required_routes {
             assert!(
@@ -5381,7 +5389,7 @@ config:
 
         // Must reference CF Tunnel kubectl endpoint (even if to explain limitation)
         assert!(
-            ops_guide.contains("api.k8s.jinwang.dev"),
+            ops_guide.contains("api.tower.jinwang.dev"),
             "ops-guide must reference CF Tunnel kubectl endpoint"
         );
 
@@ -5473,7 +5481,11 @@ config:
         let ops_guide = include_str!("../../../docs/ops-guide.md");
 
         // Routing is dashboard-managed; verify both config and ops-guide agree on domains
-        let domains = ["auth.jinwang.dev", "cd.jinwang.dev", "api.k8s.jinwang.dev"];
+        let domains = [
+            "auth.jinwang.dev",
+            "cd.jinwang.dev",
+            "api.tower.jinwang.dev",
+        ];
         for domain in &domains {
             assert!(
                 k8s_clusters.contains(domain),

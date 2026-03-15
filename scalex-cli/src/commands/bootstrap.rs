@@ -166,7 +166,7 @@ pub fn generate_argocd_helm_install_args(kubeconfig: &str, chart_version: &str) 
 /// Pure function — no I/O, no side effects.
 pub fn generate_argocd_cluster_add_args(
     cluster_name: &str,
-    tower_kubeconfig: &str,
+    _tower_kubeconfig: &str,
     cluster_kubeconfig: &str,
 ) -> Vec<String> {
     vec![
