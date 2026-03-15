@@ -303,7 +303,7 @@ setup_api_tunnels() {
 }
 
 cleanup_api_tunnels() {
-  # Kill tunnel processes
+  # Kill tunnel processes (bootstrap is done, scalex CLI will auto-tunnel when needed)
   for pid in "${API_TUNNEL_PIDS[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
@@ -312,10 +312,47 @@ cleanup_api_tunnels() {
   fi
   API_TUNNEL_PIDS=()
 
-  # Restore original kubeconfigs (with real CP IPs, not localhost)
+  # Permanently rewrite kubeconfigs with actual CP IPs (NOT restore 127.0.0.1 backups).
+  # This ensures kubeconfigs are usable from the bastion via scalex CLI auto-tunneling.
   for kc in "${API_TUNNEL_BACKUPS[@]}"; do
     if [[ -f "${kc}.bak" ]]; then
-      mv "${kc}.bak" "$kc"
+      # Extract the original CP IP from the backup (which has the real server URL)
+      local orig_url; orig_url=$(grep 'server:' "${kc}.bak" | head -1 | awk '{print $2}' | tr -d '"')
+      local cp_ip; cp_ip=$(echo "$orig_url" | sed 's|https://||; s|:.*||')
+      local cp_port; cp_port=$(echo "$orig_url" | sed 's|.*:||')
+      [[ -z "$cp_port" ]] && cp_port=6443
+
+      if [[ "$cp_ip" == "127.0.0.1" ]]; then
+        # Backup still has localhost — look up actual CP IP from SDI state
+        local cluster_name; cluster_name=$(basename "$(dirname "$kc")")
+        local sdi_ip; sdi_ip=$(python3 -c "
+import json, sys
+try:
+    with open('_generated/sdi/sdi-state.json') as f:
+        pools = json.load(f)
+    if not isinstance(pools, list): pools = [pools]
+    for pool in pools:
+        for node in pool.get('nodes', []):
+            if node.get('node_name','').startswith('${cluster_name}-cp'):
+                print(node['ip']); sys.exit(0)
+except: pass
+" 2>/dev/null)
+        if [[ -n "$sdi_ip" ]]; then
+          cp_ip="$sdi_ip"
+        fi
+      fi
+
+      # Write kubeconfig with the actual CP IP (reachable via SSH tunnel by scalex CLI)
+      if [[ "$cp_ip" != "127.0.0.1" ]]; then
+        # Get the current (tunnel) URL from the modified kubeconfig
+        local tunnel_url; tunnel_url=$(grep 'server:' "$kc" | head -1 | awk '{print $2}' | tr -d '"')
+        sed -i "s|${tunnel_url}|https://${cp_ip}:${cp_port}|g" "$kc"
+        log_info "kubeconfig $(basename "$(dirname "$kc")"): server → ${cp_ip}:${cp_port}"
+      else
+        # Fallback: restore backup as-is if IP lookup failed
+        mv "${kc}.bak" "$kc"
+      fi
+      rm -f "${kc}.bak"
     fi
   done
   API_TUNNEL_BACKUPS=()
