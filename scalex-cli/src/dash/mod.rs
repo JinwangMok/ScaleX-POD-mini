@@ -1,16 +1,19 @@
 pub mod app;
 pub mod data;
 pub mod event;
+pub mod infra;
 pub mod kube_client;
+#[allow(dead_code)]
 pub mod theme;
 pub mod ui;
 
 use crate::commands::dash::DashArgs;
 
 pub async fn run(args: DashArgs) -> anyhow::Result<()> {
-    let kubeconfig_dir = args.kubeconfig_dir.clone().unwrap_or_else(|| {
-        std::path::PathBuf::from("_generated/clusters")
-    });
+    let kubeconfig_dir = args
+        .kubeconfig_dir
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("_generated/clusters"));
 
     let clusters = kube_client::discover_clusters(&kubeconfig_dir).await?;
 
@@ -31,17 +34,12 @@ pub async fn run(args: DashArgs) -> anyhow::Result<()> {
 pub mod headless {
     use super::*;
     use crate::dash::data;
+    use crate::dash::infra;
     use crate::dash::kube_client::ClusterClient;
 
-    pub async fn run_headless(
-        args: &DashArgs,
-        clusters: &[ClusterClient],
-    ) -> anyhow::Result<()> {
+    pub async fn run_headless(args: &DashArgs, clusters: &[ClusterClient]) -> anyhow::Result<()> {
         let target_clusters: Vec<&ClusterClient> = match &args.cluster {
-            Some(name) => clusters
-                .iter()
-                .filter(|c| c.name == *name)
-                .collect(),
+            Some(name) => clusters.iter().filter(|c| c.name == *name).collect(),
             None => clusters.iter().collect(),
         };
 
@@ -51,6 +49,14 @@ pub mod headless {
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
             std::process::exit(1);
+        }
+
+        // Handle infra-only request
+        if args.resource.as_deref() == Some("infra") {
+            let sdi_dir = std::path::Path::new("_generated/sdi");
+            let infra_snap = infra::load_sdi_state(sdi_dir);
+            println!("{}", serde_json::to_string_pretty(&infra_snap)?);
+            return Ok(());
         }
 
         let mut cluster_data = Vec::new();
@@ -68,7 +74,13 @@ pub mod headless {
         let output = if let Some(ref resource) = args.resource {
             data::filter_snapshot_by_resource(&cluster_data, resource)
         } else {
-            serde_json::to_value(&cluster_data)?
+            // Include infrastructure data in full output
+            let sdi_dir = std::path::Path::new("_generated/sdi");
+            let infra_snap = infra::load_sdi_state(sdi_dir);
+            serde_json::json!({
+                "clusters": serde_json::to_value(&cluster_data)?,
+                "infrastructure": serde_json::to_value(&infra_snap)?
+            })
         };
 
         println!("{}", serde_json::to_string_pretty(&output)?);

@@ -126,10 +126,7 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
 
             let ready_count = container_statuses.iter().filter(|c| c.ready).count();
             let total_count = container_statuses.len();
-            let restarts: i32 = container_statuses
-                .iter()
-                .map(|c| c.restart_count)
-                .sum();
+            let restarts: i32 = container_statuses.iter().map(|c| c.restart_count).sum();
 
             let age = meta
                 .creation_timestamp
@@ -144,9 +141,7 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
                 ready: format!("{}/{}", ready_count, total_count),
                 restarts,
                 age,
-                node: spec
-                    .and_then(|s| s.node_name.clone())
-                    .unwrap_or_default(),
+                node: spec.and_then(|s| s.node_name.clone()).unwrap_or_default(),
             }
         })
         .collect())
@@ -261,10 +256,7 @@ pub async fn fetch_deployments(
         .collect())
 }
 
-pub async fn fetch_services(
-    client: &Client,
-    namespace: Option<&str>,
-) -> Result<Vec<ServiceInfo>> {
+pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<Vec<ServiceInfo>> {
     let api: Api<Service> = match namespace {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
@@ -334,7 +326,9 @@ pub async fn fetch_cluster_snapshot(
     let namespaces = fetch_namespaces(client).await.unwrap_or_default();
     let nodes = fetch_nodes(client).await.unwrap_or_default();
     let pods = fetch_pods(client, namespace).await.unwrap_or_default();
-    let deployments = fetch_deployments(client, namespace).await.unwrap_or_default();
+    let deployments = fetch_deployments(client, namespace)
+        .await
+        .unwrap_or_default();
     let services = fetch_services(client, namespace).await.unwrap_or_default();
 
     let health = compute_health(&nodes, &pods);
@@ -374,7 +368,8 @@ pub fn filter_snapshot_by_resource(
                     obj["nodes"] = serde_json::to_value(&s.nodes).unwrap_or_default();
                 }
                 _ => {
-                    obj["error"] = serde_json::json!(format!("Unknown resource type: {}", resource));
+                    obj["error"] =
+                        serde_json::json!(format!("Unknown resource type: {}", resource));
                 }
             }
             obj

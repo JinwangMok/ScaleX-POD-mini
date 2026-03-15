@@ -3,6 +3,7 @@ use kube::Client;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ClusterClient {
     pub name: String,
     pub kubeconfig_path: PathBuf,
@@ -47,7 +48,10 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
                 });
             }
             Err(e) => {
-                eprintln!("Warning: Failed to load kubeconfig for {}: {}", cluster_name, e);
+                eprintln!(
+                    "Warning: Failed to load kubeconfig for {}: {}",
+                    cluster_name, e
+                );
             }
         }
     }

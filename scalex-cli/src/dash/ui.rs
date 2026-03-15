@@ -15,16 +15,13 @@ pub fn render(f: &mut Frame, app: &App) {
     let size = f.area();
 
     // Background
-    f.render_widget(
-        Block::default().style(Style::default().bg(theme::BG)),
-        size,
-    );
+    f.render_widget(Block::default().style(Style::default().bg(theme::BG)), size);
 
     // Top-level layout: tab bar (1) | body | status bar (3)
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // tab bar
+            Constraint::Length(1), // tab bar
             Constraint::Min(5),    // body
             Constraint::Length(3), // status bar
         ])
@@ -37,7 +34,7 @@ pub fn render(f: &mut Frame, app: &App) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(28), // sidebar
-            Constraint::Min(20),   // center
+            Constraint::Min(20),    // center
         ])
         .split(vertical[1]);
 
@@ -88,7 +85,11 @@ fn render_tab_bar(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let is_active = app.active_panel == ActivePanel::Sidebar;
-    let border_color = if is_active { theme::BRIGHT_YELLOW } else { theme::BG3 };
+    let border_color = if is_active {
+        theme::BRIGHT_YELLOW
+    } else {
+        theme::BG3
+    };
 
     let block = Block::default()
         .borders(Borders::RIGHT)
@@ -106,12 +107,15 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let node = &app.tree[idx];
             let is_selected = vi == app.tree_cursor && is_active;
 
-            let icon = match &node.node_type {
-                NodeType::Root => if node.expanded { "  " } else { "  " },
-                NodeType::Cluster(_) => if node.expanded { "  " } else { "  " },
-                NodeType::Namespace { .. } => "  ",
-                NodeType::InfraHeader => if node.expanded { " 󰒍 " } else { " 󰒍 " },
-                NodeType::InfraItem(_) => "  ",
+            let icon = match (&node.node_type, node.expanded) {
+                (NodeType::Root, true) => "v ",
+                (NodeType::Root, false) => "> ",
+                (NodeType::Cluster(_), true) => "v ",
+                (NodeType::Cluster(_), false) => "> ",
+                (NodeType::Namespace { .. }, _) => "  ",
+                (NodeType::InfraHeader, true) => "v ",
+                (NodeType::InfraHeader, false) => "> ",
+                (NodeType::InfraItem(_), _) => "  ",
             };
 
             let indent = "  ".repeat(node.depth);
@@ -150,7 +154,11 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_center(f: &mut Frame, app: &App, area: Rect) {
     let is_active = app.active_panel == ActivePanel::Center;
-    let border_color = if is_active { theme::BRIGHT_YELLOW } else { theme::BG3 };
+    let border_color = if is_active {
+        theme::BRIGHT_YELLOW
+    } else {
+        theme::BG3
+    };
 
     let ctx_label = match (&app.selected_cluster, &app.selected_namespace) {
         (Some(c), Some(ns)) => format!("{} > {}", c, ns),
@@ -203,15 +211,22 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_pods_table(
-    f: &mut Frame,
-    app: &App,
-    pods: &[crate::dash::data::PodInfo],
-    area: Rect,
-) {
-    let header = Row::new(vec!["NAME", "NAMESPACE", "STATUS", "READY", "RESTARTS", "AGE", "NODE"])
-        .style(Style::default().fg(theme::BRIGHT_YELLOW).add_modifier(Modifier::BOLD))
-        .bottom_margin(0);
+fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInfo], area: Rect) {
+    let header = Row::new(vec![
+        "NAME",
+        "NAMESPACE",
+        "STATUS",
+        "READY",
+        "RESTARTS",
+        "AGE",
+        "NODE",
+    ])
+    .style(
+        Style::default()
+            .fg(theme::BRIGHT_YELLOW)
+            .add_modifier(Modifier::BOLD),
+    )
+    .bottom_margin(0);
 
     let rows: Vec<Row> = pods
         .iter()
@@ -235,9 +250,11 @@ fn render_pods_table(
             Row::new(vec![
                 Cell::from(pod.name.as_str()).style(base),
                 Cell::from(pod.namespace.as_str()).style(base),
-                Cell::from(pod.status.as_str()).style(
-                    if is_selected { base } else { Style::default().fg(status_color) }
-                ),
+                Cell::from(pod.status.as_str()).style(if is_selected {
+                    base
+                } else {
+                    Style::default().fg(status_color)
+                }),
                 Cell::from(pod.ready.as_str()).style(base),
                 Cell::from(pod.restarts.to_string()).style(base),
                 Cell::from(pod.age.as_str()).style(base),
@@ -269,8 +286,19 @@ fn render_deployments_table(
     deployments: &[crate::dash::data::DeploymentInfo],
     area: Rect,
 ) {
-    let header = Row::new(vec!["NAME", "NAMESPACE", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"])
-        .style(Style::default().fg(theme::BRIGHT_YELLOW).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec![
+        "NAME",
+        "NAMESPACE",
+        "READY",
+        "UP-TO-DATE",
+        "AVAILABLE",
+        "AGE",
+    ])
+    .style(
+        Style::default()
+            .fg(theme::BRIGHT_YELLOW)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = deployments
         .iter()
@@ -304,13 +332,20 @@ fn render_deployments_table(
     f.render_widget(table, area);
 }
 
-fn render_services_table(
-    f: &mut Frame,
-    services: &[crate::dash::data::ServiceInfo],
-    area: Rect,
-) {
-    let header = Row::new(vec!["NAME", "NAMESPACE", "TYPE", "CLUSTER-IP", "PORTS", "AGE"])
-        .style(Style::default().fg(theme::BRIGHT_YELLOW).add_modifier(Modifier::BOLD));
+fn render_services_table(f: &mut Frame, services: &[crate::dash::data::ServiceInfo], area: Rect) {
+    let header = Row::new(vec![
+        "NAME",
+        "NAMESPACE",
+        "TYPE",
+        "CLUSTER-IP",
+        "PORTS",
+        "AGE",
+    ])
+    .style(
+        Style::default()
+            .fg(theme::BRIGHT_YELLOW)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = services
         .iter()
@@ -345,8 +380,11 @@ fn render_services_table(
 }
 
 fn render_nodes_table(f: &mut Frame, nodes: &[crate::dash::data::NodeInfo], area: Rect) {
-    let header = Row::new(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY"])
-        .style(Style::default().fg(theme::BRIGHT_YELLOW).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY"]).style(
+        Style::default()
+            .fg(theme::BRIGHT_YELLOW)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = nodes
         .iter()
@@ -397,14 +435,12 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                " Node Resource Utilization ",
-                Style::default()
-                    .fg(theme::BRIGHT_YELLOW)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            " Node Resource Utilization ",
+            Style::default()
+                .fg(theme::BRIGHT_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
     ];
 
@@ -417,10 +453,22 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!(" {} ", status_icon), Style::default().fg(status_color)),
-            Span::styled(&node.name, Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
             Span::styled(
-                format!("  CPU: {}/{}  MEM: {}/{}", node.cpu_allocatable, node.cpu_capacity, node.mem_allocatable, node.mem_capacity),
+                format!(" {} ", status_icon),
+                Style::default().fg(status_color),
+            ),
+            Span::styled(
+                &node.name,
+                Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "  CPU: {}/{}  MEM: {}/{}",
+                    node.cpu_allocatable,
+                    node.cpu_capacity,
+                    node.mem_allocatable,
+                    node.mem_capacity
+                ),
                 Style::default().fg(theme::FG3),
             ),
         ]));
@@ -451,10 +499,8 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     // Line 1: cluster health indicators
-    let mut health_spans: Vec<Span> = vec![Span::styled(
-        " Clusters: ",
-        Style::default().fg(theme::FG4),
-    )];
+    let mut health_spans: Vec<Span> =
+        vec![Span::styled(" Clusters: ", Style::default().fg(theme::FG4))];
 
     for snapshot in &app.snapshots {
         let (symbol, color) = match snapshot.health {
@@ -474,10 +520,8 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Line 2: resource usage + overhead
-    let mut usage_spans: Vec<Span> = vec![Span::styled(
-        " Usage: ",
-        Style::default().fg(theme::FG4),
-    )];
+    let mut usage_spans: Vec<Span> =
+        vec![Span::styled(" Usage: ", Style::default().fg(theme::FG4))];
 
     for snapshot in &app.snapshots {
         let ru = &snapshot.resource_usage;
@@ -495,10 +539,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(theme::BRIGHT_AQUA),
     ));
 
-    let status_text = vec![
-        Line::from(health_spans),
-        Line::from(usage_spans),
-    ];
+    let status_text = vec![Line::from(health_spans), Line::from(usage_spans)];
 
     let paragraph = Paragraph::new(status_text).style(Style::default().bg(theme::BG_HARD));
     f.render_widget(paragraph, inner);

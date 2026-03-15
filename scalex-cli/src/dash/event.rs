@@ -12,17 +12,17 @@ pub enum AppEvent {
     Right,
     Enter,
     // Tab switching
-    Tab(usize),       // Ctrl+1..9
-    NextPanel,        // Tab key
-    PrevPanel,        // Shift+Tab
+    Tab(usize), // Ctrl+1..9
+    NextPanel,  // Tab key
+    PrevPanel,  // Shift+Tab
     // Resource type switch in center panel
     ResourceType(char), // p, d, s, c, n
     // Search
-    Search,           // /
+    Search, // /
     // Help
-    Help,             // ?
+    Help, // ?
     // Refresh
-    Refresh,          // r
+    Refresh, // r
     // Tick (periodic refresh)
     Tick,
     // No event
@@ -50,9 +50,7 @@ fn map_key_event(key: KeyEvent) -> AppEvent {
         KeyCode::Char('c') if ctrl => AppEvent::Quit,
 
         // Ctrl+1..9 → tab switch
-        KeyCode::Char(c @ '1'..='9') if ctrl => {
-            AppEvent::Tab(c.to_digit(10).unwrap() as usize)
-        }
+        KeyCode::Char(c @ '1'..='9') if ctrl => AppEvent::Tab(c.to_digit(10).unwrap() as usize),
 
         // Navigation
         KeyCode::Up | KeyCode::Char('k') => AppEvent::Up,

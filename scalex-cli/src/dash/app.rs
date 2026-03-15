@@ -1,6 +1,7 @@
 use crate::commands::dash::DashArgs;
 use crate::dash::data::{self, ClusterSnapshot, HealthStatus};
 use crate::dash::event::{self, AppEvent};
+use crate::dash::infra::{self, InfraSnapshot};
 use crate::dash::kube_client::ClusterClient;
 use crate::dash::ui;
 use anyhow::Result;
@@ -56,6 +57,7 @@ impl ResourceView {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Tab {
     pub name: String,
     pub closable: bool,
@@ -105,9 +107,11 @@ pub struct App {
     pub selected_cluster: Option<String>,
     pub selected_namespace: Option<String>,
 
-    // Data
+    // Data (clusters kept for future tab-management features)
+    #[allow(dead_code)]
     pub clusters: Vec<ClusterClient>,
     pub snapshots: Vec<ClusterSnapshot>,
+    pub infra: InfraSnapshot,
 
     // Timing
     pub api_latency_ms: u64,
@@ -115,7 +119,7 @@ pub struct App {
     // Help overlay
     pub show_help: bool,
 
-    // Refresh interval
+    #[allow(dead_code)]
     pub refresh_secs: u64,
 }
 
@@ -173,6 +177,7 @@ impl App {
             selected_namespace: None,
             clusters,
             snapshots: Vec::new(),
+            infra: InfraSnapshot::default(),
             api_latency_ms: 0,
             show_help: false,
             refresh_secs,
@@ -332,9 +337,7 @@ impl App {
 
     fn remove_children(&mut self, parent_idx: usize) {
         let parent_depth = self.tree[parent_idx].depth;
-        while parent_idx + 1 < self.tree.len()
-            && self.tree[parent_idx + 1].depth > parent_depth
-        {
+        while parent_idx + 1 < self.tree.len() && self.tree[parent_idx + 1].depth > parent_depth {
             self.tree.remove(parent_idx + 1);
         }
     }
@@ -364,13 +367,67 @@ impl App {
         self.visible_tree_indices().len()
     }
 
+    /// Load infrastructure data from SDI directory
+    pub fn load_infra(&mut self) {
+        let sdi_dir = std::path::Path::new("_generated/sdi");
+        self.infra = infra::load_sdi_state(sdi_dir);
+        self.sync_infra_tree();
+    }
+
+    /// Sync infrastructure items into the sidebar tree
+    fn sync_infra_tree(&mut self) {
+        let infra_idx = self
+            .tree
+            .iter()
+            .position(|n| matches!(&n.node_type, NodeType::InfraHeader));
+
+        if let Some(idx) = infra_idx {
+            if self.tree[idx].expanded && !self.tree[idx].children_loaded {
+                let depth = self.tree[idx].depth + 1;
+                let mut children = Vec::new();
+
+                for pool in &self.infra.sdi_pools {
+                    let label = format!(
+                        "{} ({}) — {} VMs",
+                        pool.pool_name,
+                        pool.purpose,
+                        pool.nodes.len()
+                    );
+                    children.push(TreeNode {
+                        label,
+                        depth,
+                        expanded: false,
+                        node_type: NodeType::InfraItem(pool.pool_name.clone()),
+                        children_loaded: false,
+                    });
+                }
+
+                if children.is_empty() {
+                    children.push(TreeNode {
+                        label: "No SDI data".to_string(),
+                        depth,
+                        expanded: false,
+                        node_type: NodeType::InfraItem("none".into()),
+                        children_loaded: false,
+                    });
+                }
+
+                let insert_at = idx + 1;
+                for (j, child) in children.into_iter().enumerate() {
+                    self.tree.insert(insert_at + j, child);
+                }
+                self.tree[idx].children_loaded = true;
+            }
+        }
+    }
+
     /// Populate namespace children for expanded clusters from snapshot data
     pub fn sync_tree_from_snapshots(&mut self) {
         for snapshot in &self.snapshots {
             // Find the cluster node
-            let cluster_idx = self.tree.iter().position(|n| {
-                matches!(&n.node_type, NodeType::Cluster(name) if name == &snapshot.name)
-            });
+            let cluster_idx = self.tree.iter().position(
+                |n| matches!(&n.node_type, NodeType::Cluster(name) if name == &snapshot.name),
+            );
 
             if let Some(idx) = cluster_idx {
                 if self.tree[idx].expanded && !self.tree[idx].children_loaded {
@@ -470,6 +527,7 @@ pub async fn run_tui(args: DashArgs, clusters: Vec<ClusterClient>) -> Result<()>
             app.api_latency_ms = start.elapsed().as_millis() as u64;
             app.snapshots = snapshots;
             app.sync_tree_from_snapshots();
+            app.load_infra();
             last_refresh = Instant::now();
         }
 
