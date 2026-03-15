@@ -458,11 +458,11 @@ fn make_vm(
     needs_gpu: bool,
 ) -> PlannedVm {
     // Convert millicores to vCPUs (round up, minimum 1)
-    let cpu = ((budget.cpu_millicores + 999) / 1000).max(1);
+    let cpu = budget.cpu_millicores.div_ceil(1000).max(1);
     // Convert MB to GB (round up, minimum 2)
-    let mem_gb = ((budget.memory_mb + 1023) / 1024).max(2);
+    let mem_gb = budget.memory_mb.div_ceil(1024).max(2);
     // Convert MB to GB (round up, minimum 20)
-    let disk_gb = ((budget.disk_mb + 1023) / 1024).max(20);
+    let disk_gb = budget.disk_mb.div_ceil(1024).max(20);
 
     PlannedVm {
         node_name: name.to_string(),
