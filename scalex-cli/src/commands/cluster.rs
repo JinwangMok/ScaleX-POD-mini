@@ -183,6 +183,9 @@ fn run_init(
 
         // Run kubespray
         if !dry_run {
+            // Wait for cloud-init to finish on all nodes before kubespray
+            wait_for_cloud_init(&cluster_dir, &cluster.cluster_name)?;
+
             println!(
                 "[cluster] Running kubespray for {}...",
                 cluster.cluster_name
@@ -258,6 +261,77 @@ fn load_sdi_spec_from_options(
     anyhow::bail!(
         "SDI spec required. Provide --sdi-spec <path> or run `scalex sdi init <spec>` first."
     );
+}
+
+/// Wait for cloud-init to finish on all nodes in a cluster.
+/// Parses inventory.ini to get node IPs, then SSH-polls until cloud-init reports done.
+fn wait_for_cloud_init(cluster_dir: &std::path::Path, cluster_name: &str) -> anyhow::Result<()> {
+    let inventory_path = cluster_dir.join("inventory.ini");
+    if !inventory_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&inventory_path)?;
+    let mut ips: Vec<String> = Vec::new();
+    for line in content.lines() {
+        // Parse lines like: tower-cp-0 ansible_host=192.168.88.100 ...
+        if let Some(ip_part) = line.split_whitespace().find(|s| s.starts_with("ansible_host=")) {
+            if let Some(ip) = ip_part.strip_prefix("ansible_host=") {
+                ips.push(ip.to_string());
+            }
+        }
+    }
+
+    if ips.is_empty() {
+        return Ok(());
+    }
+
+    println!(
+        "[cluster] Waiting for cloud-init on {} ({} nodes)...",
+        cluster_name,
+        ips.len()
+    );
+
+    let max_attempts = 60; // 5 minutes (60 * 5s)
+    for ip in &ips {
+        for attempt in 1..=max_attempts {
+            let result = std::process::Command::new("ssh")
+                .args([
+                    "-o",
+                    "ConnectTimeout=5",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "BatchMode=yes",
+                    &format!("jinwang@{}", ip),
+                    "cloud-init status --wait 2>/dev/null || test -f /var/lib/cloud/instance/boot-finished",
+                ])
+                .output();
+
+            match result {
+                Ok(out) if out.status.success() => {
+                    println!("[cluster] cloud-init done on {}", ip);
+                    break;
+                }
+                _ => {
+                    if attempt == max_attempts {
+                        eprintln!(
+                            "[cluster] WARNING: cloud-init timeout on {} — proceeding anyway",
+                            ip
+                        );
+                    } else if attempt % 12 == 0 {
+                        println!(
+                            "[cluster] Still waiting for cloud-init on {} ({}/{})",
+                            ip, attempt, max_attempts
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn run_kubespray(cluster_dir: &std::path::Path, cluster_name: &str) -> anyhow::Result<()> {

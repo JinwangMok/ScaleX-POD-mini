@@ -75,7 +75,7 @@ cargo fmt --check                        # Format check
 
 ## GitOps Pattern
 
-**Bootstrap**: `scalex bootstrap` (internally: Helm ArgoCD install → cluster register → `kubectl apply -f gitops/bootstrap/spread.yaml`)
+**Bootstrap**: `scalex bootstrap` (internally: Helm Cilium install on all clusters → Helm ArgoCD install → cluster register → `kubectl apply -f gitops/bootstrap/spread.yaml`)
 
 **Multi-cluster structure**:
 - `spread.yaml` → creates `tower-root` + `sandbox-root` Applications
@@ -87,7 +87,7 @@ cargo fmt --check                        # Format check
 | **Projects** | AppProject | `gitops/projects/{tower,sandbox}-project.yaml` |
 | **Generators** | ApplicationSet | `gitops/generators/{tower,sandbox}/` |
 | **Common Apps** | Kustomization | `gitops/common/{cilium-resources,cert-manager,kyverno,kyverno-policies}/` |
-| **Tower Apps** | Kustomization | `gitops/tower/{argocd,cilium,cert-issuers,cloudflared-tunnel,cluster-config,keycloak,socks5-proxy}/` |
+| **Tower Apps** | Kustomization | `gitops/tower/{argocd,cilium,cert-issuers,cloudflared-tunnel,cluster-config,keycloak}/` |
 | **Sandbox Apps** | Kustomization | `gitops/sandbox/{cilium,cluster-config,local-path-provisioner,rbac,test-resources}/` |
 
 **Adding a new common app**: (1) Create `gitops/common/{app}/kustomization.yaml`, (2) Add element to both `gitops/generators/tower/common-generator.yaml` and `gitops/generators/sandbox/common-generator.yaml`.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — ScaleX-POD-mini Interactive TUI Installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/JinwangMok/ScaleX-POD-mini/main/install.sh | bash
+# Or:    wget -qO- https://raw.githubusercontent.com/JinwangMok/ScaleX-POD-mini/main/install.sh | bash
 # Or:    bash install.sh
 set -euo pipefail
 umask 077
@@ -922,7 +923,7 @@ phase_cluster() {
     "cert-issuers"      "인증서 발급자 (manifest)"    "ON" \
     "keycloak"          "Keycloak 25.1.2"            "ON" \
     "cloudflared-tunnel" "Cloudflare Tunnel 2.1.2"   "$(${cf_enabled} && echo ON || echo OFF)" \
-    "socks5-proxy"      "SOCKS5 프록시 (manifest)"   "ON")
+)
   echo "$tower_apps" >> "$INSTALLER_DIR/apps_selected.txt"
 
   local sandbox_apps; sandbox_apps=$(tui_checklist "Sandbox 앱" "${sandbox_name} 클러스터 앱:" \

@@ -4818,40 +4818,6 @@ config:
         }
     }
 
-    /// G-9: Verify SOCKS5 proxy manifest is correctly configured.
-    #[test]
-    fn test_checklist_socks5_proxy_manifest() {
-        let manifest = include_str!("../../../gitops/tower/socks5-proxy/manifest.yaml");
-
-        // Must be in kube-tunnel namespace
-        assert!(
-            manifest.contains("namespace: kube-tunnel"),
-            "SOCKS5 proxy must be in kube-tunnel namespace"
-        );
-
-        // Must expose port 1080
-        assert!(
-            manifest.contains("1080"),
-            "SOCKS5 proxy must expose port 1080"
-        );
-
-        // Must have both Deployment and Service
-        assert!(
-            manifest.contains("kind: Deployment"),
-            "SOCKS5 proxy must have a Deployment"
-        );
-        assert!(
-            manifest.contains("kind: Service"),
-            "SOCKS5 proxy must have a Service"
-        );
-
-        // Must use ClusterIP (internal only)
-        assert!(
-            manifest.contains("type: ClusterIP"),
-            "SOCKS5 proxy Service must be ClusterIP"
-        );
-    }
-
     /// G-9: Verify GitOps bootstrap spread.yaml creates correct root applications.
     #[test]
     fn test_checklist_gitops_bootstrap_structure() {
@@ -5281,7 +5247,6 @@ config:
             "cloudflared-tunnel",
             "cluster-config",
             "keycloak",
-            "socks5-proxy",
         ];
         for app in &tower_apps {
             assert!(
@@ -5937,27 +5902,6 @@ config:
         );
     }
 
-    // ── Sprint 17c: SOCKS5 Proxy Access Path (C-8) ──
-
-    /// C-8: ops-guide must document SOCKS5 proxy access path — it's ClusterIP, so requires
-    /// kubectl port-forward from a machine with existing kubectl access (LAN/Tailscale).
-    #[test]
-    fn test_checklist_socks5_proxy_access_path_documented() {
-        let ops_guide = include_str!("../../../docs/ops-guide.md");
-
-        // Must document how to access the SOCKS5 proxy
-        assert!(
-            ops_guide.contains("SOCKS5") || ops_guide.contains("socks5"),
-            "ops-guide must document SOCKS5 proxy usage"
-        );
-
-        // Must mention it's ClusterIP and requires port-forward
-        assert!(
-            ops_guide.contains("port-forward") || ops_guide.contains("포트 포워딩"),
-            "ops-guide must explain SOCKS5 requires port-forward (ClusterIP)"
-        );
-    }
-
     // ── Sprint 17d: CF Credentials Pre-Bootstrap Check (C-10) ──
 
     /// C-10: README installation guide must warn about CF credentials before bootstrap.
@@ -6208,17 +6152,6 @@ config:
         );
     }
 
-    /// Sprint 18b: SOCKS5 proxy usage scenario must be documented as LAN/Tailscale internal.
-    #[test]
-    fn test_socks5_proxy_scope_documented() {
-        let ops_guide = include_str!("../../../docs/ops-guide.md");
-
-        assert!(
-            ops_guide.contains("SOCKS5") || ops_guide.contains("socks5"),
-            "ops-guide must document SOCKS5 proxy"
-        );
-    }
-
     // ── Sprint 18c: baremetal-init.yaml format consistency with Checklist ──
 
     /// Sprint 18c: .baremetal-init.yaml.example must support all 3 access modes
@@ -6287,104 +6220,8 @@ config:
         assert!(names.contains(&"playbox-3"));
     }
 
-    // ── Sprint 19a: SOCKS5 proxy manifest & external access path verification ──
-
-    /// Sprint 19a: SOCKS5 proxy manifest must be valid K8s Deployment + Service
-    /// in `kube-tunnel` namespace with correct port 1080.
-    #[test]
-    fn test_socks5_manifest_structure() {
-        let manifest = include_str!("../../../gitops/tower/socks5-proxy/manifest.yaml");
-
-        // Must define both Deployment and Service
-        assert!(
-            manifest.contains("kind: Deployment"),
-            "SOCKS5 manifest must contain a Deployment"
-        );
-        assert!(
-            manifest.contains("kind: Service"),
-            "SOCKS5 manifest must contain a Service"
-        );
-
-        // Correct namespace
-        assert!(
-            manifest.contains("namespace: kube-tunnel"),
-            "SOCKS5 must be in kube-tunnel namespace"
-        );
-
-        // SOCKS5 standard port
-        assert!(manifest.contains("1080"), "SOCKS5 must use port 1080");
-
-        // Resource limits defined (production-ready)
-        assert!(
-            manifest.contains("resources:"),
-            "SOCKS5 must define resource requests/limits"
-        );
-        assert!(
-            manifest.contains("limits:"),
-            "SOCKS5 must define resource limits"
-        );
-
-        // ClusterIP (not exposed externally — internal only via kubectl port-forward)
-        assert!(
-            manifest.contains("type: ClusterIP"),
-            "SOCKS5 Service must be ClusterIP (not NodePort/LoadBalancer)"
-        );
-    }
-
-    /// Sprint 19a: SOCKS5 kustomization must reference the manifest.
-    #[test]
-    fn test_socks5_kustomization_references_manifest() {
-        let kustomization = include_str!("../../../gitops/tower/socks5-proxy/kustomization.yaml");
-
-        assert!(
-            kustomization.contains("manifest.yaml"),
-            "Kustomization must reference manifest.yaml"
-        );
-        assert!(
-            kustomization.contains("kind: Kustomization"),
-            "Must be a valid Kustomization resource"
-        );
-    }
-
-    /// Sprint 19a: Tower generator must include socks5-proxy in kube-tunnel namespace
-    /// at sync wave 3 (same as cloudflared-tunnel).
-    #[test]
-    fn test_tower_generator_includes_socks5() {
-        let generator = include_str!("../../../gitops/generators/tower/tower-generator.yaml");
-
-        assert!(
-            generator.contains("socks5-proxy"),
-            "Tower generator must include socks5-proxy app"
-        );
-
-        // Parse YAML to verify namespace and sync wave
-        let docs: Vec<serde_yaml::Value> = vec![serde_yaml::from_str(generator).unwrap()];
-
-        let app_set = &docs[0];
-        let elements = app_set["spec"]["generators"][0]["list"]["elements"]
-            .as_sequence()
-            .unwrap();
-
-        let socks5_entry = elements
-            .iter()
-            .find(|e| e["appName"].as_str() == Some("socks5-proxy"))
-            .expect("socks5-proxy must be in generator elements");
-
-        assert_eq!(
-            socks5_entry["namespace"].as_str().unwrap(),
-            "kube-tunnel",
-            "socks5-proxy must target kube-tunnel namespace"
-        );
-        assert_eq!(
-            socks5_entry["syncWave"].as_str().unwrap(),
-            "3",
-            "socks5-proxy must be sync wave 3"
-        );
-    }
-
     /// Sprint 19a: External access paths must be documented:
     /// 1) LAN direct, 2) Tailscale, 3) CF Tunnel (OIDC required).
-    /// SOCKS5 is for LAN/Tailscale path only.
     #[test]
     fn test_external_access_three_paths_documented() {
         let readme = include_str!("../../../README.md");
@@ -6405,24 +6242,6 @@ config:
         assert!(
             readme.contains("Cloudflare") || readme.contains("cloudflare"),
             "README must document Cloudflare Tunnel access path"
-        );
-    }
-
-    /// Sprint 19a: ops-guide must document SOCKS5 usage with kubectl port-forward.
-    #[test]
-    fn test_ops_guide_socks5_port_forward_usage() {
-        let ops_guide = include_str!("../../../docs/ops-guide.md");
-
-        // Must explain how to use SOCKS5 proxy
-        assert!(
-            ops_guide.contains("SOCKS5") || ops_guide.contains("socks5"),
-            "ops-guide must document SOCKS5 proxy usage"
-        );
-
-        // Must mention port-forward or kubectl as access method
-        assert!(
-            ops_guide.contains("port-forward") || ops_guide.contains("kubectl"),
-            "ops-guide must explain kubectl port-forward for SOCKS5"
         );
     }
 
@@ -7583,105 +7402,6 @@ config:
             spec_errors.is_empty(),
             "Example SDI spec must pass validation. Errors: {:?}",
             spec_errors
-        );
-    }
-
-    // ===== Sprint 34a: SOCKS5 Proxy GitOps Structure Validation =====
-
-    #[test]
-    fn test_sprint34a_socks5_manifest_valid_k8s_resources() {
-        // SOCKS5 proxy manifest must parse as valid YAML with Deployment + Service
-        let content = include_str!("../../../gitops/tower/socks5-proxy/manifest.yaml");
-
-        // Must contain two YAML documents separated by ---
-        let docs: Vec<&str> = content.split("---").collect();
-        assert!(
-            docs.len() >= 2,
-            "manifest.yaml must contain at least 2 YAML documents (Deployment + Service)"
-        );
-
-        // First doc: Deployment
-        let deployment: serde_yaml::Value =
-            serde_yaml::from_str(docs[0]).expect("Deployment YAML must parse");
-        assert_eq!(
-            deployment["kind"].as_str().unwrap(),
-            "Deployment",
-            "First document must be a Deployment"
-        );
-        assert_eq!(
-            deployment["metadata"]["name"].as_str().unwrap(),
-            "socks5-proxy"
-        );
-        assert_eq!(
-            deployment["metadata"]["namespace"].as_str().unwrap(),
-            "kube-tunnel"
-        );
-
-        // Second doc: Service
-        let service: serde_yaml::Value =
-            serde_yaml::from_str(docs[1]).expect("Service YAML must parse");
-        assert_eq!(
-            service["kind"].as_str().unwrap(),
-            "Service",
-            "Second document must be a Service"
-        );
-        assert_eq!(
-            service["metadata"]["name"].as_str().unwrap(),
-            "socks5-proxy"
-        );
-    }
-
-    #[test]
-    fn test_sprint34a_socks5_sync_wave_3_in_tower_generator() {
-        // SOCKS5 proxy must be in sync wave 3 in tower-generator
-        let content = include_str!("../../../gitops/generators/tower/tower-generator.yaml");
-        let gen: serde_yaml::Value =
-            serde_yaml::from_str(content).expect("tower-generator.yaml must parse");
-
-        let elements = gen["spec"]["generators"][0]["list"]["elements"]
-            .as_sequence()
-            .expect("Must have elements list");
-
-        let socks5_entry = elements
-            .iter()
-            .find(|e| e["appName"].as_str() == Some("socks5-proxy"))
-            .expect("socks5-proxy must be in tower-generator elements");
-
-        assert_eq!(
-            socks5_entry["syncWave"].as_str().unwrap(),
-            "3",
-            "socks5-proxy must be in sync wave 3"
-        );
-        assert_eq!(
-            socks5_entry["namespace"].as_str().unwrap(),
-            "kube-tunnel",
-            "socks5-proxy must be in kube-tunnel namespace"
-        );
-    }
-
-    #[test]
-    fn test_sprint34a_socks5_service_port_1080() {
-        // SOCKS5 Service must expose port 1080 as ClusterIP (not NodePort/LB for security)
-        let content = include_str!("../../../gitops/tower/socks5-proxy/manifest.yaml");
-        let docs: Vec<&str> = content.split("---").collect();
-
-        let service: serde_yaml::Value =
-            serde_yaml::from_str(docs[1]).expect("Service YAML must parse");
-
-        // Port 1080
-        let ports = service["spec"]["ports"]
-            .as_sequence()
-            .expect("Service must have ports");
-        let port = ports[0]["port"].as_u64().unwrap();
-        let target_port = ports[0]["targetPort"].as_u64().unwrap();
-        assert_eq!(port, 1080, "Service port must be 1080");
-        assert_eq!(target_port, 1080, "Service targetPort must be 1080");
-
-        // ClusterIP (not NodePort/LoadBalancer — security requirement)
-        let svc_type = service["spec"]["type"].as_str().unwrap();
-        assert_eq!(
-            svc_type, "ClusterIP",
-            "SOCKS5 proxy must be ClusterIP for security (not exposed externally)"
         );
     }
 

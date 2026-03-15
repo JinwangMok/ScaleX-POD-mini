@@ -27,9 +27,6 @@ spec:
           - appName: cloudflared-tunnel
             namespace: kube-tunnel
             syncWave: "3"
-          - appName: socks5-proxy
-            namespace: kube-tunnel
-            syncWave: "3"
   template:
     metadata:
       name: "tower-{{.appName}}"

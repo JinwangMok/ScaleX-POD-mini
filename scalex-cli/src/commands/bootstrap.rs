@@ -51,7 +51,6 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
         eprintln!("[bootstrap] WARNING: {}", w);
     }
 
-    // Step 1: Install ArgoCD on tower cluster
     let tower = k8s_config
         .config
         .clusters
@@ -63,8 +62,42 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
         .clusters_dir
         .join(&tower.cluster_name)
         .join("kubeconfig.yaml");
+
+    let cilium_version = &k8s_config.config.common.cilium_version;
+
+    // Step 1: Pre-install Cilium CNI on ALL clusters (required before ArgoCD — pods need CNI)
+    for cluster in &k8s_config.config.clusters {
+        let kubeconfig = args
+            .clusters_dir
+            .join(&cluster.cluster_name)
+            .join("kubeconfig.yaml");
+        let values_path = format!("gitops/{}/cilium/values.yaml", cluster.cluster_name);
+
+        println!(
+            "[bootstrap] Phase 1: Installing Cilium {} on '{}'...",
+            cilium_version, cluster.cluster_name
+        );
+
+        let cilium_args = generate_cilium_helm_install_args(
+            &kubeconfig.display().to_string(),
+            cilium_version,
+            &values_path,
+        );
+
+        if args.dry_run {
+            println!("[dry-run] helm {}", cilium_args.join(" "));
+        } else {
+            run_helm_install(&cilium_args)?;
+            println!(
+                "[bootstrap] Cilium installed on '{}'",
+                cluster.cluster_name
+            );
+        }
+    }
+
+    // Step 2: Install ArgoCD on tower cluster
     println!(
-        "[bootstrap] Phase 1: Installing ArgoCD on '{}'...",
+        "[bootstrap] Phase 2: Installing ArgoCD on '{}'...",
         tower.cluster_name
     );
 
@@ -80,7 +113,7 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
         println!("[bootstrap] ArgoCD installed on '{}'", tower.cluster_name);
     }
 
-    // Step 2: Register non-management clusters
+    // Step 3: Register non-management clusters in ArgoCD via cluster Secret
     let managed_clusters: Vec<_> = k8s_config
         .config
         .clusters
@@ -90,7 +123,7 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
 
     for cluster in &managed_clusters {
         println!(
-            "[bootstrap] Phase 2: Registering '{}' as remote cluster in ArgoCD...",
+            "[bootstrap] Phase 3: Registering '{}' as remote cluster in ArgoCD...",
             cluster.cluster_name
         );
 
@@ -116,8 +149,8 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
         }
     }
 
-    // Step 3: Apply spread.yaml
-    println!("[bootstrap] Phase 3: Applying GitOps bootstrap (spread.yaml)...");
+    // Step 4: Apply spread.yaml
+    println!("[bootstrap] Phase 4: Applying GitOps bootstrap (spread.yaml)...");
     let spread_args = generate_kubectl_apply_args(
         &tower_kubeconfig.display().to_string(),
         "gitops/bootstrap/spread.yaml",
@@ -137,6 +170,35 @@ pub fn run(args: BootstrapArgs) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// Generate Helm install arguments for Cilium CNI.
+/// Pure function — no I/O, no side effects.
+/// Must be installed BEFORE ArgoCD so pods can schedule (CNI required for node Ready).
+pub fn generate_cilium_helm_install_args(
+    kubeconfig: &str,
+    cilium_version: &str,
+    values_path: &str,
+) -> Vec<String> {
+    vec![
+        "upgrade".to_string(),
+        "--install".to_string(),
+        "cilium".to_string(),
+        "cilium".to_string(),
+        "--repo".to_string(),
+        "https://helm.cilium.io/".to_string(),
+        "--version".to_string(),
+        cilium_version.to_string(),
+        "--namespace".to_string(),
+        "kube-system".to_string(),
+        "--kubeconfig".to_string(),
+        kubeconfig.to_string(),
+        "--values".to_string(),
+        values_path.to_string(),
+        "--wait".to_string(),
+        "--timeout".to_string(),
+        "300s".to_string(),
+    ]
 }
 
 /// Generate Helm install arguments for ArgoCD.
@@ -360,25 +422,82 @@ mod tests {
         );
     }
 
+    // --- generate_cilium_helm_install_args ---
+
+    #[test]
+    fn test_cilium_args_use_cilium_helm_repo() {
+        let args = generate_cilium_helm_install_args("/kube.yaml", "1.17.5", "values.yaml");
+        let repo_idx = args.iter().position(|a| a == "--repo").unwrap();
+        assert_eq!(args[repo_idx + 1], "https://helm.cilium.io/");
+    }
+
+    #[test]
+    fn test_cilium_args_target_kube_system() {
+        let args = generate_cilium_helm_install_args("/kube.yaml", "1.17.5", "values.yaml");
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("--namespace kube-system"),
+            "Cilium must install to kube-system — got: {}",
+            joined
+        );
+    }
+
+    #[test]
+    fn test_cilium_args_use_values_file() {
+        let args = generate_cilium_helm_install_args(
+            "/kube.yaml",
+            "1.17.5",
+            "gitops/tower/cilium/values.yaml",
+        );
+        let val_idx = args.iter().position(|a| a == "--values").unwrap();
+        assert_eq!(args[val_idx + 1], "gitops/tower/cilium/values.yaml");
+    }
+
+    #[test]
+    fn test_cilium_args_idempotent() {
+        let args = generate_cilium_helm_install_args("/kube.yaml", "1.17.5", "v.yaml");
+        assert_eq!(args[0], "upgrade");
+        assert_eq!(args[1], "--install");
+    }
+
+    #[test]
+    fn test_cilium_args_wait_for_readiness() {
+        let args = generate_cilium_helm_install_args("/kube.yaml", "1.17.5", "v.yaml");
+        assert!(
+            args.contains(&"--wait".to_string()),
+            "Must wait for Cilium to be ready before proceeding"
+        );
+    }
+
     // --- Bootstrap pipeline integration ---
 
     #[test]
-    fn test_bootstrap_pipeline_order_helm_then_register_then_apply() {
-        // Verify the 3-phase pipeline produces correct commands in order
+    fn test_bootstrap_pipeline_order_cilium_then_argocd_then_register_then_apply() {
+        // Verify the 4-phase pipeline produces correct commands in order
+        let cilium = generate_cilium_helm_install_args(
+            "/tower/kube.yaml",
+            "1.17.5",
+            "gitops/tower/cilium/values.yaml",
+        );
         let helm = generate_argocd_helm_install_args("/tower/kube.yaml", "8.1.1");
         let register =
             generate_argocd_cluster_add_args("sandbox", "/tower/kube.yaml", "/sandbox/kube.yaml");
-        let apply = generate_kubectl_apply_args("/tower/kube.yaml", "gitops/bootstrap/spread.yaml");
+        let apply =
+            generate_kubectl_apply_args("/tower/kube.yaml", "gitops/bootstrap/spread.yaml");
 
-        // Phase 1: Helm installs ArgoCD
+        // Phase 1: Cilium CNI (must be first — pods need CNI to schedule)
+        assert!(cilium[0] == "upgrade" && cilium[1] == "--install");
+        assert!(cilium.contains(&"cilium".to_string()));
+
+        // Phase 2: Helm installs ArgoCD
         assert!(helm[0] == "upgrade" && helm[1] == "--install");
         assert!(helm.contains(&"argocd".to_string()));
 
-        // Phase 2: Register sandbox
+        // Phase 3: Register sandbox
         assert!(register[0] == "cluster" && register[1] == "add");
         assert!(register.contains(&"sandbox".to_string()));
 
-        // Phase 3: Apply spread.yaml
+        // Phase 4: Apply spread.yaml
         assert!(apply[0] == "apply");
         assert!(apply.contains(&"gitops/bootstrap/spread.yaml".to_string()));
     }
@@ -386,11 +505,16 @@ mod tests {
     #[test]
     fn test_bootstrap_all_commands_target_tower_kubeconfig() {
         let tower_kc = "/clusters/tower/kubeconfig.yaml";
+        let cilium = generate_cilium_helm_install_args(tower_kc, "1.17.5", "values.yaml");
         let helm = generate_argocd_helm_install_args(tower_kc, "8.1.1");
         let register = generate_argocd_cluster_add_args("sandbox", tower_kc, "/sandbox/kube.yaml");
         let apply = generate_kubectl_apply_args(tower_kc, "spread.yaml");
 
-        // All three phases must reference tower kubeconfig
+        // All phases must reference tower kubeconfig
+        assert!(
+            cilium.contains(&tower_kc.to_string()),
+            "Cilium must target tower"
+        );
         assert!(
             helm.contains(&tower_kc.to_string()),
             "Helm must target tower"
