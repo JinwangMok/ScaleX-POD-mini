@@ -826,4 +826,178 @@ mod tests {
             );
         }
     }
+
+    // ===== README ↔ Planner Consistency Tests =====
+
+    /// Verify management cluster budget totals match README documented values.
+    /// README VM Budget table: Management = 2,450mc CPU / 3,904 MB RAM / 11,136 MB disk
+    #[test]
+    fn test_readme_management_budget_totals() {
+        let est = estimate_cluster_resources(&make_management_cluster());
+        assert_eq!(est.total.cpu_millicores, 2450, "management CPU mc");
+        assert_eq!(est.total.memory_mb, 3904, "management memory MB");
+        assert_eq!(est.total.disk_mb, 11136, "management disk MB");
+    }
+
+    /// Verify workload cluster budget totals match README documented values.
+    /// README VM Budget table: Workload = 1,450mc CPU / 2,368 MB RAM / 8,064 MB disk
+    #[test]
+    fn test_readme_workload_budget_totals() {
+        let est = estimate_cluster_resources(&make_workload_cluster());
+        assert_eq!(est.total.cpu_millicores, 1450, "workload CPU mc");
+        assert_eq!(est.total.memory_mb, 2368, "workload memory MB");
+        assert_eq!(est.total.disk_mb, 8064, "workload disk MB");
+    }
+
+    /// Verify management VM specs after conversion: 3 vCPU / 4 GB / 20 GB disk.
+    #[test]
+    fn test_readme_management_vm_specs() {
+        let estimates = vec![estimate_cluster_resources(&make_management_cluster())];
+        let hosts = vec![make_host("h0", 64, 131072, 0)];
+        let plan = place_vms(&estimates, &hosts, &PlacementTier::Minimal, 100);
+        let vm = &plan.pools[0].vms[0];
+        assert_eq!(vm.cpu, 3, "Tower VM vCPU (README: 3C)");
+        assert_eq!(vm.mem_gb, 4, "Tower VM RAM (README: 4G)");
+        assert_eq!(vm.disk_gb, 20, "Tower VM disk (README: 20G)");
+    }
+
+    /// Verify workload VM specs after conversion: 2 vCPU / 3 GB / 20 GB disk.
+    #[test]
+    fn test_readme_workload_vm_specs() {
+        let estimates = vec![estimate_cluster_resources(&make_workload_cluster())];
+        let hosts = vec![make_host("h0", 64, 131072, 0)];
+        let plan = place_vms(&estimates, &hosts, &PlacementTier::Minimal, 100);
+        let vm = &plan.pools[0].vms[0];
+        assert_eq!(vm.cpu, 2, "Sandbox VM vCPU (README: 2C)");
+        assert_eq!(vm.mem_gb, 3, "Sandbox VM RAM (README: 3G)");
+        assert_eq!(vm.disk_gb, 20, "Sandbox VM disk (README: 20G)");
+    }
+
+    /// README Minimal: Tower-only on 1 node (4+ cores, 8+ GB).
+    /// Planner must place Tower VM (3C/4G) without overcommit warnings.
+    #[test]
+    fn test_readme_minimal_placement_on_minimum_host() {
+        let estimates = vec![estimate_cluster_resources(&make_management_cluster())];
+        let hosts = vec![make_host("h0", 4, 8192, 0)];
+        let plan = place_vms(&estimates, &hosts, &PlacementTier::Minimal, 100);
+        assert!(
+            plan.warnings.is_empty(),
+            "Minimal on 4C/8G must not warn: {:?}",
+            plan.warnings
+        );
+        assert_eq!(plan.pools[0].vms[0].host, "h0");
+    }
+
+    /// README Basic: Tower + Sandbox on 1 node (8+ cores, 16+ GB).
+    /// Planner must place both VMs (3C/4G + 2C/3G = 5C/7G) without overcommit.
+    #[test]
+    fn test_readme_basic_placement_on_minimum_host() {
+        let estimates = vec![
+            estimate_cluster_resources(&make_management_cluster()),
+            estimate_cluster_resources(&make_workload_cluster()),
+        ];
+        let hosts = vec![make_host("h0", 8, 16384, 0)];
+        let plan = place_vms(&estimates, &hosts, &PlacementTier::Minimal, 100);
+        assert!(
+            plan.warnings.is_empty(),
+            "Basic on 8C/16G must not warn: {:?}",
+            plan.warnings
+        );
+        let total_vms: usize = plan.pools.iter().map(|p| p.vms.len()).sum();
+        assert_eq!(total_vms, 2);
+    }
+
+    /// README Standard: 2+ nodes, each 8+ cores / 16+ GB.
+    /// Planner must place all VMs (Tower 1CP+2W + Sandbox 1CP+2W) without overcommit.
+    #[test]
+    fn test_readme_standard_placement_on_minimum_hosts() {
+        let estimates = vec![
+            estimate_cluster_resources(&make_management_cluster()),
+            estimate_cluster_resources(&make_workload_cluster()),
+        ];
+        let hosts = vec![
+            make_host("h0", 8, 16384, 0),
+            make_host("h1", 8, 16384, 0),
+        ];
+        let plan = place_vms(&estimates, &hosts, &PlacementTier::Standard, 100);
+        assert!(
+            plan.warnings.is_empty(),
+            "Standard on 2×8C/16G must not warn: {:?}",
+            plan.warnings
+        );
+    }
+
+    /// README HA: 4+ nodes, each 8+ cores / 16+ GB.
+    /// Planner must place all VMs (Tower 3CP+2W + Sandbox 3CP+2W = 21C/29G) without overcommit.
+    #[test]
+    fn test_readme_ha_placement_on_minimum_hosts() {
+        let estimates = vec![
+            estimate_cluster_resources(&make_management_cluster()),
+            estimate_cluster_resources(&make_workload_cluster()),
+        ];
+        let hosts = vec![
+            make_host("h0", 8, 16384, 0),
+            make_host("h1", 8, 16384, 0),
+            make_host("h2", 8, 16384, 0),
+            make_host("h3", 8, 16384, 0),
+        ];
+        let plan = place_vms(&estimates, &hosts, &PlacementTier::Ha, 100);
+        assert!(
+            plan.warnings.is_empty(),
+            "HA on 4×8C/16G must not warn: {:?}",
+            plan.warnings
+        );
+    }
+
+    /// 3×8C/16G is NOT enough for HA (need 21 vCPU, available 18 after 15% reserve).
+    #[test]
+    fn test_readme_ha_insufficient_on_three_8c_hosts() {
+        let estimates = vec![
+            estimate_cluster_resources(&make_management_cluster()),
+            estimate_cluster_resources(&make_workload_cluster()),
+        ];
+        let hosts = vec![
+            make_host("h0", 8, 16384, 0),
+            make_host("h1", 8, 16384, 0),
+            make_host("h2", 8, 16384, 0),
+        ];
+        let plan = place_vms(&estimates, &hosts, &PlacementTier::Ha, 100);
+        assert!(
+            !plan.warnings.is_empty(),
+            "HA on 3×8C/16G must produce overcommit warnings"
+        );
+    }
+
+    /// Standard worker VM specs: management worker = 2C/2G, workload worker = 1C/2G.
+    #[test]
+    fn test_readme_standard_worker_vm_specs() {
+        let estimates = vec![
+            estimate_cluster_resources(&make_management_cluster()),
+            estimate_cluster_resources(&make_workload_cluster()),
+        ];
+        let hosts = vec![make_host("h0", 64, 131072, 0)];
+        let plan = place_vms(&estimates, &hosts, &PlacementTier::Standard, 100);
+
+        let tower_pool = plan.pools.iter().find(|p| p.pool_name == "tower").unwrap();
+        let tower_worker = tower_pool
+            .vms
+            .iter()
+            .find(|v| v.roles.contains(&"worker".to_string()))
+            .unwrap();
+        assert_eq!(tower_worker.cpu, 2, "Tower worker vCPU");
+        assert_eq!(tower_worker.mem_gb, 2, "Tower worker RAM GB");
+
+        let sandbox_pool = plan
+            .pools
+            .iter()
+            .find(|p| p.pool_name == "sandbox")
+            .unwrap();
+        let sandbox_worker = sandbox_pool
+            .vms
+            .iter()
+            .find(|v| v.roles.contains(&"worker".to_string()))
+            .unwrap();
+        assert_eq!(sandbox_worker.cpu, 1, "Sandbox worker vCPU");
+        assert_eq!(sandbox_worker.mem_gb, 2, "Sandbox worker RAM GB");
+    }
 }

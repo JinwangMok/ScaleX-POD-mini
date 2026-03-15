@@ -12,6 +12,9 @@ spec:
           - appName: cilium
             namespace: kube-system
             syncWave: "1"
+          - appName: local-path-provisioner
+            namespace: local-path-storage
+            syncWave: "1"
           - appName: cluster-config
             namespace: kube-system
             syncWave: "0"

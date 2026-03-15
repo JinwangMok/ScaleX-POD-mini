@@ -68,7 +68,7 @@ spread.yaml (루트 Application)
 | 0 | ArgoCD, cluster-config |
 | 1 | Cilium, cert-manager, Kyverno, local-path-provisioner |
 | 2 | cilium-resources, cert-issuers, kyverno-policies |
-| 3 | cloudflared-tunnel, socks5-proxy, keycloak |
+| 3 | cloudflared-tunnel, keycloak |
 | 4 | rbac |
 
 ---
@@ -139,5 +139,5 @@ spread.yaml (root Application)
 | 0 | ArgoCD, cluster-config |
 | 1 | Cilium, cert-manager, Kyverno, local-path-provisioner |
 | 2 | cilium-resources, cert-issuers, kyverno-policies |
-| 3 | cloudflared-tunnel, socks5-proxy, keycloak |
+| 3 | cloudflared-tunnel, keycloak |
 | 4 | rbac |

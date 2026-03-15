@@ -4063,9 +4063,11 @@ spec:
 
     /// CL-6 (G-5): README referenced files must exist.
     /// Parses README.md for file path references and verifies they exist on disk.
+    /// Detailed CLI commands live in docs/CLI-REFERENCE.md.
     #[test]
     fn test_readme_referenced_files_exist() {
         let readme = include_str!("../../../README.md");
+        let cli_ref = include_str!("../../../docs/CLI-REFERENCE.md");
 
         // Key files referenced in README that must exist
         let must_exist_files = [
@@ -4098,7 +4100,7 @@ spec:
             );
         }
 
-        // Verify README mentions key scalex commands
+        // Verify README or CLI-REFERENCE.md mentions key scalex commands
         let required_commands = [
             "scalex facts",
             "scalex sdi init",
@@ -4111,8 +4113,8 @@ spec:
         ];
         for cmd in &required_commands {
             assert!(
-                readme.contains(cmd),
-                "README must document command '{}'",
+                readme.contains(cmd) || cli_ref.contains(cmd),
+                "README or CLI-REFERENCE.md must document command '{}'",
                 cmd
             );
         }
@@ -5005,12 +5007,13 @@ config:
     // Sprint 13e: Documentation Accuracy Tests
     // =========================================================================
 
-    /// G-11: Verify README.md CLI commands reference real CLI structure.
+    /// G-11: Verify CLI-REFERENCE.md documents all real CLI commands.
+    /// Detailed command documentation lives in docs/CLI-REFERENCE.md.
     #[test]
     fn test_checklist_readme_cli_commands_exist() {
-        let readme = include_str!("../../../README.md");
+        let cli_ref = include_str!("../../../docs/CLI-REFERENCE.md");
 
-        // All CLI commands mentioned in README must be real
+        // All CLI commands must be documented in CLI-REFERENCE.md
         let required_commands = [
             "scalex facts",
             "scalex sdi init",
@@ -5029,17 +5032,18 @@ config:
 
         for cmd in &required_commands {
             assert!(
-                readme.contains(cmd),
-                "README.md must document command: '{}'",
+                cli_ref.contains(cmd),
+                "CLI-REFERENCE.md must document command: '{}'",
                 cmd
             );
         }
     }
 
-    /// G-11: Verify README installation guide references correct step numbers.
+    /// G-11: Verify SETUP-GUIDE.md installation guide references correct step numbers.
+    /// Detailed installation steps live in docs/SETUP-GUIDE.md.
     #[test]
     fn test_checklist_readme_installation_steps() {
-        let readme = include_str!("../../../README.md");
+        let setup_guide = include_str!("../../../docs/SETUP-GUIDE.md");
 
         // Must have all installation steps
         let steps = [
@@ -5049,8 +5053,8 @@ config:
 
         for step in &steps {
             assert!(
-                readme.contains(step),
-                "README.md installation guide must contain '{}'",
+                setup_guide.contains(step),
+                "SETUP-GUIDE.md installation guide must contain '{}'",
                 step
             );
         }
@@ -5097,10 +5101,11 @@ config:
 
     // ── A-7: README Installation Guide consistency ──
 
-    /// A-7: Verify all .example files referenced in README actually exist on disk.
+    /// A-7: Verify all .example files referenced in SETUP-GUIDE.md actually exist on disk.
+    /// Detailed setup instructions (including cp commands) live in docs/SETUP-GUIDE.md.
     #[test]
     fn test_readme_example_files_exist() {
-        let readme = include_str!("../../../README.md");
+        let setup_guide = include_str!("../../../docs/SETUP-GUIDE.md");
 
         let example_files = [
             "credentials/.baremetal-init.yaml.example",
@@ -5110,11 +5115,11 @@ config:
         ];
 
         for ef in &example_files {
-            // README must reference the cp command for each example
+            // SETUP-GUIDE.md must reference the cp command for each example
             let cp_fragment = format!("cp {}", ef);
             assert!(
-                readme.contains(&cp_fragment),
-                "README must contain 'cp {}' — users need this to create their config",
+                setup_guide.contains(&cp_fragment),
+                "SETUP-GUIDE.md must contain 'cp {}' — users need this to create their config",
                 ef
             );
 
@@ -5124,8 +5129,8 @@ config:
 
         // Verify the step references the validation command
         assert!(
-            readme.contains("scalex get config-files"),
-            "README Step 2 must end with config validation command"
+            setup_guide.contains("scalex get config-files"),
+            "SETUP-GUIDE.md Step 2 must end with config validation command"
         );
     }
 
@@ -5173,13 +5178,14 @@ config:
         );
     }
 
-    /// A-7: Verify README prerequisite tools match code's prerequisites_for_command().
+    /// A-7: Verify SETUP-GUIDE.md prerequisite tools match code's prerequisites_for_command().
+    /// Detailed prerequisite installation steps live in docs/SETUP-GUIDE.md.
     #[test]
     fn test_readme_prerequisites_match_code() {
-        let readme = include_str!("../../../README.md");
+        let setup_guide = include_str!("../../../docs/SETUP-GUIDE.md");
 
         // Step 0 must mention all tools required by any command.
-        // Map binary names to their package/mention names in README
+        // Map binary names to their package/mention names in SETUP-GUIDE.md
         // (e.g., `ansible-playbook` is installed via `ansible` package)
         let all_tools: std::collections::HashSet<&str> =
             ["sdi-init", "cluster-init", "bootstrap", "facts"]
@@ -5193,20 +5199,21 @@ config:
                 other => other,
             };
             assert!(
-                readme.contains(readme_name),
-                "README Step 0 must mention prerequisite '{}' (for tool '{}') — required by code",
+                setup_guide.contains(readme_name),
+                "SETUP-GUIDE.md Step 0 must mention prerequisite '{}' (for tool '{}') — required by code",
                 readme_name,
                 tool
             );
         }
     }
 
-    /// A-7: Verify README generated output paths match workflow dependencies.
+    /// A-7: Verify SETUP-GUIDE.md generated output paths match workflow dependencies.
+    /// Detailed workflow paths live in docs/SETUP-GUIDE.md.
     #[test]
     fn test_readme_generated_paths_consistent() {
-        let readme = include_str!("../../../README.md");
+        let setup_guide = include_str!("../../../docs/SETUP-GUIDE.md");
 
-        // These paths are referenced in the README and must be consistent with workflow deps
+        // These paths are referenced in SETUP-GUIDE.md and must be consistent with workflow deps
         let generated_paths = [
             ("_generated/facts/", "Step 3 output"),
             ("_generated/sdi/", "Step 4 output"),
@@ -5215,8 +5222,8 @@ config:
 
         for (path, step) in &generated_paths {
             assert!(
-                readme.contains(path),
-                "README must reference '{}' ({}) — produced by the pipeline",
+                setup_guide.contains(path),
+                "SETUP-GUIDE.md must reference '{}' ({}) — produced by the pipeline",
                 path,
                 step
             );
@@ -5224,12 +5231,12 @@ config:
 
         // kubeconfig path used in Steps 5-8 must be consistent
         assert!(
-            readme.contains("_generated/clusters/tower/kubeconfig.yaml"),
-            "README must reference tower kubeconfig path consistently"
+            setup_guide.contains("_generated/clusters/tower/kubeconfig.yaml"),
+            "SETUP-GUIDE.md must reference tower kubeconfig path consistently"
         );
         assert!(
-            readme.contains("_generated/clusters/sandbox/kubeconfig.yaml"),
-            "README must reference sandbox kubeconfig path consistently"
+            setup_guide.contains("_generated/clusters/sandbox/kubeconfig.yaml"),
+            "SETUP-GUIDE.md must reference sandbox kubeconfig path consistently"
         );
     }
 
@@ -5904,21 +5911,22 @@ config:
 
     // ── Sprint 17d: CF Credentials Pre-Bootstrap Check (C-10) ──
 
-    /// C-10: README installation guide must warn about CF credentials before bootstrap.
+    /// C-10: SETUP-GUIDE.md installation guide must warn about CF credentials before bootstrap.
+    /// Detailed setup steps live in docs/SETUP-GUIDE.md.
     #[test]
     fn test_checklist_cf_credentials_pre_bootstrap_warning() {
-        let readme = include_str!("../../../README.md");
+        let setup_guide = include_str!("../../../docs/SETUP-GUIDE.md");
 
-        // README Step 6/7 must mention cloudflare-tunnel.json requirement
+        // SETUP-GUIDE.md Step 6/7 must mention cloudflare-tunnel.json requirement
         assert!(
-            readme.contains("cloudflare-tunnel.json"),
-            "README must reference cloudflare-tunnel.json in bootstrap prerequisites"
+            setup_guide.contains("cloudflare-tunnel.json"),
+            "SETUP-GUIDE.md must reference cloudflare-tunnel.json in bootstrap prerequisites"
         );
 
         // Must warn about CrashLoop if credentials missing
         assert!(
-            readme.contains("CrashLoop") || readme.contains("기동 실패"),
-            "README must warn about cloudflared CrashLoop if credentials are missing"
+            setup_guide.contains("CrashLoop") || setup_guide.contains("기동 실패"),
+            "SETUP-GUIDE.md must warn about cloudflared CrashLoop if credentials are missing"
         );
     }
 
@@ -6112,11 +6120,12 @@ config:
 
     // ── Sprint 18b: CF Tunnel external kubectl documentation verification ──
 
-    /// Sprint 18b: README must explicitly warn that CF Tunnel kubectl requires
-    /// Keycloak OIDC to be configured first.
+    /// Sprint 18b: README or docs must explicitly warn that CF Tunnel kubectl requires
+    /// Keycloak OIDC to be configured first. TLS termination details live in docs/ops-guide.md.
     #[test]
     fn test_readme_cf_tunnel_requires_keycloak_warning() {
         let readme = include_str!("../../../README.md");
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
 
         // README must mention that CF Tunnel external access requires OIDC/Keycloak
         let has_oidc_requirement =
@@ -6127,10 +6136,11 @@ config:
             "README must mention that CF Tunnel external kubectl requires Keycloak OIDC"
         );
 
-        // README must mention TLS termination or client cert limitation
+        // README or ops-guide.md must mention TLS termination or client cert limitation
         assert!(
-            readme.contains("TLS") || readme.contains("client cert") || readme.contains("인증서"),
-            "README must mention CF Tunnel TLS termination or client cert limitation"
+            readme.contains("TLS") || readme.contains("client cert") || readme.contains("인증서")
+                || ops_guide.contains("TLS") || ops_guide.contains("client cert") || ops_guide.contains("인증서"),
+            "README or ops-guide.md must mention CF Tunnel TLS termination or client cert limitation"
         );
     }
 
@@ -6633,6 +6643,7 @@ config:
             "status",
             "kernel-tune",
             "validate",
+            "plan",
         ];
 
         let mut unknown_commands = Vec::new();
@@ -6826,10 +6837,11 @@ config:
         assert_eq!(state[1].nodes[1].disk_gb, 100);
     }
 
-    /// Sprint 21e: README Installation Guide must have all 9 steps (0, 0.5, 1-8).
+    /// Sprint 21e: SETUP-GUIDE.md Installation Guide must have all 9 steps (0, 0.5, 1-8).
+    /// Detailed installation steps live in docs/SETUP-GUIDE.md.
     #[test]
     fn test_readme_installation_guide_all_steps() {
-        let readme = include_str!("../../../README.md");
+        let setup_guide = include_str!("../../../docs/SETUP-GUIDE.md");
 
         let required_steps = [
             "Step 0:",
@@ -6847,8 +6859,8 @@ config:
 
         for step in &required_steps {
             assert!(
-                readme.contains(step),
-                "README Installation Guide missing '{}'",
+                setup_guide.contains(step),
+                "SETUP-GUIDE.md Installation Guide missing '{}'",
                 step
             );
         }
@@ -7408,46 +7420,47 @@ config:
     // ===== Sprint 34b: External Access Documentation Consistency =====
 
     #[test]
-    fn test_sprint34b_readme_external_access_covers_4_methods() {
-        // README must document all 4 external access methods
-        let content = include_str!("../../../README.md");
+    fn test_sprint34b_readme_external_access_covers_3_methods() {
+        // README must document all 3 external access methods (SOCKS5 removed).
+        // TLS termination details live in docs/ops-guide.md.
+        let readme = include_str!("../../../README.md");
+        let ops_guide = include_str!("../../../docs/ops-guide.md");
 
         let methods = [
             ("LAN", "LAN"),
             ("Tailscale", "Tailscale"),
             ("Cloudflare Tunnel", "Cloudflare Tunnel"),
-            ("SOCKS5", "SOCKS5"),
         ];
         for (label, keyword) in &methods {
             assert!(
-                content.contains(keyword),
-                "README must mention {} access method (keyword: '{}')",
+                readme.contains(keyword) || ops_guide.contains(keyword),
+                "README or ops-guide.md must mention {} access method (keyword: '{}')",
                 label,
                 keyword
             );
         }
 
-        // Must warn about CF Tunnel TLS termination (critical security note)
+        // README or ops-guide.md must warn about CF Tunnel TLS termination
         assert!(
-            content.contains("TLS") && content.contains("terminate"),
-            "README must warn about CF Tunnel TLS termination"
+            (readme.contains("TLS") && readme.contains("terminate"))
+                || (ops_guide.contains("TLS") && ops_guide.contains("terminate")),
+            "README or ops-guide.md must warn about CF Tunnel TLS termination"
         );
 
-        // Must mention OIDC as the only CF Tunnel auth method
+        // README or ops-guide.md must mention OIDC as the only CF Tunnel auth method
         assert!(
-            content.contains("OIDC"),
-            "README must mention OIDC for CF Tunnel kubectl"
+            readme.contains("OIDC") || ops_guide.contains("OIDC"),
+            "README or ops-guide.md must mention OIDC for CF Tunnel kubectl"
         );
     }
 
     #[test]
     fn test_sprint34b_ops_guide_has_access_sections() {
-        // ops-guide.md must have Tailscale, SOCKS5, LAN, and CF Tunnel sections
+        // ops-guide.md must have Tailscale, LAN, and CF Tunnel sections (SOCKS5 removed)
         let content = include_str!("../../../docs/ops-guide.md");
 
         let required_sections = [
             "Tailscale",
-            "SOCKS5",
             "LAN",
             "Cloudflare Tunnel",
             "Keycloak",
@@ -7465,39 +7478,44 @@ config:
             content.contains("Pre-OIDC") || content.contains("pre-OIDC"),
             "ops-guide.md must mention Pre-OIDC access path"
         );
-
-        // Must have port 1080 for SOCKS5
-        assert!(
-            content.contains("1080"),
-            "ops-guide.md must mention SOCKS5 port 1080"
-        );
     }
 
     // ===== Sprint 34c: README Installation Guide Completeness Audit =====
 
     #[test]
     fn test_sprint34c_readme_references_existing_files() {
-        // All files/dirs referenced in README Installation Guide must exist in repo
+        // Files referenced in README (doc links) and SETUP-GUIDE.md (inline file refs) must exist.
         let readme = include_str!("../../../README.md");
+        let setup_guide = include_str!("../../../docs/SETUP-GUIDE.md");
 
-        // Config files referenced in Step 2
-        let referenced_files = [
-            "credentials/.baremetal-init.yaml.example",
-            "credentials/.env.example",
-            "config/sdi-specs.yaml.example",
-            "config/k8s-clusters.yaml.example",
-            "gitops/bootstrap/spread.yaml",
+        // Doc links referenced in README
+        let readme_doc_links = [
             "docs/ops-guide.md",
             "docs/SETUP-GUIDE.md",
             "docs/TROUBLESHOOTING.md",
             "docs/ARCHITECTURE.md",
             "docs/CONTRIBUTING.md",
         ];
-
-        for file in &referenced_files {
+        for file in &readme_doc_links {
             assert!(
                 readme.contains(file),
-                "README must reference '{}' in Installation Guide or docs",
+                "README must reference '{}' in docs section",
+                file
+            );
+        }
+
+        // Inline file references in SETUP-GUIDE.md Installation Guide
+        let setup_file_refs = [
+            "credentials/.baremetal-init.yaml.example",
+            "credentials/.env.example",
+            "config/sdi-specs.yaml.example",
+            "config/k8s-clusters.yaml.example",
+            "gitops/bootstrap/spread.yaml",
+        ];
+        for file in &setup_file_refs {
+            assert!(
+                setup_guide.contains(file),
+                "SETUP-GUIDE.md must reference '{}' in Installation Guide",
                 file
             );
         }
@@ -7513,8 +7531,9 @@ config:
 
     #[test]
     fn test_sprint34c_readme_cli_commands_match_subcommands() {
-        // README CLI Reference must list all 8 subcommands from main.rs
-        let readme = include_str!("../../../README.md");
+        // CLI-REFERENCE.md must list all 8 subcommands from main.rs.
+        // Detailed CLI documentation lives in docs/CLI-REFERENCE.md.
+        let cli_ref = include_str!("../../../docs/CLI-REFERENCE.md");
 
         // These are the 8 subcommands defined in main.rs Commands enum
         let subcommands = [
@@ -7531,19 +7550,19 @@ config:
         for cmd in &subcommands {
             let scalex_cmd = format!("scalex {}", cmd);
             assert!(
-                readme.contains(&scalex_cmd),
-                "README must document 'scalex {}' command",
+                cli_ref.contains(&scalex_cmd),
+                "CLI-REFERENCE.md must document 'scalex {}' command",
                 cmd
             );
         }
 
-        // README must also document the get subcommands
+        // CLI-REFERENCE.md must also document the get subcommands
         let get_subcommands = ["baremetals", "sdi-pools", "clusters", "config-files"];
         for sub in &get_subcommands {
             let get_cmd = format!("scalex get {}", sub);
             assert!(
-                readme.contains(&get_cmd),
-                "README must document '{}' query command",
+                cli_ref.contains(&get_cmd),
+                "CLI-REFERENCE.md must document '{}' query command",
                 get_cmd
             );
         }
@@ -8695,5 +8714,263 @@ config:
             .map(|n| n.cpu)
             .sum();
         assert_eq!(total_cpu, 4, "Single-node total CPU must be 2+2=4");
+    }
+
+    // ===== README Minimum Bare-Metal Requirements Verification =====
+
+    /// Verify that the "Minimal" config (tower-only on 1 node) passes resource
+    /// validation against a host with README minimum specs (4 CPU, 8 GB).
+    /// Tower VM: 3C/4G/20G (derived from resource_planner component budgets).
+    #[test]
+    fn test_readme_minimal_spec_passes_on_minimum_host() {
+        use crate::models::baremetal::*;
+        // Minimal: Tower(3C/4G) on 1 node → host needs 4+ CPU, 8+ GB
+        let yaml = r#"
+resource_pool:
+  name: "test-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "https://example.com/image.img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id_ed25519.pub"
+  packages: []
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      purpose: "management"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 3
+          mem_gb: 4
+          disk_gb: 20
+          roles: [control-plane, worker]
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(yaml).unwrap();
+
+        // Host with README minimum: 4 cores, 8 GB
+        let facts = vec![NodeFacts {
+            node_name: "playbox-0".to_string(),
+            timestamp: String::new(),
+            cpu: CpuInfo {
+                model: "test".to_string(),
+                cores: 4,
+                threads: 8,
+                architecture: "x86_64".to_string(),
+            },
+            memory: MemoryInfo {
+                total_mb: 8192,
+                available_mb: 6000,
+            },
+            disks: vec![],
+            nics: vec![],
+            gpus: vec![],
+            iommu_groups: vec![],
+            kernel: KernelInfo {
+                version: "6.8.0".to_string(),
+                params: std::collections::HashMap::new(),
+            },
+            bridges: vec![],
+            bonds: vec![],
+            pcie: vec![],
+        }];
+
+        let errors = validate_sdi_resource_allocation(&spec, &facts);
+        assert!(
+            errors.is_empty(),
+            "Minimal tower config (3C/4G) must pass on 4-core/8GB host: {:?}",
+            errors
+        );
+    }
+
+    /// Verify that "Basic" config (Tower + Sandbox CP on 1 node) fits on 8C/16G host.
+    /// Tower VM: 3C/4G, Sandbox VM: 2C/3G (both from resource_planner).
+    #[test]
+    fn test_readme_basic_spec_passes_on_minimum_host() {
+        use crate::models::baremetal::*;
+        let yaml = r#"
+resource_pool:
+  name: "test-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "https://example.com/image.img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id_ed25519.pub"
+  packages: []
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      purpose: "management"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 3
+          mem_gb: 4
+          disk_gb: 20
+          roles: [control-plane, worker]
+    - pool_name: "sandbox"
+      purpose: "workload"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "sandbox-cp-0"
+          ip: "192.168.88.110"
+          cpu: 2
+          mem_gb: 3
+          disk_gb: 20
+          host: "playbox-0"
+          roles: [control-plane, etcd]
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(yaml).unwrap();
+
+        // Host with README Basic minimum: 8 cores, 16 GB
+        let facts = vec![NodeFacts {
+            node_name: "playbox-0".to_string(),
+            timestamp: String::new(),
+            cpu: CpuInfo {
+                model: "test".to_string(),
+                cores: 8,
+                threads: 16,
+                architecture: "x86_64".to_string(),
+            },
+            memory: MemoryInfo {
+                total_mb: 16384,
+                available_mb: 12000,
+            },
+            disks: vec![],
+            nics: vec![],
+            gpus: vec![],
+            iommu_groups: vec![],
+            kernel: KernelInfo {
+                version: "6.8.0".to_string(),
+                params: std::collections::HashMap::new(),
+            },
+            bridges: vec![],
+            bonds: vec![],
+            pcie: vec![],
+        }];
+
+        let errors = validate_sdi_resource_allocation(&spec, &facts);
+        assert!(
+            errors.is_empty(),
+            "Basic config (3C/4G + 2C/3G = 5C/7G) must pass on 8-core/16GB host: {:?}",
+            errors
+        );
+    }
+
+    /// Verify that Basic config on an undersized host (4C/8G) triggers validation error.
+    /// Tower(3C/4G) + Sandbox(2C/3G) = 5C/7G > 4C available → CPU exceeds.
+    #[test]
+    fn test_readme_basic_spec_fails_on_undersized_host() {
+        use crate::models::baremetal::*;
+        let yaml = r#"
+resource_pool:
+  name: "test-pool"
+  network:
+    management_bridge: "br0"
+    management_cidr: "192.168.88.0/24"
+    gateway: "192.168.88.1"
+    nameservers: ["8.8.8.8"]
+os_image:
+  source: "https://example.com/image.img"
+  format: "qcow2"
+cloud_init:
+  ssh_authorized_keys_file: "~/.ssh/id_ed25519.pub"
+  packages: []
+spec:
+  sdi_pools:
+    - pool_name: "tower"
+      purpose: "management"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "tower-cp-0"
+          ip: "192.168.88.100"
+          cpu: 3
+          mem_gb: 4
+          disk_gb: 20
+          roles: [control-plane, worker]
+    - pool_name: "sandbox"
+      purpose: "workload"
+      placement:
+        hosts: [playbox-0]
+      node_specs:
+        - node_name: "sandbox-cp-0"
+          ip: "192.168.88.110"
+          cpu: 2
+          mem_gb: 3
+          disk_gb: 20
+          host: "playbox-0"
+          roles: [control-plane, etcd]
+"#;
+        let spec: SdiSpec = serde_yaml::from_str(yaml).unwrap();
+
+        // Undersized host: only 4 cores, 8 GB — but needs 5C/7G
+        let facts = vec![NodeFacts {
+            node_name: "playbox-0".to_string(),
+            timestamp: String::new(),
+            cpu: CpuInfo {
+                model: "test".to_string(),
+                cores: 4,
+                threads: 8,
+                architecture: "x86_64".to_string(),
+            },
+            memory: MemoryInfo {
+                total_mb: 8192,
+                available_mb: 6000,
+            },
+            disks: vec![],
+            nics: vec![],
+            gpus: vec![],
+            iommu_groups: vec![],
+            kernel: KernelInfo {
+                version: "6.8.0".to_string(),
+                params: std::collections::HashMap::new(),
+            },
+            bridges: vec![],
+            bonds: vec![],
+            pcie: vec![],
+        }];
+
+        let errors = validate_sdi_resource_allocation(&spec, &facts);
+        assert!(
+            !errors.is_empty(),
+            "Basic config (5C/7G) must fail on 4-core/8GB host"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("CPU") && e.contains("exceeds")),
+            "Must detect CPU overcommit: {:?}",
+            errors
+        );
+    }
+
+    /// README must contain the Minimum Bare-Metal Requirements section.
+    #[test]
+    fn test_readme_has_minimum_baremetal_requirements_section() {
+        let content = include_str!("../../../README.md");
+        assert!(
+            content.contains("Minimum Bare-Metal Requirements"),
+            "README must have Minimum Bare-Metal Requirements section"
+        );
+        assert!(
+            content.contains("scalex validate"),
+            "README minimum specs section must reference `scalex validate` for verification"
+        );
     }
 }

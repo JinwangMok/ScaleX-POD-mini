@@ -6,7 +6,7 @@ rust-version = "1.82"
 description = "Multi-cluster SDI platform CLI for bare-metal Kubernetes provisioning"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -15,6 +15,13 @@ anyhow = "1"
 tabled = "0.17"
 dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
+
+# TUI dashboard (scalex dash)
+ratatui = "0.29"
+crossterm = "0.28"
+kube = { version = "0.98", features = ["client", "runtime", "derive"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
 tempfile = "3"
