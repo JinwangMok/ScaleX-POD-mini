@@ -915,10 +915,7 @@ mod tests {
             estimate_cluster_resources(&make_management_cluster()),
             estimate_cluster_resources(&make_workload_cluster()),
         ];
-        let hosts = vec![
-            make_host("h0", 8, 16384, 0),
-            make_host("h1", 8, 16384, 0),
-        ];
+        let hosts = vec![make_host("h0", 8, 16384, 0), make_host("h1", 8, 16384, 0)];
         let plan = place_vms(&estimates, &hosts, &PlacementTier::Standard, 100);
         assert!(
             plan.warnings.is_empty(),
