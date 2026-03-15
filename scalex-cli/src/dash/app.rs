@@ -133,7 +133,7 @@ pub struct App {
 impl App {
     pub fn new(clusters: Vec<ClusterClient>, refresh_secs: u64) -> Self {
         let mut tree = vec![TreeNode {
-            label: "ScaleX-POD".to_string(),
+            label: "ScaleX".to_string(),
             depth: 0,
             expanded: true,
             node_type: NodeType::Root,

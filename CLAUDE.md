@@ -9,6 +9,8 @@ Physical (4 bare-metal) → SDI (OpenTofu virtualization) → Node Pools → Clu
 
 **Primary CLI**: `scalex` (Rust, in `scalex-cli/`) — handles facts gathering, SDI provisioning, multi-cluster Kubespray, and resource queries.
 
+**Automated Install**: `bash install.sh --auto` — fully unattended E2E from clean state (~45 min). Handles sudo keepalive, SSH API tunnels, namespace auto-creation, and secrets for both management and workload roles. Resume-safe (skips completed phases).
+
 ## Architecture
 
 - **Tower cluster**: Management cluster (ArgoCD, Keycloak, Cloudflare Tunnel). Provisioned via Kubespray on SDI VMs.
@@ -55,7 +57,7 @@ scalex get config-files                  # Config file validation
 ## Testing
 
 ```bash
-# Rust CLI tests (598 tests)
+# Rust CLI tests (653 tests)
 cd scalex-cli && cargo test
 cargo clippy                             # Lint
 cargo fmt --check                        # Format check
@@ -63,6 +65,19 @@ cargo fmt --check                        # Format check
 # All tests + YAML lint
 ./tests/run-tests.sh
 ```
+
+## Dashboard (`scalex dash`)
+
+```bash
+scalex dash                              # Interactive TUI (ratatui) — multi-cluster overview
+scalex dash --headless                   # JSON output for scripting/verification
+scalex dash --headless --resource pods   # Filter by resource type (pods, nodes, configmaps)
+```
+
+- Displays clusters, node health, pod status, and resource capacity across all kubeconfigs in `_generated/`
+- **Auto-SSH-tunnel**: if K8s API (192.168.88.x:6443) is unreachable, tunnels through bastion node transparently
+- After `install.sh`, `scalex dash` works without manual tunnel setup
+- `metrics_server_enabled` is hardcoded `false` in `kubespray.rs` — metrics utilization bars show N/A until enabled
 
 ## Key Patterns
 
