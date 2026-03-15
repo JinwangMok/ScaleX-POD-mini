@@ -1602,7 +1602,10 @@ main() {
     fi
 
     # Ensure sudo access upfront (single prompt, then cached for entire run)
-    ensure_sudo
+    # In auto mode, sudo failure is non-fatal if all deps are already installed
+    ensure_sudo || {
+      log_warn "$(i18n "sudo not available — will proceed if all dependencies are installed" "sudo 사용 불가 — 모든 의존성이 설치되어 있으면 계속 진행")"
+    }
 
     # Run Phase 0 (dependencies) + Phase 4 (build & provision)
     phase_deps
