@@ -105,6 +105,7 @@ pub struct ResourceUsage {
     pub mem_percent: f64,
     pub total_pods: usize,
     pub running_pods: usize,
+    pub succeeded_pods: usize,
     pub failed_pods: usize,
     pub total_nodes: usize,
     pub ready_nodes: usize,
@@ -639,6 +640,10 @@ pub fn compute_resource_usage(
     let ready_nodes = nodes.iter().filter(|n| n.status == "Ready").count();
     let total_pods = pods.len();
     let running_pods = pods.iter().filter(|p| p.status == "Running").count();
+    let succeeded_pods = pods
+        .iter()
+        .filter(|p| matches!(p.status.as_str(), "Succeeded" | "Completed"))
+        .count();
     let failed_pods = pods
         .iter()
         .filter(|p| {
@@ -687,6 +692,7 @@ pub fn compute_resource_usage(
         mem_percent,
         total_pods,
         running_pods,
+        succeeded_pods,
         failed_pods,
         total_nodes,
         ready_nodes,
@@ -743,7 +749,14 @@ fn format_age(now: chrono::DateTime<Utc>, created: chrono::DateTime<Utc>) -> Str
     } else if secs < 86400 {
         format!("{}h", secs / 3600)
     } else {
-        format!("{}d", secs / 86400)
+        let days = secs / 86400;
+        if days >= 365 {
+            format!("{}y", days / 365)
+        } else if days >= 7 {
+            format!("{}w", days / 7)
+        } else {
+            format!("{}d", days)
+        }
     }
 }
 
@@ -874,6 +887,20 @@ mod tests {
         let now = Utc::now();
         let created = now - chrono::Duration::days(3);
         assert_eq!(format_age(now, created), "3d");
+    }
+
+    #[test]
+    fn format_age_weeks() {
+        let now = Utc::now();
+        let created = now - chrono::Duration::days(14);
+        assert_eq!(format_age(now, created), "2w");
+    }
+
+    #[test]
+    fn format_age_years() {
+        let now = Utc::now();
+        let created = now - chrono::Duration::days(400);
+        assert_eq!(format_age(now, created), "1y");
     }
 
     #[test]

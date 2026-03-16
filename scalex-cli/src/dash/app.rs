@@ -3405,6 +3405,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 .map(|(n, _)| n.clone())
                 .collect();
             if !failed_names.is_empty() {
+                // US-702: discard any in-flight stale fetch before retrying
+                app.fetch_generation += 1;
+                app.is_fetching = false;
                 // Reset failed clusters to Discovering and re-spawn discovery
                 for name in &failed_names {
                     app.cluster_connection_status
