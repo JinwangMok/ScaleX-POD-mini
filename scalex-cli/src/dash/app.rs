@@ -1,5 +1,5 @@
 use crate::commands::dash::DashArgs;
-use crate::dash::data::{self, ClusterSnapshot, HealthStatus};
+use crate::dash::data::{self, ActiveResource, ClusterSnapshot, HealthStatus};
 use crate::dash::event::{self, AppEvent};
 use crate::dash::infra::{self, InfraSnapshot};
 use crate::dash::kube_client::{self, ClusterClient};
@@ -58,6 +58,16 @@ impl ResourceView {
             _ => None,
         }
     }
+
+    pub fn to_active_resource(self) -> ActiveResource {
+        match self {
+            Self::Pods => ActiveResource::Pods,
+            Self::Deployments => ActiveResource::Deployments,
+            Self::Services => ActiveResource::Services,
+            Self::ConfigMaps => ActiveResource::ConfigMaps,
+            Self::Nodes => ActiveResource::Nodes,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +114,8 @@ pub enum ConnectionStatus {
 pub struct FetchResult {
     pub snapshots: Vec<ClusterSnapshot>,
     pub latency_ms: u64,
+    /// Which resource was selectively fetched (None = full fetch)
+    pub active_resource: Option<ActiveResource>,
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +183,9 @@ pub struct App {
 
     /// Monotonic tick counter for spinner animation
     pub tick_count: u64,
+
+    /// Which resource was last fetched (for staleness indicator in UI)
+    pub last_fetched_resource: Option<ActiveResource>,
 }
 
 impl App {
@@ -242,6 +257,7 @@ impl App {
             is_fetching: false,
             fetch_started_at: None,
             tick_count: 0,
+            last_fetched_resource: None,
         }
     }
 
@@ -315,6 +331,7 @@ impl App {
             is_fetching: false,
             fetch_started_at: None,
             tick_count: 0,
+            last_fetched_resource: None,
         }
     }
 
@@ -667,6 +684,14 @@ impl App {
         }
     }
 
+    /// Check if a resource view is showing stale (cached) data from a previous fetch cycle
+    pub fn is_view_stale(&self, view: ResourceView) -> bool {
+        match self.last_fetched_resource {
+            None => false, // full fetch or no fetch yet — not stale
+            Some(active) => active != view.to_active_resource(),
+        }
+    }
+
     /// Get current cluster's snapshot
     pub fn current_snapshot(&self) -> Option<&ClusterSnapshot> {
         self.selected_cluster
@@ -751,6 +776,7 @@ mod tests {
             is_fetching: false,
             fetch_started_at: None,
             tick_count: 0,
+            last_fetched_resource: None,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -968,8 +994,63 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
 
         // --- Process fetch results (non-blocking) ---
         while let Ok(result) = fetch_rx.try_recv() {
-            app.snapshots = result.snapshots;
+            match result.active_resource {
+                None => {
+                    // Full fetch — replace everything
+                    app.snapshots = result.snapshots;
+                }
+                Some(active) => {
+                    // Selective fetch — merge only the fetched resource into existing snapshots
+                    for new_snap in result.snapshots {
+                        if let Some(existing) =
+                            app.snapshots.iter_mut().find(|s| s.name == new_snap.name)
+                        {
+                            // Always update namespaces, nodes, health, resource_usage
+                            existing.namespaces = new_snap.namespaces;
+                            existing.nodes = new_snap.nodes;
+                            existing.health = new_snap.health;
+                            existing.resource_usage = new_snap.resource_usage;
+                            // Only update the actively fetched resource
+                            match active {
+                                ActiveResource::Pods => {
+                                    existing.pods = new_snap.pods;
+                                    // Recompute health with fresh pods
+                                    existing.health =
+                                        data::compute_health(&existing.nodes, &existing.pods);
+                                    existing.resource_usage = data::compute_resource_usage(
+                                        &existing.nodes,
+                                        &existing.pods,
+                                        None,
+                                    );
+                                }
+                                ActiveResource::Deployments => {
+                                    existing.deployments = new_snap.deployments
+                                }
+                                ActiveResource::Services => existing.services = new_snap.services,
+                                ActiveResource::ConfigMaps => {
+                                    existing.configmaps = new_snap.configmaps
+                                }
+                                ActiveResource::Nodes => {} // nodes already updated above
+                            }
+                            // For non-pod fetches, recompute health using existing pods
+                            if active != ActiveResource::Pods {
+                                existing.health =
+                                    data::compute_health(&existing.nodes, &existing.pods);
+                                existing.resource_usage = data::compute_resource_usage(
+                                    &existing.nodes,
+                                    &existing.pods,
+                                    None,
+                                );
+                            }
+                        } else {
+                            // New cluster not yet in snapshots — add it
+                            app.snapshots.push(new_snap);
+                        }
+                    }
+                }
+            }
             app.api_latency_ms = result.latency_ms;
+            app.last_fetched_resource = result.active_resource;
             app.sync_tree_from_snapshots();
             app.load_infra();
             app.self_rss_mb = read_self_rss_mb();
@@ -999,6 +1080,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             let clusters = app.clusters.clone();
             let ns = app.selected_namespace.clone();
             let cancel = cancelled.clone();
+            let active_res = Some(app.resource_view.to_active_resource());
 
             tokio::spawn(async move {
                 let start = Instant::now();
@@ -1008,7 +1090,14 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     let name = cluster.name.clone();
                     let ns = ns.clone();
                     handles.push(tokio::spawn(async move {
-                        match data::fetch_cluster_snapshot(&client, &name, ns.as_deref()).await {
+                        match data::fetch_cluster_snapshot(
+                            &client,
+                            &name,
+                            ns.as_deref(),
+                            active_res,
+                        )
+                        .await
+                        {
                             Ok(snapshot) => snapshot,
                             Err(_) => ClusterSnapshot {
                                 name,
@@ -1039,6 +1128,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     .send(FetchResult {
                         snapshots,
                         latency_ms,
+                        active_resource: active_res,
                     })
                     .await;
             });
