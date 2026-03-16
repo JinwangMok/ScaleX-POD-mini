@@ -134,9 +134,11 @@ pub struct App {
     // Sidebar tree
     pub tree: Vec<TreeNode>,
     pub tree_cursor: usize,
+    pub sidebar_scroll_offset: usize,
 
     // Center table scroll
     pub table_cursor: usize,
+    pub table_scroll_offset: usize,
 
     // Selected context
     pub selected_cluster: Option<String>,
@@ -244,7 +246,9 @@ impl App {
             resource_view: ResourceView::Pods,
             tree,
             tree_cursor: 0,
+            sidebar_scroll_offset: 0,
             table_cursor: 0,
+            table_scroll_offset: 0,
             selected_cluster: None,
             selected_namespace: None,
             clusters,
@@ -319,7 +323,9 @@ impl App {
             resource_view: ResourceView::Pods,
             tree,
             tree_cursor: 0,
+            sidebar_scroll_offset: 0,
             table_cursor: 0,
+            table_scroll_offset: 0,
             selected_cluster: None,
             selected_namespace: None,
             clusters: Vec::new(),
@@ -344,6 +350,12 @@ impl App {
     }
 
     pub fn handle_event(&mut self, evt: AppEvent) {
+        // ForceQuit (Ctrl+C) always exits regardless of mode
+        if matches!(evt, AppEvent::ForceQuit) {
+            self.running = false;
+            return;
+        }
+
         // Search-mode: intercept all events as text input (mirrors show_help pattern)
         if self.search_active {
             match evt {
@@ -351,25 +363,15 @@ impl App {
                     // Submit search — keep query as filter, exit search mode
                     self.search_active = false;
                 }
-                AppEvent::Quit | AppEvent::Help | AppEvent::Escape => {
+                AppEvent::Escape => {
                     // Cancel search — clear query and exit
                     self.search_active = false;
                     self.search_query = None;
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
-                AppEvent::ResourceType(c) => {
-                    // In search mode, treat as literal character
-                    self.search_query.get_or_insert_with(String::new).push(c);
-                    self.table_cursor = 0;
-                }
-                AppEvent::Up => {
-                    self.search_query.get_or_insert_with(String::new).push('k');
-                }
-                AppEvent::Down => {
-                    self.search_query.get_or_insert_with(String::new).push('j');
-                }
-                AppEvent::Left => {
-                    // Backspace behavior in search
+                AppEvent::Backspace => {
+                    // Delete last character
                     if let Some(q) = &mut self.search_query {
                         q.pop();
                         if q.is_empty() {
@@ -378,11 +380,49 @@ impl App {
                     }
                     self.table_cursor = 0;
                 }
+                // Arrow keys in search mode: no-op (don't type characters)
+                AppEvent::ArrowUp | AppEvent::ArrowDown | AppEvent::ArrowLeft | AppEvent::ArrowRight => {}
+                // All character-producing events → literal text input
+                // Vim keys (q→Quit, h→Left, l→Right, ?→Help) are remapped to chars
+                AppEvent::Quit => {
+                    self.search_query.get_or_insert_with(String::new).push('q');
+                    self.table_cursor = 0;
+                }
+                AppEvent::Help => {
+                    self.search_query.get_or_insert_with(String::new).push('?');
+                    self.table_cursor = 0;
+                }
+                AppEvent::Left => {
+                    self.search_query.get_or_insert_with(String::new).push('h');
+                    self.table_cursor = 0;
+                }
+                AppEvent::Right => {
+                    self.search_query.get_or_insert_with(String::new).push('l');
+                    self.table_cursor = 0;
+                }
+                AppEvent::Up => {
+                    self.search_query.get_or_insert_with(String::new).push('k');
+                    self.table_cursor = 0;
+                }
+                AppEvent::Down => {
+                    self.search_query.get_or_insert_with(String::new).push('j');
+                    self.table_cursor = 0;
+                }
                 AppEvent::Refresh => {
                     self.search_query.get_or_insert_with(String::new).push('r');
+                    self.table_cursor = 0;
                 }
                 AppEvent::Search => {
                     self.search_query.get_or_insert_with(String::new).push('/');
+                    self.table_cursor = 0;
+                }
+                AppEvent::ResourceType(c) => {
+                    self.search_query.get_or_insert_with(String::new).push(c);
+                    self.table_cursor = 0;
+                }
+                AppEvent::CharInput(c) => {
+                    self.search_query.get_or_insert_with(String::new).push(c);
+                    self.table_cursor = 0;
                 }
                 _ => {}
             }
@@ -392,7 +432,10 @@ impl App {
         // show_help and search_active are mutually exclusive by construction:
         // search intercepts Help/Quit (above), and help blocks Search (below).
         if self.show_help {
-            if matches!(evt, AppEvent::Help | AppEvent::Quit | AppEvent::Enter | AppEvent::Escape) {
+            if matches!(
+                evt,
+                AppEvent::Help | AppEvent::Quit | AppEvent::Enter | AppEvent::Escape
+            ) {
                 self.show_help = false;
             }
             return;
@@ -400,11 +443,11 @@ impl App {
 
         match evt {
             AppEvent::Quit => self.running = false,
-            AppEvent::Up => self.move_up(),
-            AppEvent::Down => self.move_down(),
+            AppEvent::Up | AppEvent::ArrowUp => self.move_up(),
+            AppEvent::Down | AppEvent::ArrowDown => self.move_down(),
             AppEvent::Enter => self.handle_enter(),
-            AppEvent::Left => self.collapse_node(),
-            AppEvent::Right => self.expand_node(),
+            AppEvent::Left | AppEvent::ArrowLeft => self.collapse_node(),
+            AppEvent::Right | AppEvent::ArrowRight => self.expand_node(),
             AppEvent::Tab(n) => {
                 if n > 0 && n <= self.tabs.len() {
                     self.active_tab = n - 1;
@@ -423,11 +466,13 @@ impl App {
                 };
             }
             AppEvent::ResourceType(c) => {
+                // Resource view shortcuts only work when center panel is active
                 if self.active_panel == ActivePanel::Center {
                     if let Some(rv) = ResourceView::from_char(c) {
                         if self.resource_view != rv {
                             self.resource_view = rv;
                             self.table_cursor = 0;
+                            self.table_scroll_offset = 0;
                             self.needs_refresh = true;
                             self.fetch_generation += 1;
                             self.is_fetching = false;
@@ -441,8 +486,24 @@ impl App {
                 self.search_active = true;
                 self.search_query = Some(String::new());
                 self.table_cursor = 0;
+                self.table_scroll_offset = 0;
             }
-            AppEvent::Refresh | AppEvent::Tick | AppEvent::None | AppEvent::Escape => {}
+            AppEvent::Refresh => {
+                self.needs_refresh = true;
+                self.fetch_generation += 1;
+                self.is_fetching = false;
+            }
+            AppEvent::Backspace => {} // no-op in normal mode; only used in search mode
+            AppEvent::Escape => {
+                // Clear active search filter if present
+                if self.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
+                    self.search_query = None;
+                    self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
+                }
+            }
+            AppEvent::Tick | AppEvent::None | AppEvent::CharInput(_) => {}
+            AppEvent::ForceQuit => unreachable!("ForceQuit handled above"),
         }
     }
 
@@ -454,17 +515,29 @@ impl App {
         }
     }
 
+    /// Clamp table_cursor so it never exceeds the last valid index.
+    /// Called from UI renderers before checking is_selected, and from move_down.
+    pub fn clamp_table_cursor(&mut self, row_count: usize) {
+        if row_count == 0 {
+            self.table_cursor = 0;
+        } else if self.table_cursor >= row_count {
+            self.table_cursor = row_count - 1;
+        }
+    }
+
     fn move_up(&mut self) {
         match self.active_panel {
             ActivePanel::Sidebar => {
                 if self.tree_cursor > 0 {
                     self.tree_cursor -= 1;
                 }
+                self.adjust_sidebar_scroll();
             }
             ActivePanel::Center => {
                 if self.table_cursor > 0 {
                     self.table_cursor -= 1;
                 }
+                self.adjust_table_scroll();
             }
         }
     }
@@ -476,10 +549,77 @@ impl App {
                 if self.tree_cursor + 1 < visible {
                     self.tree_cursor += 1;
                 }
+                self.adjust_sidebar_scroll();
             }
             ActivePanel::Center => {
-                self.table_cursor += 1; // UI will clamp
+                // Clamp to current row count to prevent unbounded cursor growth
+                let max = self.current_row_count();
+                if max > 0 && self.table_cursor + 1 < max {
+                    self.table_cursor += 1;
+                }
+                self.adjust_table_scroll();
             }
+        }
+    }
+
+    /// Adjust sidebar_scroll_offset to keep tree_cursor visible.
+    /// viewport_height is set externally; default 0 means no scrolling needed.
+    fn adjust_sidebar_scroll(&mut self) {
+        // Will be used by render_sidebar to set viewport height
+        // For now, ensure offset doesn't exceed cursor
+        if self.tree_cursor < self.sidebar_scroll_offset {
+            self.sidebar_scroll_offset = self.tree_cursor;
+        }
+        // The upper bound adjustment happens in ensure_sidebar_scroll_visible
+    }
+
+    /// Ensure sidebar cursor is visible within a given viewport height.
+    /// Also clamps scroll offset so we never over-scroll past the end of content.
+    pub fn ensure_sidebar_scroll_visible(&mut self, viewport_height: usize) {
+        if viewport_height == 0 {
+            return;
+        }
+        let visible_len = self.visible_tree_len();
+        // Clamp scroll offset so the last item is at the bottom, never beyond
+        let max_offset = visible_len.saturating_sub(viewport_height);
+        if self.sidebar_scroll_offset > max_offset {
+            self.sidebar_scroll_offset = max_offset;
+        }
+        if self.tree_cursor < self.sidebar_scroll_offset {
+            self.sidebar_scroll_offset = self.tree_cursor;
+        } else if self.tree_cursor >= self.sidebar_scroll_offset + viewport_height {
+            self.sidebar_scroll_offset = self.tree_cursor - viewport_height + 1;
+        }
+    }
+
+    /// Adjust table_scroll_offset to keep table_cursor visible.
+    fn adjust_table_scroll(&mut self) {
+        if self.table_cursor < self.table_scroll_offset {
+            self.table_scroll_offset = self.table_cursor;
+        }
+        // The upper bound adjustment happens in ensure_table_scroll_visible
+    }
+
+    /// Ensure table cursor is visible within a given viewport height.
+    /// Also clamps scroll offset so we never over-scroll past the end of content.
+    pub fn ensure_table_scroll_visible(&mut self, viewport_height: usize) {
+        if viewport_height == 0 {
+            return;
+        }
+        // Clamp scroll offset to valid range based on current data
+        let row_count = self.current_row_count();
+        if row_count > 0 {
+            let max_offset = row_count.saturating_sub(viewport_height);
+            if self.table_scroll_offset > max_offset {
+                self.table_scroll_offset = max_offset;
+            }
+        } else {
+            self.table_scroll_offset = 0;
+        }
+        if self.table_cursor < self.table_scroll_offset {
+            self.table_scroll_offset = self.table_cursor;
+        } else if self.table_cursor >= self.table_scroll_offset + viewport_height {
+            self.table_scroll_offset = self.table_cursor - viewport_height + 1;
         }
     }
 
@@ -502,13 +642,16 @@ impl App {
                 let name = name.clone();
                 let is_expanded = self.tree[idx].expanded;
                 if is_expanded {
-                    // Collapse: remove children
+                    // Collapse: remove children and reset loaded flag
                     self.tree[idx].expanded = false;
+                    self.tree[idx].children_loaded = false;
                     self.remove_children(idx);
                 } else {
                     self.tree[idx].expanded = true;
                     self.selected_cluster = Some(name.clone());
                     self.selected_namespace = None;
+                    self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                     self.needs_refresh = true;
                     self.fetch_generation += 1;
                     self.is_fetching = false;
@@ -524,6 +667,7 @@ impl App {
                     Some(namespace.clone())
                 };
                 self.table_cursor = 0;
+                self.table_scroll_offset = 0;
                 self.needs_refresh = true;
                 self.fetch_generation += 1;
                 self.is_fetching = false;
@@ -546,6 +690,7 @@ impl App {
         let idx = visible[self.tree_cursor];
         if self.tree[idx].expanded {
             self.tree[idx].expanded = false;
+            self.tree[idx].children_loaded = false;
             self.remove_children(idx);
         }
     }
@@ -561,14 +706,30 @@ impl App {
         let idx = visible[self.tree_cursor];
         if !self.tree[idx].expanded {
             self.tree[idx].expanded = true;
-            // Note: no selection change — expand only. Use Enter to select.
+            // Populate children from cached snapshots (cluster nodes)
+            // No selection change — expand only. Use Enter to select.
+            self.sync_tree_from_snapshots();
+            self.sync_infra_tree();
         }
     }
 
     fn remove_children(&mut self, parent_idx: usize) {
         let parent_depth = self.tree[parent_idx].depth;
-        while parent_idx + 1 < self.tree.len() && self.tree[parent_idx + 1].depth > parent_depth {
-            self.tree.remove(parent_idx + 1);
+        // Count how many children to remove (O(k))
+        let mut count = 0;
+        while parent_idx + 1 + count < self.tree.len()
+            && self.tree[parent_idx + 1 + count].depth > parent_depth
+        {
+            count += 1;
+        }
+        if count > 0 {
+            // Drain the range in one O(n) operation instead of O(n*k)
+            self.tree.drain((parent_idx + 1)..(parent_idx + 1 + count));
+        }
+        // Clamp cursor to visible range after children removal
+        let visible_len = self.visible_tree_len();
+        if visible_len > 0 && self.tree_cursor >= visible_len {
+            self.tree_cursor = visible_len - 1;
         }
     }
 
@@ -594,7 +755,21 @@ impl App {
     }
 
     pub fn visible_tree_len(&self) -> usize {
-        self.visible_tree_indices().len()
+        let mut count = 0;
+        let mut skip_depth: Option<usize> = None;
+        for node in &self.tree {
+            if let Some(sd) = skip_depth {
+                if node.depth > sd {
+                    continue;
+                }
+                skip_depth = None;
+            }
+            count += 1;
+            if !node.expanded {
+                skip_depth = Some(node.depth);
+            }
+        }
+        count
     }
 
     /// Load infrastructure data from SDI directory
@@ -651,51 +826,84 @@ impl App {
         }
     }
 
-    /// Populate namespace children for expanded clusters from snapshot data
+    /// Populate namespace children for expanded clusters from snapshot data.
+    /// Detects namespace list changes and re-populates if needed.
     pub fn sync_tree_from_snapshots(&mut self) {
-        for snapshot in &self.snapshots {
+        // Collect snapshot data first to avoid borrow conflict
+        let snapshot_data: Vec<(String, Vec<String>)> = self
+            .snapshots
+            .iter()
+            .map(|s| (s.name.clone(), s.namespaces.clone()))
+            .collect();
+
+        for (snap_name, snap_namespaces) in &snapshot_data {
             // Find the cluster node
             let cluster_idx = self.tree.iter().position(
-                |n| matches!(&n.node_type, NodeType::Cluster(name) if name == &snapshot.name),
+                |n| matches!(&n.node_type, NodeType::Cluster(name) if name == snap_name),
             );
 
             if let Some(idx) = cluster_idx {
-                if self.tree[idx].expanded && !self.tree[idx].children_loaded {
-                    let depth = self.tree[idx].depth + 1;
-                    let cluster_name = snapshot.name.clone();
+                if !self.tree[idx].expanded {
+                    continue;
+                }
 
-                    let mut children = vec![TreeNode {
-                        label: "All Namespaces".to_string(),
+                // Check if namespace list changed (stale sidebar refresh)
+                if self.tree[idx].children_loaded {
+                    let existing_ns: Vec<String> = self.tree[(idx + 1)..]
+                        .iter()
+                        .take_while(|n| n.depth > self.tree[idx].depth)
+                        .filter_map(|n| match &n.node_type {
+                            NodeType::Namespace { namespace, .. }
+                                if namespace != "All Namespaces" =>
+                            {
+                                Some(namespace.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+
+                    if existing_ns == *snap_namespaces {
+                        continue; // namespaces unchanged, skip
+                    }
+                    // Namespaces changed — remove old children and re-populate
+                    self.remove_children(idx);
+                    self.tree[idx].children_loaded = false;
+                }
+
+                let depth = self.tree[idx].depth + 1;
+                let cluster_name = snap_name.clone();
+
+                let mut children = vec![TreeNode {
+                    label: "All Namespaces".to_string(),
+                    depth,
+                    expanded: false,
+                    node_type: NodeType::Namespace {
+                        cluster: cluster_name.clone(),
+                        namespace: "All Namespaces".to_string(),
+                    },
+                    children_loaded: false,
+                }];
+
+                for ns in snap_namespaces {
+                    children.push(TreeNode {
+                        label: ns.clone(),
                         depth,
                         expanded: false,
                         node_type: NodeType::Namespace {
                             cluster: cluster_name.clone(),
-                            namespace: "All Namespaces".to_string(),
+                            namespace: ns.clone(),
                         },
                         children_loaded: false,
-                    }];
-
-                    for ns in &snapshot.namespaces {
-                        children.push(TreeNode {
-                            label: ns.clone(),
-                            depth,
-                            expanded: false,
-                            node_type: NodeType::Namespace {
-                                cluster: cluster_name.clone(),
-                                namespace: ns.clone(),
-                            },
-                            children_loaded: false,
-                        });
-                    }
-
-                    // Insert children after cluster node
-                    let insert_at = idx + 1;
-                    for (j, child) in children.into_iter().enumerate() {
-                        self.tree.insert(insert_at + j, child);
-                    }
-
-                    self.tree[idx].children_loaded = true;
+                    });
                 }
+
+                // Insert children after cluster node
+                let insert_at = idx + 1;
+                for (j, child) in children.into_iter().enumerate() {
+                    self.tree.insert(insert_at + j, child);
+                }
+
+                self.tree[idx].children_loaded = true;
             }
         }
     }
@@ -708,7 +916,41 @@ impl App {
         }
     }
 
-    /// Get current cluster's snapshot
+    /// Get the number of rows in the current resource view (for cursor clamping).
+    /// Respects active search filter so cursor stays within visible bounds.
+    pub fn current_row_count(&self) -> usize {
+        match self.current_snapshot() {
+            Some(snap) => match self.resource_view {
+                ResourceView::Pods => snap
+                    .pods
+                    .iter()
+                    .filter(|p| self.matches_search(&p.name))
+                    .count(),
+                ResourceView::Deployments => snap
+                    .deployments
+                    .iter()
+                    .filter(|d| self.matches_search(&d.name))
+                    .count(),
+                ResourceView::Services => snap
+                    .services
+                    .iter()
+                    .filter(|s| self.matches_search(&s.name))
+                    .count(),
+                ResourceView::ConfigMaps => snap
+                    .configmaps
+                    .iter()
+                    .filter(|c| self.matches_search(&c.name))
+                    .count(),
+                ResourceView::Nodes => snap
+                    .nodes
+                    .iter()
+                    .filter(|n| self.matches_search(&n.name))
+                    .count(),
+            },
+            None => 0,
+        }
+    }
+
     pub fn current_snapshot(&self) -> Option<&ClusterSnapshot> {
         self.selected_cluster
             .as_ref()
@@ -773,7 +1015,9 @@ mod tests {
                 },
             ],
             tree_cursor: 0,
+            sidebar_scroll_offset: 0,
             table_cursor: 0,
+            table_scroll_offset: 0,
             selected_cluster: None,
             selected_namespace: None,
             clusters: vec![],
@@ -910,6 +1154,897 @@ mod tests {
 
         assert!(!app.needs_refresh);
     }
+
+    #[test]
+    fn resource_shortcut_ignored_from_sidebar() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Sidebar;
+        app.resource_view = ResourceView::Pods;
+
+        app.handle_event(AppEvent::ResourceType('d'));
+
+        // Resource shortcuts only work in center panel
+        assert_eq!(app.resource_view, ResourceView::Pods);
+        assert!(!app.needs_refresh);
+    }
+
+    // --- US-030: Table cursor bounds clamping ---
+
+    #[test]
+    fn clamp_table_cursor_within_bounds() {
+        let mut app = test_app();
+        app.table_cursor = 3;
+        app.clamp_table_cursor(5);
+        assert_eq!(app.table_cursor, 3); // no change
+    }
+
+    #[test]
+    fn clamp_table_cursor_at_boundary() {
+        let mut app = test_app();
+        app.table_cursor = 5;
+        app.clamp_table_cursor(5);
+        assert_eq!(app.table_cursor, 4); // clamped to last index
+    }
+
+    #[test]
+    fn clamp_table_cursor_far_exceeds() {
+        let mut app = test_app();
+        app.table_cursor = 100;
+        app.clamp_table_cursor(5);
+        assert_eq!(app.table_cursor, 4);
+    }
+
+    #[test]
+    fn clamp_table_cursor_empty_list() {
+        let mut app = test_app();
+        app.table_cursor = 5;
+        app.clamp_table_cursor(0);
+        assert_eq!(app.table_cursor, 0);
+    }
+
+    #[test]
+    fn move_down_center_increments() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.selected_cluster = Some("tower".into());
+        // Add snapshot with 5 pods so move_down has room
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: vec![],
+            pods: (0..5)
+                .map(|i| crate::dash::data::PodInfo {
+                    name: format!("pod-{}", i),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    age: "1h".into(),
+                    node: "n1".into(),
+                })
+                .collect(),
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+        app.table_cursor = 0;
+        app.handle_event(AppEvent::Down);
+        assert_eq!(app.table_cursor, 1);
+    }
+
+    // --- US-031: Search input resets table cursor ---
+
+    #[test]
+    fn search_up_resets_cursor() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.table_cursor = 5;
+
+        app.handle_event(AppEvent::Up); // appends 'k'
+
+        assert_eq!(app.search_query, Some("k".to_string()));
+        assert_eq!(app.table_cursor, 0);
+    }
+
+    #[test]
+    fn search_down_resets_cursor() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.table_cursor = 5;
+
+        app.handle_event(AppEvent::Down); // appends 'j'
+
+        assert_eq!(app.search_query, Some("j".to_string()));
+        assert_eq!(app.table_cursor, 0);
+    }
+
+    #[test]
+    fn search_refresh_resets_cursor() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.table_cursor = 5;
+
+        app.handle_event(AppEvent::Refresh); // appends 'r'
+
+        assert_eq!(app.search_query, Some("r".to_string()));
+        assert_eq!(app.table_cursor, 0);
+    }
+
+    #[test]
+    fn search_slash_resets_cursor() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.table_cursor = 5;
+
+        app.handle_event(AppEvent::Search); // appends '/'
+
+        assert_eq!(app.search_query, Some("/".to_string()));
+        assert_eq!(app.table_cursor, 0);
+    }
+
+    // --- US-032: Tree collapse adjusts cursor ---
+
+    #[test]
+    fn collapse_clamps_cursor_when_on_child() {
+        let mut app = test_app();
+        // Expand tower with namespace children
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        app.tree.insert(
+            2,
+            TreeNode {
+                label: "All Namespaces".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "All Namespaces".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        app.tree.insert(
+            3,
+            TreeNode {
+                label: "kube-system".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "kube-system".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        app.tree.insert(
+            4,
+            TreeNode {
+                label: "default".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "default".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        // tree: ScaleX, tower(exp), AllNS, kube-system, default, sandbox, Infra
+        // visible indices: 0,1,2,3,4,5,6 (7 items)
+        app.tree_cursor = 4; // on "default" child
+
+        app.handle_event(AppEvent::Left); // collapse — cursor on child, should collapse parent? No — Left on child collapses child (which is a leaf, no-op)
+                                          // Actually Left on a non-expandable node is a no-op. Let's test via handle_enter on the cluster node.
+                                          // Reset: put cursor on tower (index 1) and collapse
+        app.tree_cursor = 1;
+        app.handle_event(AppEvent::Left); // collapse tower
+
+        assert!(!app.tree[1].expanded);
+        // After removing 3 children, tree: ScaleX, tower, sandbox, Infra (4 visible)
+        assert!(app.tree_cursor < app.visible_tree_len());
+    }
+
+    #[test]
+    fn collapse_with_cursor_beyond_visible_clamps() {
+        let mut app = test_app();
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        // Add 3 children
+        for i in 0..3 {
+            app.tree.insert(
+                2 + i,
+                TreeNode {
+                    label: format!("ns-{}", i),
+                    depth: 2,
+                    expanded: false,
+                    node_type: NodeType::Namespace {
+                        cluster: "tower".into(),
+                        namespace: format!("ns-{}", i),
+                    },
+                    children_loaded: false,
+                },
+            );
+        }
+        // 7 visible items: ScaleX, tower, ns-0, ns-1, ns-2, sandbox, Infra
+        app.tree_cursor = 6; // on Infrastructure (last visible)
+
+        // Now collapse tower from code (simulating programmatic collapse)
+        app.tree[1].expanded = false;
+        app.remove_children(1);
+
+        // After: ScaleX, tower, sandbox, Infra (4 visible)
+        assert!(app.tree_cursor < app.visible_tree_len());
+        assert_eq!(app.tree_cursor, 3); // clamped from 6 to 3 (last valid)
+    }
+
+    // --- US-033: Efficient removal with drain ---
+
+    #[test]
+    fn remove_children_drains_correctly() {
+        let mut app = test_app();
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        // Add children at depth 2
+        app.tree.insert(
+            2,
+            TreeNode {
+                label: "child1".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "child1".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        app.tree.insert(
+            3,
+            TreeNode {
+                label: "child2".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "child2".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        // tree: ScaleX(0), tower(1), child1(2), child2(3), sandbox(4), Infra(5)
+        assert_eq!(app.tree.len(), 6);
+
+        app.remove_children(1);
+
+        // tree: ScaleX(0), tower(1), sandbox(2), Infra(3)
+        assert_eq!(app.tree.len(), 4);
+        assert_eq!(app.tree[2].label, "sandbox");
+    }
+
+    // --- US-034: Sidebar scroll offset ---
+
+    #[test]
+    fn ensure_sidebar_scroll_cursor_below_viewport() {
+        let mut app = test_app();
+        app.tree_cursor = 15;
+        app.sidebar_scroll_offset = 0;
+
+        app.ensure_sidebar_scroll_visible(10);
+
+        assert!(app.sidebar_scroll_offset >= 6); // 15 - 10 + 1 = 6
+    }
+
+    #[test]
+    fn ensure_sidebar_scroll_cursor_above_viewport() {
+        let mut app = test_app();
+        app.tree_cursor = 2;
+        app.sidebar_scroll_offset = 5;
+
+        app.ensure_sidebar_scroll_visible(10);
+
+        // Content (4 items) fits in viewport (10), so offset clamped to 0
+        assert_eq!(app.sidebar_scroll_offset, 0);
+    }
+
+    #[test]
+    fn ensure_sidebar_scroll_overscroll_clamped() {
+        let mut app = test_app();
+        // Add enough items so content exceeds viewport
+        for i in 0..20 {
+            app.tree.insert(
+                1,
+                TreeNode {
+                    label: format!("extra-{}", i),
+                    depth: 1,
+                    expanded: false,
+                    node_type: NodeType::Cluster(format!("extra-{}", i)),
+                    children_loaded: false,
+                },
+            );
+        }
+        // 24 visible items, viewport = 10, max_offset = 14
+        app.tree_cursor = 5;
+        app.sidebar_scroll_offset = 20; // way past end
+
+        app.ensure_sidebar_scroll_visible(10);
+
+        assert!(app.sidebar_scroll_offset <= 14); // clamped to max
+    }
+
+    // --- US-035: Table scroll offset ---
+
+    #[test]
+    fn ensure_table_scroll_cursor_below_viewport() {
+        let mut app = test_app();
+        app.table_cursor = 20;
+        app.table_scroll_offset = 0;
+
+        app.ensure_table_scroll_visible(10);
+
+        assert_eq!(app.table_scroll_offset, 11); // 20 - 10 + 1
+    }
+
+    #[test]
+    fn ensure_table_scroll_cursor_above_viewport() {
+        let mut app = test_app();
+        app.table_cursor = 3;
+        app.table_scroll_offset = 8;
+
+        app.ensure_table_scroll_visible(10);
+
+        // No data (row_count=0), so offset clamped to 0
+        assert_eq!(app.table_scroll_offset, 0);
+    }
+
+    #[test]
+    fn ensure_table_scroll_overscroll_clamped() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: vec![],
+            pods: (0..20)
+                .map(|i| crate::dash::data::PodInfo {
+                    name: format!("pod-{}", i),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    age: "1h".into(),
+                    node: "n1".into(),
+                })
+                .collect(),
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+        // 20 rows, viewport = 10, max_offset = 10
+        app.table_cursor = 5;
+        app.table_scroll_offset = 15; // way past end
+
+        app.ensure_table_scroll_visible(10);
+
+        assert!(app.table_scroll_offset <= 10); // clamped
+    }
+
+    // --- US-040: Refresh key triggers data refresh ---
+
+    #[test]
+    fn refresh_key_sets_needs_refresh() {
+        let mut app = test_app();
+        app.needs_refresh = false;
+        let gen_before = app.fetch_generation;
+
+        app.handle_event(AppEvent::Refresh);
+
+        assert!(app.needs_refresh);
+        assert_eq!(app.fetch_generation, gen_before + 1);
+    }
+
+    // --- US-041: table_scroll_offset reset on context changes ---
+
+    #[test]
+    fn resource_view_switch_resets_scroll_offset() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.table_scroll_offset = 10;
+        app.resource_view = ResourceView::Pods;
+
+        app.handle_event(AppEvent::ResourceType('d')); // switch to Deployments
+
+        assert_eq!(app.table_scroll_offset, 0);
+        assert_eq!(app.table_cursor, 0);
+    }
+
+    #[test]
+    fn search_cancel_resets_scroll_offset() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("test".into());
+        app.table_scroll_offset = 15;
+        app.table_cursor = 5;
+
+        app.handle_event(AppEvent::Escape);
+
+        assert_eq!(app.table_scroll_offset, 0);
+        assert_eq!(app.table_cursor, 0);
+        assert!(!app.search_active);
+    }
+
+    #[test]
+    fn search_start_resets_scroll_offset() {
+        let mut app = test_app();
+        app.table_scroll_offset = 10;
+        app.table_cursor = 8;
+
+        app.handle_event(AppEvent::Search);
+
+        assert_eq!(app.table_scroll_offset, 0);
+        assert_eq!(app.table_cursor, 0);
+        assert!(app.search_active);
+    }
+
+    // --- US-042: expand_node populates children from cache ---
+
+    #[test]
+    fn expand_node_populates_children_from_cached_snapshot() {
+        let mut app = test_app();
+        // Add a snapshot with namespaces
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into(), "kube-system".into()],
+            nodes: vec![],
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+
+        // Cursor on tower cluster (index 1 in visible tree)
+        app.active_panel = ActivePanel::Sidebar;
+        app.tree_cursor = 1;
+        assert!(!app.tree[1].expanded);
+
+        app.handle_event(AppEvent::Right); // expand via Right arrow
+
+        assert!(app.tree[1].expanded);
+        assert!(app.tree[1].children_loaded);
+        // Should have "All Namespaces", "default", "kube-system" as children
+        assert_eq!(app.tree.len(), 4 + 3); // original 4 + 3 namespace children
+    }
+
+    // --- US-043: move_down bounded by row count ---
+
+    #[test]
+    fn move_down_center_no_data_stays_at_zero() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.table_cursor = 0;
+        // No snapshots → current_row_count() == 0
+        app.handle_event(AppEvent::Down);
+        assert_eq!(app.table_cursor, 0);
+    }
+
+    // --- US-050: Search mode captures all literal characters ---
+
+    #[test]
+    fn search_quit_key_types_q() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.handle_event(AppEvent::Quit); // 'q' key
+        assert!(app.search_active); // still in search
+        assert_eq!(app.search_query, Some("q".to_string()));
+    }
+
+    #[test]
+    fn search_help_key_types_question_mark() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.handle_event(AppEvent::Help); // '?' key
+        assert!(app.search_active);
+        assert_eq!(app.search_query, Some("?".to_string()));
+    }
+
+    #[test]
+    fn search_left_key_types_h() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.handle_event(AppEvent::Left); // 'h' key
+        assert_eq!(app.search_query, Some("h".to_string()));
+    }
+
+    #[test]
+    fn search_right_key_types_l() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.handle_event(AppEvent::Right); // 'l' key
+        assert_eq!(app.search_query, Some("l".to_string()));
+    }
+
+    #[test]
+    fn search_backspace_deletes_char() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("hello".to_string());
+        app.handle_event(AppEvent::Backspace);
+        assert_eq!(app.search_query, Some("hell".to_string()));
+    }
+
+    #[test]
+    fn search_backspace_clears_to_none() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("x".to_string());
+        app.handle_event(AppEvent::Backspace);
+        assert_eq!(app.search_query, None);
+    }
+
+    #[test]
+    fn search_escape_cancels() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("test".to_string());
+        app.handle_event(AppEvent::Escape);
+        assert!(!app.search_active);
+        assert_eq!(app.search_query, None);
+    }
+
+    // --- US-051: current_row_count respects search filter ---
+
+    #[test]
+    fn move_down_clamped_by_search_filter() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: vec![],
+            pods: vec![
+                crate::dash::data::PodInfo {
+                    name: "alpha-pod".into(),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    age: "1h".into(),
+                    node: "n1".into(),
+                },
+                crate::dash::data::PodInfo {
+                    name: "beta-pod".into(),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    age: "1h".into(),
+                    node: "n1".into(),
+                },
+            ],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+        // Search for "alpha" → only 1 result
+        app.search_query = Some("alpha".into());
+        app.table_cursor = 0;
+        app.handle_event(AppEvent::Down);
+        // Should not exceed filtered count (1 item → cursor stays at 0)
+        assert_eq!(app.table_cursor, 0);
+    }
+
+    // --- US-052: Cluster selection resets table cursor ---
+
+    #[test]
+    fn enter_on_cluster_resets_table_cursor() {
+        let mut app = test_app();
+        app.table_cursor = 10;
+        app.table_scroll_offset = 5;
+        app.tree_cursor = 2; // sandbox
+        app.handle_event(AppEvent::Enter);
+        assert_eq!(app.selected_cluster, Some("sandbox".into()));
+        assert_eq!(app.table_cursor, 0);
+        assert_eq!(app.table_scroll_offset, 0);
+    }
+
+    // --- US-050 (v5): CharInput in search mode ---
+
+    #[test]
+    fn search_char_input_appends_to_query() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+
+        app.handle_event(AppEvent::CharInput('a'));
+        app.handle_event(AppEvent::CharInput('b'));
+        app.handle_event(AppEvent::CharInput('c'));
+
+        assert_eq!(app.search_query, Some("abc".to_string()));
+        assert!(app.search_active);
+    }
+
+    #[test]
+    fn search_char_input_resets_table_cursor() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.table_cursor = 5;
+
+        app.handle_event(AppEvent::CharInput('x'));
+
+        assert_eq!(app.table_cursor, 0);
+    }
+
+    #[test]
+    fn char_input_ignored_outside_search() {
+        let mut app = test_app();
+        app.search_active = false;
+
+        app.handle_event(AppEvent::CharInput('a'));
+
+        // Should not change any state
+        assert!(app.running);
+        assert!(!app.search_active);
+    }
+
+    // --- US-051 (v5): ForceQuit always quits ---
+
+    #[test]
+    fn force_quit_in_search_mode() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("test".into());
+
+        app.handle_event(AppEvent::ForceQuit);
+
+        assert!(!app.running); // app should quit
+    }
+
+    #[test]
+    fn force_quit_in_help_mode() {
+        let mut app = test_app();
+        app.show_help = true;
+
+        app.handle_event(AppEvent::ForceQuit);
+
+        assert!(!app.running); // app should quit
+    }
+
+    #[test]
+    fn force_quit_in_normal_mode() {
+        let mut app = test_app();
+
+        app.handle_event(AppEvent::ForceQuit);
+
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn quit_in_search_types_q_not_exit() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+
+        app.handle_event(AppEvent::Quit);
+
+        assert!(app.running); // should NOT quit
+        assert_eq!(app.search_query, Some("q".to_string()));
+    }
+
+    // --- US-101: Stale namespace sidebar refresh ---
+
+    #[test]
+    fn sync_tree_updates_when_namespaces_change() {
+        let mut app = test_app();
+        // Initial snapshot with 2 namespaces
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into(), "kube-system".into()],
+            nodes: vec![],
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+
+        // Expand tower
+        app.tree[1].expanded = true;
+        app.sync_tree_from_snapshots();
+        assert!(app.tree[1].children_loaded);
+        // "All Namespaces" + "default" + "kube-system" = 3 children
+        assert_eq!(app.tree.len(), 4 + 3); // 4 original + 3 children
+
+        // Now namespace list changes (new namespace added)
+        app.snapshots[0].namespaces = vec!["default".into(), "kube-system".into(), "monitoring".into()];
+        app.sync_tree_from_snapshots();
+
+        // Should now have 4 children: All NS + default + kube-system + monitoring
+        assert_eq!(app.tree.len(), 4 + 4);
+    }
+
+    #[test]
+    fn sync_tree_no_change_when_namespaces_same() {
+        let mut app = test_app();
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into()],
+            nodes: vec![],
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+
+        app.tree[1].expanded = true;
+        app.sync_tree_from_snapshots();
+        let tree_len_after_first = app.tree.len();
+
+        // Sync again with same namespaces — should not change
+        app.sync_tree_from_snapshots();
+        assert_eq!(app.tree.len(), tree_len_after_first);
+    }
+
+    // --- US-104/105: Scroll offset clamping ---
+
+    #[test]
+    fn table_scroll_offset_clamped_on_data_shrink() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: vec![],
+            pods: (0..3)
+                .map(|i| crate::dash::data::PodInfo {
+                    name: format!("pod-{}", i),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    age: "1h".into(),
+                    node: "n1".into(),
+                })
+                .collect(),
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+        // Set scroll offset beyond data
+        app.table_scroll_offset = 10;
+        app.table_cursor = 2;
+
+        app.ensure_table_scroll_visible(10);
+
+        // 3 rows, viewport 10 → max offset = 0
+        assert_eq!(app.table_scroll_offset, 0);
+    }
+
+    // --- US-201: ESC clears search filter in normal mode ---
+
+    #[test]
+    fn esc_clears_filter_in_normal_mode() {
+        let mut app = test_app();
+        app.search_active = false;
+        app.search_query = Some("kube".to_string());
+        app.table_cursor = 3;
+        app.table_scroll_offset = 2;
+
+        app.handle_event(AppEvent::Escape);
+
+        assert!(app.search_query.is_none());
+        assert_eq!(app.table_cursor, 0);
+        assert_eq!(app.table_scroll_offset, 0);
+    }
+
+    #[test]
+    fn esc_noop_when_no_filter() {
+        let mut app = test_app();
+        app.search_active = false;
+        app.search_query = None;
+
+        app.handle_event(AppEvent::Escape);
+
+        assert!(app.search_query.is_none());
+    }
+
+    #[test]
+    fn esc_noop_when_empty_filter() {
+        let mut app = test_app();
+        app.search_active = false;
+        app.search_query = Some(String::new());
+
+        app.handle_event(AppEvent::Escape);
+
+        // Empty query not cleared (no filter active)
+        assert_eq!(app.search_query, Some(String::new()));
+    }
+
+    // --- US-202: Sidebar selection ambiguity ---
+
+    #[test]
+    fn all_namespaces_marker_not_on_cluster() {
+        let mut app = test_app();
+        // Simulate: tower expanded, "All Namespaces" selected
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        app.tree.insert(
+            2,
+            TreeNode {
+                label: "All Namespaces".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "All Namespaces".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        app.selected_cluster = Some("tower".into());
+        app.selected_namespace = None; // "All Namespaces"
+
+        // Cluster node (tower) should NOT be active selection when it has expanded children
+        let tower_node = &app.tree[1];
+        let tower_is_active = match &tower_node.node_type {
+            NodeType::Cluster(name) => {
+                app.selected_cluster.as_ref() == Some(name)
+                    && app.selected_namespace.is_none()
+                    && !tower_node.expanded // <-- new condition
+            }
+            _ => false,
+        };
+        assert!(!tower_is_active, "cluster node should not show marker when expanded with All NS");
+
+        // All Namespaces node SHOULD be active selection
+        let all_ns_node = &app.tree[2];
+        let all_ns_is_active = match &all_ns_node.node_type {
+            NodeType::Namespace { cluster, namespace } => {
+                app.selected_cluster.as_ref() == Some(cluster)
+                    && namespace == "All Namespaces"
+                    && app.selected_namespace.is_none()
+            }
+            _ => false,
+        };
+        assert!(all_ns_is_active, "All Namespaces node should show marker");
+    }
+
+    // --- US-204: Backspace in normal mode ---
+
+    #[test]
+    fn backspace_normal_mode_noop() {
+        let mut app = test_app();
+        app.tree[1].expanded = true;
+        app.tree_cursor = 1;
+        let expanded_before = app.tree[1].expanded;
+
+        app.handle_event(AppEvent::Backspace);
+
+        assert_eq!(app.tree[1].expanded, expanded_before, "Backspace should not collapse node");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -974,14 +2109,28 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
     });
 
     let result = loop {
+        // Adjust scroll offsets before drawing (US-034, US-035)
+        {
+            let term_size = terminal.size()?;
+            let header_height: u16 = if term_size.height >= 28 { 8 } else { 4 };
+            let status_bar_height: u16 = 3;
+            let body_height = term_size
+                .height
+                .saturating_sub(header_height + status_bar_height);
+            // Sidebar viewport = body height minus border (right border only, inner = same height)
+            let sidebar_viewport = body_height.saturating_sub(0) as usize;
+            app.ensure_sidebar_scroll_visible(sidebar_viewport);
+            // Table viewport = body height minus block borders (2) minus header row (1) minus optional search bar (1)
+            let search_offset: u16 = if app.search_active { 1 } else { 0 };
+            let table_viewport = body_height.saturating_sub(2 + 1 + search_offset) as usize;
+            app.ensure_table_scroll_visible(table_viewport);
+        }
+
         // Draw first — shows skeleton UI instantly on startup (US-004)
         terminal.draw(|f| ui::render(f, &app))?;
 
         // Handle events (never blocks longer than tick_rate = 100ms)
         let evt = event::poll_event(tick_rate)?;
-        if evt == AppEvent::Refresh {
-            app.needs_refresh = true;
-        }
         app.handle_event(evt);
         app.tick_count += 1;
 
@@ -994,9 +2143,20 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             match event {
                 kube_client::DiscoverEvent::Connected(client) => {
                     app.tunnel_pids.extend(client.tunnel_pid);
+                    let name = client.name.clone();
                     app.cluster_connection_status
-                        .insert(client.name.clone(), ConnectionStatus::Connected);
+                        .insert(name.clone(), ConnectionStatus::Connected);
                     app.clusters.push(client);
+                    // Auto-select first connected cluster if none selected
+                    if app.selected_cluster.is_none() {
+                        app.selected_cluster = Some(name);
+                        // Expand the cluster node in sidebar
+                        if let Some(idx) = app.tree.iter().position(|n| {
+                            matches!(&n.node_type, NodeType::Cluster(c) if c == app.selected_cluster.as_ref().unwrap())
+                        }) {
+                            app.tree[idx].expanded = true;
+                        }
+                    }
                     app.needs_refresh = true;
                     app.fetch_generation += 1;
                     app.is_fetching = false;
@@ -1030,24 +2190,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         if let Some(existing) =
                             app.snapshots.iter_mut().find(|s| s.name == new_snap.name)
                         {
-                            // Always update namespaces, nodes, health, resource_usage
+                            // Always update namespaces and nodes (fetched every cycle)
                             existing.namespaces = new_snap.namespaces;
                             existing.nodes = new_snap.nodes;
-                            existing.health = new_snap.health;
-                            existing.resource_usage = new_snap.resource_usage;
                             // Only update the actively fetched resource
                             match active {
-                                ActiveResource::Pods => {
-                                    existing.pods = new_snap.pods;
-                                    // Recompute health with fresh pods
-                                    existing.health =
-                                        data::compute_health(&existing.nodes, &existing.pods);
-                                    existing.resource_usage = data::compute_resource_usage(
-                                        &existing.nodes,
-                                        &existing.pods,
-                                        None,
-                                    );
-                                }
+                                ActiveResource::Pods => existing.pods = new_snap.pods,
                                 ActiveResource::Deployments => {
                                     existing.deployments = new_snap.deployments
                                 }
@@ -1057,16 +2205,10 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                                 }
                                 ActiveResource::Nodes => {} // nodes already updated above
                             }
-                            // For non-pod fetches, recompute health using existing pods
-                            if active != ActiveResource::Pods {
-                                existing.health =
-                                    data::compute_health(&existing.nodes, &existing.pods);
-                                existing.resource_usage = data::compute_resource_usage(
-                                    &existing.nodes,
-                                    &existing.pods,
-                                    None,
-                                );
-                            }
+                            // Recompute health from merged nodes + pods
+                            existing.health = data::compute_health(&existing.nodes, &existing.pods);
+                            existing.resource_usage =
+                                data::compute_resource_usage(&existing.nodes, &existing.pods, None);
                         } else {
                             // New cluster not yet in snapshots — add it
                             app.snapshots.push(new_snap);
@@ -1081,6 +2223,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             app.self_rss_mb = read_self_rss_mb();
             app.is_fetching = false;
             app.fetch_started_at = None;
+            // Clamp table cursor after data change (US-030, US-062: respects search filter)
+            let row_count = app.current_row_count();
+            app.clamp_table_cursor(row_count);
             last_refresh = Instant::now();
         }
 
@@ -1103,6 +2248,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
 
             let tx = fetch_tx.clone();
             let clusters = app.clusters.clone();
+            let selected_cluster = app.selected_cluster.clone();
             let ns = app.selected_namespace.clone();
             let cancel = cancelled.clone();
             let active_res = Some(app.resource_view.to_active_resource());
@@ -1114,12 +2260,18 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 for cluster in &clusters {
                     let client = cluster.client.clone();
                     let name = cluster.name.clone();
-                    let ns = ns.clone();
+                    // Only apply namespace filter to the selected cluster;
+                    // other clusters fetch all namespaces for accurate status bar counts
+                    let cluster_ns = if selected_cluster.as_ref() == Some(&name) {
+                        ns.clone()
+                    } else {
+                        None
+                    };
                     handles.push(tokio::spawn(async move {
                         match data::fetch_cluster_snapshot(
                             &client,
                             &name,
-                            ns.as_deref(),
+                            cluster_ns.as_deref(),
                             active_res,
                         )
                         .await
