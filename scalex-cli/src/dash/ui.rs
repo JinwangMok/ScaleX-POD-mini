@@ -500,7 +500,8 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines).scroll((app.sidebar_scroll_offset as u16, 0));
+    let paragraph =
+        Paragraph::new(lines).scroll((app.sidebar_scroll_offset.min(u16::MAX as usize) as u16, 0));
     f.render_widget(paragraph, inner);
 
     // Scroll indicator when content overflows viewport
@@ -766,11 +767,15 @@ fn render_resource_table<'a, T, F, R>(
     }
 
     let clamped_cursor = app.table_cursor.min(filtered.len() - 1);
+    // Defensively clamp scroll offset to prevent blank table when filter shrinks results
+    let clamped_scroll = app
+        .table_scroll_offset
+        .min(filtered.len().saturating_sub(1));
     let viewport_rows = area.height.saturating_sub(1) as usize;
     let rows: Vec<Row> = filtered
         .iter()
         .enumerate()
-        .skip(app.table_scroll_offset)
+        .skip(clamped_scroll)
         .take(viewport_rows)
         .map(|(i, item)| {
             let is_selected = i == clamped_cursor && app.active_panel == ActivePanel::Center;
@@ -926,7 +931,9 @@ fn render_deployments_table(
                 } else {
                     (0, 0)
                 };
-                let color = if desired == 0 || ready >= desired {
+                let color = if desired == 0 {
+                    theme::FG4 // scaled-to-zero: neutral/dim, not green
+                } else if ready >= desired {
                     theme::BRIGHT_GREEN
                 } else if ready > 0 {
                     theme::BRIGHT_YELLOW
@@ -1130,7 +1137,7 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(lines)
         .style(Style::default().bg(theme::BG))
-        .scroll((app.table_scroll_offset as u16, 0));
+        .scroll((app.table_scroll_offset.min(u16::MAX as usize) as u16, 0));
     f.render_widget(paragraph, area);
 }
 
