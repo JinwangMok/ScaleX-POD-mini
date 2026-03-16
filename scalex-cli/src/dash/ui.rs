@@ -422,34 +422,46 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 _ => None,
             };
 
-            // Truncate label to fit sidebar width
-            let prefix_width = indent.len() + marker.len() + icon.len();
-            let suffix_width = conn_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
-            let available = (inner.width as usize).saturating_sub(prefix_width + suffix_width);
-            let display_label: String = if node.label.len() > available && available > 1 {
+            // Truncate label to fit sidebar width.
+            // Use display-column widths, not byte lengths — Unicode markers (●, ▼, ▶)
+            // are 3 bytes each but 1 display column.
+            let indent_cols = 2 * node.depth;  // "  ".repeat(depth) — pure ASCII
+            let marker_cols: usize = 2;        // "● " or "  " — always 2 display columns
+            let icon_cols: usize = 2;          // "▼ " / "▶ " / "  " — always 2 display columns
+            let prefix_cols = indent_cols + marker_cols + icon_cols;
+            let suffix_cols = conn_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0); // ASCII only
+            let available = (inner.width as usize).saturating_sub(prefix_cols + suffix_cols);
+            // Labels are k8s names (ASCII), so chars().count() == display columns
+            let label_char_count = node.label.chars().count();
+            let display_label: String = if label_char_count > available && available > 1 {
                 let truncated: String = node.label.chars().take(available - 1).collect();
                 format!("{}…", truncated)
             } else {
                 node.label.clone()
             };
+            // Display columns for the label (truncated label chars + 1 for …, or original count)
+            let label_cols = if label_char_count > available && available > 1 {
+                available // truncated to exactly fit
+            } else {
+                label_char_count
+            };
 
-            let label_len = display_label.len();
             let mut spans = vec![
                 Span::styled(indent, style),
                 Span::styled(marker, marker_style),
                 Span::styled(icon, style),
                 Span::styled(display_label, style),
             ];
-            let mut used_width = prefix_width + label_len;
+            let mut used_cols = prefix_cols + label_cols;
             if let Some((suffix, color)) = conn_suffix {
-                used_width += suffix.len();
+                used_cols += suffix.len(); // suffix is ASCII
                 spans.push(Span::styled(
                     suffix,
                     Style::default().fg(color).bg(suffix_bg),
                 ));
             }
             // Pad to full sidebar width so cursor/selection highlight fills the row
-            let pad = (inner.width as usize).saturating_sub(used_width);
+            let pad = (inner.width as usize).saturating_sub(used_cols);
             if pad > 0 {
                 let pad_style = if is_cursor {
                     style
@@ -664,8 +676,10 @@ fn render_tab_preamble<'a>(f: &mut Frame, app: &'a App, area: Rect) -> Option<&'
         "  All clusters failed to connect. Check sidebar for details. Press 'r' to retry.".to_string()
     } else if app.snapshots.is_empty() && app.clusters.is_empty() {
         "  No clusters found. Run 'scalex cluster init' first.".to_string()
-    } else if app.is_fetching {
+    } else if app.is_fetching || (app.selected_cluster.is_some() && app.needs_refresh) {
         format!("  {} Loading...", spinner)
+    } else if app.selected_cluster.is_some() {
+        format!("  {} Waiting for data...", spinner)
     } else {
         "  Select a cluster and press Enter".to_string()
     };
