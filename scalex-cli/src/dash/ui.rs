@@ -449,15 +449,20 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let available = (inner.width as usize).saturating_sub(prefix_cols + suffix_cols);
             // Labels are k8s names (ASCII), so chars().count() == display columns
             let label_char_count = node.label.chars().count();
-            let display_label: String = if label_char_count > available && available > 1 {
-                let truncated: String = node.label.chars().take(available - 1).collect();
-                format!("{}…", truncated)
+            let display_label: String = if label_char_count > available {
+                if available > 1 {
+                    let truncated: String = node.label.chars().take(available - 1).collect();
+                    format!("{}…", truncated)
+                } else {
+                    // No room for label + ellipsis; show just ellipsis or nothing
+                    if available == 1 { "…".to_string() } else { String::new() }
+                }
             } else {
                 node.label.clone()
             };
-            // Display columns for the label (truncated label chars + 1 for …, or original count)
-            let label_cols = if label_char_count > available && available > 1 {
-                available // truncated to exactly fit
+            // Display columns for the label
+            let label_cols = if label_char_count > available {
+                available
             } else {
                 label_char_count
             };
@@ -504,15 +509,13 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         );
         let x = inner.x;
         let y = inner.y + inner.height.saturating_sub(1);
-        if y < inner.y + inner.height {
-            let indicator_area =
-                Rect::new(x, y, indicator.len().min(inner.width as usize) as u16, 1);
-            let indicator_widget = Paragraph::new(Span::styled(
-                indicator,
-                Style::default().fg(theme::FG4).bg(theme::BG_HARD),
-            ));
-            f.render_widget(indicator_widget, indicator_area);
-        }
+        let indicator_area =
+            Rect::new(x, y, indicator.len().min(inner.width as usize) as u16, 1);
+        let indicator_widget = Paragraph::new(Span::styled(
+            indicator,
+            Style::default().fg(theme::FG4).bg(theme::BG_HARD),
+        ));
+        f.render_widget(indicator_widget, indicator_area);
     }
 }
 

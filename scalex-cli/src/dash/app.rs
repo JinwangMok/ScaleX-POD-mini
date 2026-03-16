@@ -403,8 +403,14 @@ impl App {
                     self.table_scroll_offset = 0;
                 }
                 // Arrow keys, page keys, Home/End in search mode: no-op (don't type characters)
-                AppEvent::ArrowUp | AppEvent::ArrowDown | AppEvent::ArrowLeft | AppEvent::ArrowRight
-                | AppEvent::PageUp | AppEvent::PageDown | AppEvent::Home | AppEvent::End => {}
+                AppEvent::ArrowUp
+                | AppEvent::ArrowDown
+                | AppEvent::ArrowLeft
+                | AppEvent::ArrowRight
+                | AppEvent::PageUp
+                | AppEvent::PageDown
+                | AppEvent::Home
+                | AppEvent::End => {}
                 // Tab/Shift+Tab: cancel search (clear query) and switch panel
                 AppEvent::NextPanel | AppEvent::PrevPanel => {
                     self.search_active = false;
@@ -497,8 +503,7 @@ impl App {
                 AppEvent::PageDown => {
                     let max = self.help_content_line_count();
                     let jump = (self.page_size / 2).max(1) as u16;
-                    self.help_scroll_offset =
-                        (self.help_scroll_offset + jump).min(max);
+                    self.help_scroll_offset = (self.help_scroll_offset + jump).min(max);
                 }
                 AppEvent::Home => {
                     self.help_scroll_offset = 0;
@@ -907,7 +912,10 @@ impl App {
         let node_type = self.tree[idx].node_type.clone();
 
         // Leaf nodes can't collapse — navigate to parent instead
-        if matches!(node_type, NodeType::Namespace { .. } | NodeType::InfraItem(_)) {
+        if matches!(
+            node_type,
+            NodeType::Namespace { .. } | NodeType::InfraItem(_)
+        ) {
             self.navigate_to_parent(&visible, idx);
             return;
         }
@@ -1103,9 +1111,10 @@ impl App {
 
         for (snap_name, snap_namespaces) in &snapshot_data {
             // Find the cluster node
-            let cluster_idx = self.tree.iter().position(
-                |n| matches!(&n.node_type, NodeType::Cluster(name) if name == snap_name),
-            );
+            let cluster_idx = self
+                .tree
+                .iter()
+                .position(|n| matches!(&n.node_type, NodeType::Cluster(name) if name == snap_name));
 
             if let Some(idx) = cluster_idx {
                 if !self.tree[idx].expanded {
@@ -1205,8 +1214,8 @@ impl App {
                 }
             }
         };
-        // Global section: blank + section + blank + 8 keys + blank + footer = 12
-        context_lines + 12
+        // Global section: blank + section + blank + 8 keys + blank + footer = 13
+        context_lines + 13
     }
 
     /// Get the number of rows in the current resource view (for cursor clamping).
@@ -2199,7 +2208,8 @@ mod tests {
         assert_eq!(app.tree.len(), 4 + 3); // 4 original + 3 children
 
         // Now namespace list changes (new namespace added)
-        app.snapshots[0].namespaces = vec!["default".into(), "kube-system".into(), "monitoring".into()];
+        app.snapshots[0].namespaces =
+            vec!["default".into(), "kube-system".into(), "monitoring".into()];
         app.sync_tree_from_snapshots();
 
         // Should now have 4 children: All NS + default + kube-system + monitoring
@@ -2342,7 +2352,10 @@ mod tests {
             }
             _ => false,
         };
-        assert!(!tower_is_active, "cluster node should not show marker when expanded with All NS");
+        assert!(
+            !tower_is_active,
+            "cluster node should not show marker when expanded with All NS"
+        );
 
         // All Namespaces node SHOULD be active selection
         let all_ns_node = &app.tree[2];
@@ -2368,7 +2381,10 @@ mod tests {
 
         app.handle_event(AppEvent::Backspace);
 
-        assert_eq!(app.tree[1].expanded, expanded_before, "Backspace should not collapse node");
+        assert_eq!(
+            app.tree[1].expanded, expanded_before,
+            "Backspace should not collapse node"
+        );
     }
 
     // --- US-070: Tab key exits search and switches panel ---
@@ -2694,7 +2710,7 @@ mod tests {
         app.tree_cursor = 2; // on namespace
         let tree_len_before = app.tree.len();
         app.handle_event(AppEvent::Right); // expand on leaf
-        // expanded should NOT be set to true for namespace
+                                           // expanded should NOT be set to true for namespace
         assert!(!app.tree[2].expanded);
         assert_eq!(app.tree.len(), tree_len_before); // no children added
     }
@@ -2888,7 +2904,10 @@ mod tests {
         app.handle_event(AppEvent::NextPanel);
 
         assert!(!app.search_active);
-        assert_eq!(app.search_query, None, "Tab should clear partial search query");
+        assert_eq!(
+            app.search_query, None,
+            "Tab should clear partial search query"
+        );
         assert_eq!(app.active_panel, ActivePanel::Sidebar);
     }
 
@@ -2902,7 +2921,10 @@ mod tests {
         app.handle_event(AppEvent::PrevPanel);
 
         assert!(!app.search_active);
-        assert_eq!(app.search_query, None, "Shift+Tab should clear partial search query");
+        assert_eq!(
+            app.search_query, None,
+            "Shift+Tab should clear partial search query"
+        );
     }
 }
 
@@ -3014,9 +3036,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     if app.selected_cluster.is_none() {
                         app.selected_cluster = Some(name.clone());
                         // Expand the cluster node in sidebar
-                        if let Some(idx) = app.tree.iter().position(|n| {
-                            matches!(&n.node_type, NodeType::Cluster(c) if c == &name)
-                        }) {
+                        if let Some(idx) = app.tree.iter().position(
+                            |n| matches!(&n.node_type, NodeType::Cluster(c) if c == &name),
+                        ) {
                             app.tree[idx].expanded = true;
                         }
                     }
