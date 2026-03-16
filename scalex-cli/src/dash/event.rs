@@ -87,6 +87,9 @@ fn map_key_event(key: KeyEvent) -> AppEvent {
         KeyCode::PageDown => AppEvent::PageDown,
         KeyCode::Home => AppEvent::Home,
         KeyCode::End => AppEvent::End,
+        // Tab switch via number keys (more reliable than Ctrl+N in many terminals)
+        KeyCode::Char('1') if !ctrl => AppEvent::Tab(1),
+        KeyCode::Char('2') if !ctrl => AppEvent::Tab(2),
         // Navigation — vim keys (typed as chars in search mode)
         KeyCode::Char('k') if !ctrl => AppEvent::Up,
         KeyCode::Char('j') if !ctrl => AppEvent::Down,
@@ -241,6 +244,19 @@ mod tests {
         assert_eq!(
             map_key_event(key(KeyCode::Char('p'), KeyModifiers::NONE)),
             AppEvent::ResourceType('p')
+        );
+    }
+
+    #[test]
+    fn number_keys_switch_tabs() {
+        // US-502: 1/2 keys switch tabs directly (more reliable than Ctrl+N)
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('1'), KeyModifiers::NONE)),
+            AppEvent::Tab(1)
+        );
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('2'), KeyModifiers::NONE)),
+            AppEvent::Tab(2)
         );
     }
 }

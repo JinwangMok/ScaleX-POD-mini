@@ -484,6 +484,13 @@ impl App {
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
                 }
+                // Number keys (1/2) map to Tab events but should type digits in search mode
+                AppEvent::Tab(n) if (1..=9).contains(&n) => {
+                    let digit = char::from_digit(n as u32, 10).unwrap_or('0');
+                    self.search_query.get_or_insert_with(String::new).push(digit);
+                    self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
+                }
                 _ => {}
             }
             return;
@@ -1492,6 +1499,40 @@ mod tests {
         app.handle_event(AppEvent::ResourceType('p')); // same view
 
         assert!(!app.needs_refresh);
+    }
+
+    // --- US-502: Number key tab switching ---
+
+    #[test]
+    fn number_key_1_switches_to_resources_tab() {
+        let mut app = test_app();
+        app.active_tab = 1; // Start on Top tab
+
+        app.handle_event(AppEvent::Tab(1));
+
+        assert_eq!(app.active_tab, 0); // Switched to Resources
+    }
+
+    #[test]
+    fn number_key_2_switches_to_top_tab() {
+        let mut app = test_app();
+        app.active_tab = 0; // Start on Resources tab
+
+        app.handle_event(AppEvent::Tab(2));
+
+        assert_eq!(app.active_tab, 1); // Switched to Top
+    }
+
+    #[test]
+    fn number_keys_type_digits_in_search_mode() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+
+        app.handle_event(AppEvent::Tab(1)); // should type '1'
+        app.handle_event(AppEvent::Tab(2)); // should type '2'
+
+        assert_eq!(app.search_query, Some("12".to_string()));
     }
 
     #[test]
@@ -2758,7 +2799,8 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                },
+                age: "1d".into(),
+},
                 crate::dash::data::NodeInfo {
                     name: "node-1".into(),
                     status: "Ready".into(),
@@ -2767,7 +2809,8 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                },
+                age: "1d".into(),
+},
             ],
             pods: vec![],
             deployments: vec![],
@@ -2802,7 +2845,8 @@ mod tests {
                 mem_capacity: "8Gi".into(),
                 cpu_allocatable: "4".into(),
                 mem_allocatable: "8Gi".into(),
-            }],
+            age: "1d".into(),
+}],
             pods: vec![],
             deployments: vec![],
             services: vec![],
@@ -2882,7 +2926,8 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                })
+                age: "1d".into(),
+})
                 .collect(),
             pods: vec![],
             deployments: vec![],
@@ -2923,7 +2968,8 @@ mod tests {
                 mem_capacity: "8Gi".into(),
                 cpu_allocatable: "4".into(),
                 mem_allocatable: "8Gi".into(),
-            }],
+            age: "1d".into(),
+}],
             pods: vec![],
             deployments: vec![],
             services: vec![],
@@ -3047,7 +3093,8 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                },
+                age: "1d".into(),
+},
                 crate::dash::data::NodeInfo {
                     name: "node-beta".into(),
                     status: "Ready".into(),
@@ -3056,7 +3103,8 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                },
+                age: "1d".into(),
+},
             ],
             pods: vec![],
             deployments: vec![],

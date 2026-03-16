@@ -57,6 +57,7 @@ pub struct NodeInfo {
     pub mem_capacity: String,
     pub cpu_allocatable: String,
     pub mem_allocatable: String,
+    pub age: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -190,6 +191,7 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
     let node_list = tokio::time::timeout(API_CALL_TIMEOUT, api.list(&ListParams::default()))
         .await
         .map_err(|_| anyhow::anyhow!("node list timeout"))??;
+    let now = Utc::now();
 
     Ok(node_list
         .items
@@ -230,6 +232,12 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
 
             let _ = spec; // suppress unused warning
 
+            let age = meta
+                .creation_timestamp
+                .as_ref()
+                .map(|ts| format_age(now, ts.0))
+                .unwrap_or_else(|| "<unknown>".into());
+
             NodeInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 status: node_status,
@@ -250,6 +258,7 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
                     .and_then(|a| a.get("memory"))
                     .map(|v| v.0.clone())
                     .unwrap_or_default(),
+                age,
             }
         })
         .collect())
@@ -368,7 +377,10 @@ pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<
                             ps.iter()
                                 .map(|p| {
                                     let proto = p.protocol.as_deref().unwrap_or("TCP");
-                                    format!("{}/{}", p.port, proto)
+                                    match p.node_port {
+                                        Some(np) => format!("{}:{}/{}", p.port, np, proto),
+                                        None => format!("{}/{}", p.port, proto),
+                                    }
                                 })
                                 .collect::<Vec<_>>()
                                 .join(",")
@@ -729,6 +741,7 @@ mod tests {
             mem_capacity: "8Gi".into(),
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
+            age: "1d".into(),
         }];
         let pods = vec![PodInfo {
             name: "p1".into(),
@@ -752,6 +765,7 @@ mod tests {
             mem_capacity: "8Gi".into(),
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
+            age: "1d".into(),
         }];
         assert_eq!(compute_health(&nodes, &[]), HealthStatus::Red);
     }
@@ -766,6 +780,7 @@ mod tests {
             mem_capacity: "8Gi".into(),
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
+            age: "1d".into(),
         }];
         let pods = vec![PodInfo {
             name: "p1".into(),
@@ -888,6 +903,7 @@ mod tests {
             mem_capacity: "8Gi".into(),
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
+            age: "1d".into(),
         }];
         let pods = vec![PodInfo {
             name: "p1".into(),
@@ -913,6 +929,7 @@ mod tests {
             mem_capacity: "8Gi".into(),
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
+            age: "1d".into(),
         }];
         let metrics = vec![NodeMetrics {
             name: "n1".into(),
