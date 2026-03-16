@@ -103,7 +103,7 @@ The TUI header is k9s-style and responsive:
 | `Ctrl+N` | Switch to tab N (1=Resources, 2=Top) |
 | `p` `d` `s` `c` `n` | Switch resource view (center panel only) |
 | `/` | Enter search mode (filter by name and namespace) |
-| `r` | Force data refresh |
+| `r` | Force data refresh + retry failed cluster connections |
 | `?` | Toggle help overlay (context-sensitive: shows keys for current panel/view) |
 | `ESC` | Close help overlay / Cancel search |
 | `q`/`Ctrl+C` | Quit |
@@ -112,6 +112,9 @@ The TUI header is k9s-style and responsive:
 
 - **Cursor ≠ selection**: `j`/`k` never changes `selected_cluster`/`selected_namespace`. Only `Enter` commits selection. `l`/Right expands without selecting.
 - **Active selection indicator**: selected node shown with `●` marker + bold aqua, distinct from yellow cursor highlight.
+- **Sidebar health dots**: connected clusters show colored health dot (● green/yellow/red, ○ unknown) as suffix. Discovering shows `[..]`, failed shows `[!!]`.
+- **Sidebar namespace count**: expanded cluster labels show namespace count suffix like `tower (12ns)`.
+- **Retry failed connections**: `r` key re-spawns cluster discovery for failed connections via `discover_clusters_streaming_filtered`.
 - **View switch triggers refresh**: `p`/`d`/`s`/`c`/`n` sets `needs_refresh=true` for immediate re-fetch.
 - **Stale data indicator**: when a selective fetch completes for resource X, views showing other resource types display `[cached]` in their panel title (orange text). `App::is_view_stale()` compares `last_fetched_resource` against the current `ResourceView`.
 - **Connection failure display**: if `cluster_connection_status` maps a cluster to `ConnectionStatus::Failed`, the center panel (both Resources and Top tabs) renders an error message with retry hint instead of the resource table. Sidebar shows `[!!]` suffix in red.
