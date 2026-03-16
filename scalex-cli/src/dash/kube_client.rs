@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use kube::Client;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ClusterClient {
@@ -10,6 +12,148 @@ pub struct ClusterClient {
     pub client: Client,
     /// SSH tunnel process ID (if auto-tunneled)
     pub tunnel_pid: Option<u32>,
+}
+
+/// Event sent during streaming cluster discovery.
+pub enum DiscoverEvent {
+    /// A cluster client was successfully created (may include SSH tunnel).
+    Connected(ClusterClient),
+    /// A cluster connection failed.
+    Failed { name: String, error: String },
+    /// All clusters have been processed.
+    Complete,
+}
+
+/// Scan kubeconfig directory for cluster names without any network I/O.
+/// Returns sorted list of cluster names that have kubeconfig.yaml files.
+/// Guaranteed to complete in <100ms (filesystem only).
+pub fn scan_kubeconfig_names(dir: &Path) -> Vec<String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter(|e| e.path().join("kubeconfig.yaml").exists())
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Discover clusters and stream results via mpsc channel (one event per cluster).
+/// Respects cancellation via Arc<AtomicBool>.
+pub async fn discover_clusters_streaming(
+    dir: PathBuf,
+    tx: tokio::sync::mpsc::Sender<DiscoverEvent>,
+    cancelled: Arc<AtomicBool>,
+) {
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => {
+            let _ = tx.send(DiscoverEvent::Complete).await;
+            return;
+        }
+    };
+
+    // Resolve bastion info once (for auto-tunneling)
+    let repo_root = dir
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(Path::new("."));
+    let bastion = resolve_bastion(repo_root);
+    let mut next_local_port: u16 = 16443;
+
+    let mut dirs: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    dirs.sort_by_key(|e| e.file_name());
+
+    for entry in dirs {
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let kubeconfig_path = path.join("kubeconfig.yaml");
+        if !kubeconfig_path.exists() {
+            continue;
+        }
+
+        let cluster_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Try direct connection first
+        if let Ok(client) = build_client(&kubeconfig_path).await {
+            if kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
+                .list(&kube::api::ListParams::default().limit(1))
+                .await
+                .is_ok()
+            {
+                let _ = tx
+                    .send(DiscoverEvent::Connected(ClusterClient {
+                        name: cluster_name,
+                        kubeconfig_path,
+                        client,
+                        tunnel_pid: None,
+                    }))
+                    .await;
+                continue;
+            }
+        }
+
+        // Auto-tunnel fallback
+        if let Some(ref bastion_host) = bastion {
+            match setup_auto_tunnel(
+                &kubeconfig_path,
+                &cluster_name,
+                bastion_host,
+                next_local_port,
+            )
+            .await
+            {
+                Ok((client, pid)) => {
+                    eprintln!(
+                        "Auto-tunnel: {} → localhost:{} via {}",
+                        cluster_name, next_local_port, bastion_host
+                    );
+                    let _ = tx
+                        .send(DiscoverEvent::Connected(ClusterClient {
+                            name: cluster_name,
+                            kubeconfig_path,
+                            client,
+                            tunnel_pid: Some(pid),
+                        }))
+                        .await;
+                    next_local_port += 1;
+                    continue;
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(DiscoverEvent::Failed {
+                            name: cluster_name,
+                            error: format!("{}", e),
+                        })
+                        .await;
+                }
+            }
+        } else {
+            let _ = tx
+                .send(DiscoverEvent::Failed {
+                    name: cluster_name,
+                    error: "No bastion available for auto-tunnel".into(),
+                })
+                .await;
+        }
+    }
+
+    let _ = tx.send(DiscoverEvent::Complete).await;
 }
 
 /// Discover kubeconfig files from the given directory.
@@ -279,6 +423,8 @@ fn is_process_alive(pid: u32) -> bool {
 }
 
 /// Clean up SSH tunnel processes when the app exits.
+/// Used by headless mode which still holds ClusterClient vec directly.
+#[allow(dead_code)]
 pub fn cleanup_tunnels(clusters: &[ClusterClient]) {
     for cluster in clusters {
         if let Some(pid) = cluster.tunnel_pid {
@@ -347,5 +493,50 @@ mod tests {
         let kc = dir.path().join("kubeconfig.yaml");
         std::fs::write(&kc, "").unwrap();
         assert!(lookup_cp_ip(&kc, "tower").is_none());
+    }
+
+    #[test]
+    fn scan_kubeconfig_names_finds_clusters() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create two cluster dirs with kubeconfig.yaml
+        let tower = dir.path().join("tower");
+        std::fs::create_dir_all(&tower).unwrap();
+        std::fs::write(tower.join("kubeconfig.yaml"), "test").unwrap();
+
+        let sandbox = dir.path().join("sandbox");
+        std::fs::create_dir_all(&sandbox).unwrap();
+        std::fs::write(sandbox.join("kubeconfig.yaml"), "test").unwrap();
+
+        // Create a dir without kubeconfig (should be ignored)
+        let noconfig = dir.path().join("noconfig");
+        std::fs::create_dir_all(&noconfig).unwrap();
+
+        let names = scan_kubeconfig_names(dir.path());
+        assert_eq!(names, vec!["sandbox".to_string(), "tower".to_string()]);
+    }
+
+    #[test]
+    fn scan_kubeconfig_names_returns_empty_for_missing_dir() {
+        let names = scan_kubeconfig_names(std::path::Path::new("/nonexistent/path"));
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn scan_kubeconfig_names_completes_fast() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            let d = dir.path().join(format!("cluster-{}", i));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("kubeconfig.yaml"), "test").unwrap();
+        }
+        let start = std::time::Instant::now();
+        let names = scan_kubeconfig_names(dir.path());
+        let elapsed = start.elapsed();
+        assert_eq!(names.len(), 10);
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "scan_kubeconfig_names took {:?}, expected <100ms",
+            elapsed
+        );
     }
 }

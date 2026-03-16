@@ -15,19 +15,19 @@ pub async fn run(args: DashArgs) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("_generated/clusters"));
 
-    let clusters = kube_client::discover_clusters(&kubeconfig_dir).await?;
-
-    if clusters.is_empty() {
-        anyhow::bail!(
-            "No kubeconfig files found in {}. Run 'scalex cluster init' first.",
-            kubeconfig_dir.display()
-        );
-    }
-
     if args.headless {
+        // Headless mode: synchronous discover (blocking is fine for JSON output)
+        let clusters = kube_client::discover_clusters(&kubeconfig_dir).await?;
+        if clusters.is_empty() {
+            anyhow::bail!(
+                "No kubeconfig files found in {}. Run 'scalex cluster init' first.",
+                kubeconfig_dir.display()
+            );
+        }
         headless::run_headless(&args, &clusters).await
     } else {
-        app::run_tui(args, clusters).await
+        // TUI mode: non-blocking startup — pass dir, discover in background
+        app::run_tui(args, kubeconfig_dir).await
     }
 }
 

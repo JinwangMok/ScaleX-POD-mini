@@ -78,6 +78,29 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Auto-SSH-tunnel**: if K8s API (192.168.88.x:6443) is unreachable, tunnels through bastion node transparently
 - After `install.sh`, `scalex dash` works without manual tunnel setup
 - `metrics_server_enabled` is hardcoded `false` in `kubespray.rs` — metrics utilization bars show N/A until enabled
+- **Skeleton startup**: TUI draws immediately on launch before first data fetch
+- **Parallel fetch**: `tokio::join!` for 7 intra-cluster API calls + `tokio::spawn` per cluster for cross-cluster parallelism
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `j`/`k` or arrows | Move cursor (does **not** change selected cluster/namespace) |
+| `Enter` | Select cluster or namespace (sets active context for center panel) |
+| `h`/`l` or arrows | Collapse / Expand sidebar tree node |
+| `Tab`/`Shift+Tab` | Cycle between Sidebar and Center panel |
+| `Ctrl+N` | Switch to tab N (1=Resources, 2=Top) |
+| `p` `d` `s` `c` `n` | Switch resource view (center panel only) |
+| `/` | Enter search mode (filter by name) |
+| `r` | Force data refresh |
+| `?` | Toggle help overlay |
+| `q`/`Ctrl+C` | Quit |
+
+### UX Design Invariants
+
+- **Cursor ≠ selection**: `j`/`k` never changes `selected_cluster`/`selected_namespace`. Only `Enter` commits selection. `l`/Right expands without selecting.
+- **Active selection indicator**: selected node shown with `●` marker + bold aqua, distinct from yellow cursor highlight.
+- **View switch triggers refresh**: `p`/`d`/`s`/`c`/`n` sets `needs_refresh=true` for immediate re-fetch.
 
 ## Key Patterns
 
