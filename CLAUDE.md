@@ -119,6 +119,11 @@ The TUI header is k9s-style and responsive:
 - **Left navigates to parent**: `h`/Left on a leaf node (namespace, infra item) or already-collapsed node navigates cursor to its parent. Leaf nodes cannot expand/collapse.
 - **Search matches name + namespace**: `/` search filters center table rows by both resource name and namespace (case-insensitive). Nodes view filters by name only.
 - **Status color coding**: Pod RESTARTS column: yellow (1-10), red (>10). Deployment READY column: green (ready≥desired), yellow (0<ready<desired), red (ready=0). Node roles show `<none>` when empty.
+- **Full-width cursor highlight**: sidebar cursor highlight fills the entire row width, not just text length. Padding is computed using display-column widths (not byte lengths) to correctly handle Unicode markers (●, ▼, ▶, …).
+- **Responsive sidebar width**: sidebar width adapts to terminal: 20 cols (<60), 24 cols (<80), 28 cols (≥80). Labels truncated with `…` when overflowing.
+- **Sidebar scroll indicator**: `N/M` position indicator shown at bottom-left when sidebar content overflows viewport.
+- **Table column constraints**: resource tables use `Min`/`Length` constraints instead of percentages for better narrow terminal support — fixed-width columns (READY, AGE, RESTARTS) don't shrink, flexible columns (NAME, NAMESPACE) absorb remaining space.
+- **Shared tab preamble**: `render_tab_preamble()` deduplicates connection error + loading state rendering between Resources and Top tabs.
 
 ## Key Patterns
 
