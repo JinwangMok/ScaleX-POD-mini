@@ -482,9 +482,10 @@ impl App {
             }
             AppEvent::Help => self.show_help = true,
             AppEvent::Search => {
-                // Activate search mode
+                // Activate search mode and switch to center panel (search filters center table)
                 self.search_active = true;
                 self.search_query = Some(String::new());
+                self.active_panel = ActivePanel::Center;
                 self.table_cursor = 0;
                 self.table_scroll_offset = 0;
             }
@@ -646,6 +647,10 @@ impl App {
                     self.tree[idx].expanded = false;
                     self.tree[idx].children_loaded = false;
                     self.remove_children(idx);
+                    // Clear namespace selection so collapsed cluster shows marker
+                    if self.selected_cluster.as_ref() == Some(&name) {
+                        self.selected_namespace = None;
+                    }
                 } else {
                     self.tree[idx].expanded = true;
                     self.selected_cluster = Some(name.clone());
