@@ -9,11 +9,14 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct ClusterClient {
     pub name: String,
-    #[allow(dead_code)]
     pub kubeconfig_path: PathBuf,
     pub client: Client,
     /// SSH tunnel process ID (if auto-tunneled)
     pub tunnel_pid: Option<u32>,
+    /// K8s API server version (e.g., "v1.33.1"), fetched once during discovery
+    pub server_version: Option<String>,
+    /// The endpoint URL that successfully connected
+    pub endpoint: Option<String>,
 }
 
 /// Event sent during streaming cluster discovery.
@@ -89,6 +92,16 @@ async fn probe_client(client: &Client) -> bool {
     .unwrap_or(false)
 }
 
+/// Fetch K8s API server version with a tight timeout (500ms).
+/// Returns None on timeout or any error — never blocks discovery.
+async fn fetch_server_version(client: &Client) -> Option<String> {
+    tokio::time::timeout(Duration::from_millis(500), client.apiserver_version())
+        .await
+        .ok()?
+        .ok()
+        .map(|info| info.git_version)
+}
+
 /// Discover clusters and stream results via mpsc channel (one event per cluster).
 /// Clusters are discovered in parallel via tokio::spawn.
 /// Connection strategy per cluster:
@@ -161,12 +174,15 @@ pub async fn discover_clusters_streaming(
             if let Some(ref ep) = endpoint {
                 if let Ok(client) = build_client_with_endpoint(&kubeconfig_path, ep).await {
                     if probe_client(&client).await {
+                        let ver = fetch_server_version(&client).await;
                         let _ = tx
                             .send(DiscoverEvent::Connected(ClusterClient {
                                 name: cluster_name,
                                 kubeconfig_path,
                                 client,
                                 tunnel_pid: None,
+                                server_version: ver,
+                                endpoint: Some(ep.clone()),
                             }))
                             .await;
                         return;
@@ -177,12 +193,16 @@ pub async fn discover_clusters_streaming(
             // Strategy 2: direct connection via kubeconfig IP (with timeout)
             if let Ok(client) = build_client(&kubeconfig_path).await {
                 if probe_client(&client).await {
+                    let ver = fetch_server_version(&client).await;
+                    let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
                     let _ = tx
                         .send(DiscoverEvent::Connected(ClusterClient {
                             name: cluster_name,
                             kubeconfig_path,
                             client,
                             tunnel_pid: None,
+                            server_version: ver,
+                            endpoint: ep,
                         }))
                         .await;
                     return;
@@ -199,12 +219,15 @@ pub async fn discover_clusters_streaming(
                             "Auto-tunnel: {} → localhost:{} via {}",
                             cluster_name, local_port, bastion_host
                         );
+                        let ver = fetch_server_version(&client).await;
                         let _ = tx
                             .send(DiscoverEvent::Connected(ClusterClient {
                                 name: cluster_name,
                                 kubeconfig_path,
                                 client,
                                 tunnel_pid: Some(pid),
+                                server_version: ver,
+                                endpoint: Some(format!("localhost:{} (tunnel)", local_port)),
                             }))
                             .await;
                     }
@@ -287,11 +310,15 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
                     .await
                     .is_ok()
                 {
+                    let ver = fetch_server_version(&client).await;
+                    let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
                     clusters.push(ClusterClient {
                         name: cluster_name,
                         kubeconfig_path,
                         client,
                         tunnel_pid: None,
+                        server_version: ver,
+                        endpoint: ep,
                     });
                     continue;
                 }
@@ -317,11 +344,14 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
                         "Auto-tunnel: {} → localhost:{} via {}",
                         cluster_name, next_local_port, bastion_host
                     );
+                    let ver = fetch_server_version(&client).await;
                     clusters.push(ClusterClient {
                         name: cluster_name,
                         kubeconfig_path,
                         client,
                         tunnel_pid: Some(pid),
+                        server_version: ver,
+                        endpoint: Some(format!("localhost:{} (tunnel)", next_local_port)),
                     });
                     next_local_port += 1;
                     continue;

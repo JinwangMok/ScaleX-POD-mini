@@ -17,17 +17,18 @@ pub fn render(f: &mut Frame, app: &App) {
     // Background
     f.render_widget(Block::default().style(Style::default().bg(theme::BG)), size);
 
-    // Top-level layout: tab bar (1) | body | status bar (3)
+    // Top-level layout: header (responsive) | body | status bar (3)
+    let header_height = if size.height >= 28 { 8 } else { 4 };
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // tab bar
-            Constraint::Min(5),    // body
+            Constraint::Length(header_height),
+            Constraint::Min(5), // body
             Constraint::Length(3), // status bar
         ])
         .split(size);
 
-    render_tab_bar(f, app, vertical[0]);
+    render_header(f, app, vertical[0]);
 
     // Body: sidebar | center
     let horizontal = Layout::default()
@@ -48,27 +49,78 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 // ---------------------------------------------------------------------------
-// Tab bar
+// Header (k9s-style dashboard header)
 // ---------------------------------------------------------------------------
 
-fn render_tab_bar(f: &mut Frame, app: &App, area: Rect) {
-    let mut spans: Vec<Span> = vec![
-        Span::styled(
-            " ScaleX ",
-            Style::default()
-                .fg(theme::BG_HARD)
-                .bg(theme::BRIGHT_ORANGE)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" ", Style::default().bg(theme::BG)),
-    ];
+/// ASCII art logo for full-size header (6 lines)
+const LOGO: [&str; 6] = [
+    r"███████╗ ██████╗ █████╗ ██╗     ███████╗██╗  ██╗",
+    r"██╔════╝██╔════╝██╔══██╗██║     ██╔════╝╚██╗██╔╝",
+    r"███████╗██║     ███████║██║     █████╗   ╚███╔╝ ",
+    r"╚════██║██║     ██╔══██║██║     ██╔══╝   ██╔██╗ ",
+    r"███████║╚██████╗██║  ██║███████╗███████╗██╔╝ ██╗",
+    r"╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝",
+];
 
-    let tab_spans: Vec<Span> = app
-        .tabs
+fn render_header(f: &mut Frame, app: &App, area: Rect) {
+    let is_full = area.height >= 8;
+
+    // Gather cluster info for the selected (or first) cluster
+    let selected = app
+        .selected_cluster
+        .as_ref()
+        .and_then(|name| app.clusters.iter().find(|c| &c.name == name))
+        .or_else(|| app.clusters.first());
+
+    let cluster_name = selected
+        .map(|c| c.name.as_str())
+        .unwrap_or("--");
+    let endpoint_str = selected
+        .and_then(|c| c.endpoint.as_deref())
+        .unwrap_or("--");
+    let k8s_ver = selected
+        .and_then(|c| c.server_version.as_deref())
+        .unwrap_or("N/A");
+    let config_path = selected
+        .map(|c| c.kubeconfig_path.display().to_string())
+        .unwrap_or_else(|| "--".into());
+
+    let scalex_ver = env!("CARGO_PKG_VERSION");
+
+    let total_clusters = app.cluster_connection_status.len();
+    let connected_clusters = app
+        .cluster_connection_status
+        .values()
+        .filter(|s| matches!(s, ConnectionStatus::Connected))
+        .count();
+
+    let label_style = Style::default().fg(theme::FG4);
+    let value_style = Style::default().fg(theme::FG);
+    let accent_style = Style::default().fg(theme::BRIGHT_AQUA);
+
+    // Tab spans (shared between both modes)
+    let tab_spans = build_tab_spans(app);
+
+    if is_full {
+        render_header_full(
+            f, area, &tab_spans, cluster_name, endpoint_str, k8s_ver,
+            &config_path, scalex_ver, total_clusters, connected_clusters,
+            label_style, value_style, accent_style,
+        );
+    } else {
+        render_header_compact(
+            f, area, &tab_spans, cluster_name, endpoint_str, k8s_ver,
+            scalex_ver, total_clusters, connected_clusters,
+            label_style, value_style, accent_style,
+        );
+    }
+}
+
+fn build_tab_spans(app: &App) -> Vec<Span<'static>> {
+    app.tabs
         .iter()
         .enumerate()
         .flat_map(|(i, tab)| {
-            let num = format!(" [{}] ", i + 1);
             let style = if i == app.active_tab {
                 Style::default()
                     .fg(theme::BG_HARD)
@@ -78,18 +130,165 @@ fn render_tab_bar(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(theme::FG4).bg(theme::BG1)
             };
             vec![
-                Span::styled(num, style),
-                Span::styled(&tab.name, style),
-                Span::styled(" ", Style::default().bg(theme::BG)),
+                Span::styled(format!(" [{}] ", i + 1), style),
+                Span::styled(tab.name.clone(), style),
+                Span::styled(" ", Style::default().bg(theme::BG_HARD)),
             ]
         })
-        .collect();
+        .collect()
+}
 
-    spans.extend(tab_spans);
+#[allow(clippy::too_many_arguments)]
+fn render_header_full(
+    f: &mut Frame,
+    area: Rect,
+    tab_spans: &[Span<'static>],
+    cluster_name: &str,
+    endpoint_str: &str,
+    k8s_ver: &str,
+    config_path: &str,
+    scalex_ver: &str,
+    total_clusters: usize,
+    connected_clusters: usize,
+    label_style: Style,
+    value_style: Style,
+    accent_style: Style,
+) {
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(theme::BG3))
+        .style(Style::default().bg(theme::BG_HARD));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    let line = Line::from(spans);
-    let bar = Paragraph::new(line).style(Style::default().bg(theme::BG));
-    f.render_widget(bar, area);
+    // Split: left info | right logo
+    let logo_width: u16 = 52; // widest LOGO line
+    let show_logo = inner.width > logo_width + 30;
+
+    let cols = if show_logo {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(30),
+                Constraint::Length(logo_width + 1),
+            ])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(100)])
+            .split(inner)
+    };
+
+    // Left: info lines
+    let info_lines = vec![
+        Line::from(vec![
+            Span::styled(" Context:  ", label_style),
+            Span::styled(cluster_name.to_string(), accent_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" Cluster:  ", label_style),
+            Span::styled(endpoint_str.to_string(), value_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" ScaleX:   ", label_style),
+            Span::styled(
+                format!("v{}", scalex_ver),
+                Style::default().fg(theme::BRIGHT_ORANGE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("    Clusters: {}/{}", connected_clusters, total_clusters),
+                Style::default().fg(theme::FG3),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" K8s Rev:  ", label_style),
+            Span::styled(
+                k8s_ver.to_string(),
+                if k8s_ver == "N/A" { label_style } else { value_style },
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" Config:   ", label_style),
+            Span::styled(config_path.to_string(), Style::default().fg(theme::FG3)),
+        ]),
+        Line::from(vec![
+            Span::styled(" View:     ", label_style),
+        ].into_iter().chain(tab_spans.iter().cloned()).collect::<Vec<_>>()),
+    ];
+
+    let para = Paragraph::new(info_lines).style(Style::default().bg(theme::BG_HARD));
+    f.render_widget(para, cols[0]);
+
+    // Right: ASCII art logo
+    if show_logo && cols.len() > 1 {
+        let logo_lines: Vec<Line> = LOGO
+            .iter()
+            .map(|line| {
+                Line::from(Span::styled(
+                    *line,
+                    Style::default()
+                        .fg(theme::BRIGHT_ORANGE)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            })
+            .collect();
+        let logo_para = Paragraph::new(logo_lines).style(Style::default().bg(theme::BG_HARD));
+        f.render_widget(logo_para, cols[1]);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_header_compact(
+    f: &mut Frame,
+    area: Rect,
+    tab_spans: &[Span<'static>],
+    cluster_name: &str,
+    endpoint_str: &str,
+    k8s_ver: &str,
+    scalex_ver: &str,
+    total_clusters: usize,
+    connected_clusters: usize,
+    label_style: Style,
+    _value_style: Style,
+    accent_style: Style,
+) {
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(theme::BG3))
+        .style(Style::default().bg(theme::BG_HARD));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let line1_spans = vec![
+        Span::styled(
+            " ScaleX ",
+            Style::default()
+                .fg(theme::BG_HARD)
+                .bg(theme::BRIGHT_ORANGE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" v{}  ", scalex_ver),
+            Style::default().fg(theme::BRIGHT_ORANGE),
+        ),
+        Span::styled(cluster_name.to_string(), accent_style),
+        Span::styled(
+            format!("  Clusters: {}/{}  K8s: {}", connected_clusters, total_clusters, k8s_ver),
+            Style::default().fg(theme::FG3),
+        ),
+    ];
+
+    let mut line2_spans: Vec<Span> = vec![Span::styled(" ", label_style)];
+    line2_spans.extend(tab_spans.iter().cloned());
+    line2_spans.push(Span::styled(
+        format!("  {}", endpoint_str),
+        Style::default().fg(theme::FG4),
+    ));
+
+    let lines = vec![Line::from(line1_spans), Line::from(line2_spans)];
+    let para = Paragraph::new(lines).style(Style::default().bg(theme::BG_HARD));
+    f.render_widget(para, inner);
 }
 
 // ---------------------------------------------------------------------------

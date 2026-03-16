@@ -75,13 +75,20 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 ```
 
 - Displays clusters, node health, pod status, and resource capacity across all kubeconfigs in `_generated/`
-- **3-tier cluster discovery**: `discover_clusters_streaming()` in `kube_client.rs` tries per cluster in parallel via `tokio::spawn`: (1) `api_endpoint` domain URL from `k8s-clusters.yaml` → (2) kubeconfig original IP → (3) SSH tunnel via bastion (500ms settle wait). Each probe has a 3s timeout.
+- **3-tier cluster discovery**: `discover_clusters_streaming()` in `kube_client.rs` tries per cluster in parallel via `tokio::spawn`: (1) `api_endpoint` domain URL from `k8s-clusters.yaml` → (2) kubeconfig original IP → (3) SSH tunnel via bastion (500ms settle wait). Each probe has a 3s timeout. Each connected `ClusterClient` carries `server_version` (fetched with 500ms timeout via `client.apiserver_version()`, `None` on failure) and `endpoint` (the URL that succeeded).
 - **`api_endpoint` field**: Optional field on `ClusterDef` (`models/cluster.rs`). Set in `config/k8s-clusters.yaml` to provide a stable external URL (e.g., Cloudflare Tunnel domain) for dash connectivity without relying on LAN IPs or SSH tunnels.
 - After `install.sh`, `scalex dash` works without manual tunnel setup
 - `metrics_server_enabled` is hardcoded `false` in `kubespray.rs` — metrics utilization bars show N/A until enabled
 - **Skeleton startup**: TUI draws immediately on launch before first data fetch
 - **Selective fetch**: `ActiveResource` enum drives per-view fetching — only namespaces + nodes + the active resource type are fetched (3 API calls vs 7). Each API call has a 2s `tokio::time::timeout` (`API_CALL_TIMEOUT` in `data.rs`). Headless mode (`--headless`) always does full fetch (all resources in parallel).
 - **Incremental snapshot merge**: selective fetch results are merged into existing `ClusterSnapshot` — only the fetched resource field is replaced; other fields retain their last known values. Health/resource_usage are recomputed on every merge using the freshest available pods + nodes.
+
+### Header Layout
+
+The TUI header is k9s-style and responsive:
+- **Full mode** (terminal height ≥ 28): 8-line header with Context, Cluster endpoint, ScaleX version + cluster count, K8s revision, config path, and tab bar on the left. ASCII art `SCALEX` logo on the right (hidden when terminal width < 82 columns).
+- **Compact mode** (terminal height < 28): 4-line header with condensed info row + tab bar.
+- Header info sourced from active `ClusterClient`: `name` (Context), `endpoint` (Cluster), `server_version` (K8s Rev), `kubeconfig_path` (Config). Version from `env!("CARGO_PKG_VERSION")`.
 
 ### Keybindings
 
