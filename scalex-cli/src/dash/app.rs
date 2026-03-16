@@ -224,6 +224,10 @@ pub struct App {
     /// Cached visible tree length — invalidated (set to None) on tree mutations.
     /// Avoids redundant O(n) scans across multiple callers per frame.
     cached_visible_len: Option<usize>,
+
+    /// Cached visible tree indices — computed once per event cycle, reused across callers.
+    /// Invalidated alongside cached_visible_len on tree mutations.
+    cached_visible_indices: Option<Vec<usize>>,
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -333,6 +337,7 @@ impl App {
             help_viewport_height: 0,
             discovery_logs: VecDeque::new(),
             cached_visible_len: None,
+            cached_visible_indices: None,
         }
     }
 
@@ -421,6 +426,7 @@ impl App {
             help_viewport_height: 0,
             discovery_logs: VecDeque::new(),
             cached_visible_len: None,
+            cached_visible_indices: None,
         }
     }
 
@@ -920,7 +926,7 @@ impl App {
         if self.active_panel != ActivePanel::Sidebar {
             return;
         }
-        let visible = self.visible_tree_indices();
+        let visible = self.visible_tree_indices_cached();
         if self.tree_cursor >= visible.len() {
             return;
         }
@@ -930,6 +936,7 @@ impl App {
         match &node.node_type {
             NodeType::Root => {
                 self.tree[idx].expanded = !self.tree[idx].expanded;
+                self.invalidate_tree_cache();
             }
             NodeType::Cluster(name) => {
                 let name = name.clone();
@@ -947,6 +954,8 @@ impl App {
                     self.tree[idx].expanded = true;
                     self.selected_cluster = Some(name.clone());
                     self.selected_namespace = None;
+                    self.search_query = None;
+                    self.search_query_lower = None;
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
                     self.needs_refresh = true;
@@ -965,6 +974,8 @@ impl App {
                 } else {
                     Some(namespace.clone())
                 };
+                self.search_query = None;
+                self.search_query_lower = None;
                 self.table_cursor = 0;
                 self.table_scroll_offset = 0;
                 self.needs_refresh = true;
@@ -993,7 +1004,7 @@ impl App {
         if self.active_panel != ActivePanel::Sidebar {
             return;
         }
-        let visible = self.visible_tree_indices();
+        let visible = self.visible_tree_indices_cached();
         if self.tree_cursor >= visible.len() {
             return;
         }
@@ -1015,7 +1026,9 @@ impl App {
             // Cluster/InfraHeader: remove children so they get re-synced on next expand.
             if !matches!(self.tree[idx].node_type, NodeType::Root) {
                 self.tree[idx].children_loaded = false;
-                self.remove_children(idx);
+                self.remove_children(idx); // calls invalidate_tree_cache
+            } else {
+                self.invalidate_tree_cache(); // Root: expanded changed, no remove_children
             }
         } else {
             // Already collapsed — navigate to parent
@@ -1027,7 +1040,7 @@ impl App {
         if self.active_panel != ActivePanel::Sidebar {
             return;
         }
-        let visible = self.visible_tree_indices();
+        let visible = self.visible_tree_indices_cached();
         if self.tree_cursor >= visible.len() {
             return;
         }
@@ -1045,9 +1058,9 @@ impl App {
             self.tree[idx].expanded = true;
             // US-603: dispatch sync based on node type
             match &self.tree[idx].node_type {
-                NodeType::Cluster(_) => self.sync_tree_from_snapshots(),
-                NodeType::InfraHeader => self.sync_infra_tree(),
-                _ => {} // Root: no children to sync
+                NodeType::Cluster(_) => self.sync_tree_from_snapshots(), // calls invalidate_tree_cache
+                NodeType::InfraHeader => self.sync_infra_tree(),         // calls invalidate_tree_cache
+                _ => self.invalidate_tree_cache(), // Root: expanded changed, no sync
             }
         }
     }
@@ -1091,11 +1104,31 @@ impl App {
         }
     }
 
+    /// Compute visible tree indices. Returns cached value if available.
+    /// Works with `&self` for render paths — cache is populated by `&mut self` callers.
     pub fn visible_tree_indices(&self) -> Vec<usize> {
+        if let Some(ref cached) = self.cached_visible_indices {
+            return cached.clone();
+        }
+        Self::compute_visible_indices(&self.tree)
+    }
+
+    /// Compute visible tree indices and populate cache. Use from `&mut self` code paths.
+    fn visible_tree_indices_cached(&mut self) -> Vec<usize> {
+        if let Some(ref cached) = self.cached_visible_indices {
+            return cached.clone();
+        }
+        let result = Self::compute_visible_indices(&self.tree);
+        self.cached_visible_len = Some(result.len());
+        self.cached_visible_indices = Some(result.clone());
+        result
+    }
+
+    fn compute_visible_indices(tree: &[TreeNode]) -> Vec<usize> {
         let mut result = Vec::new();
         let mut skip_depth: Option<usize> = None;
 
-        for (i, node) in self.tree.iter().enumerate() {
+        for (i, node) in tree.iter().enumerate() {
             if let Some(sd) = skip_depth {
                 if node.depth > sd {
                     continue;
@@ -1116,32 +1149,20 @@ impl App {
         if let Some(cached) = self.cached_visible_len {
             return cached;
         }
-        let len = self.compute_visible_tree_len();
-        self.cached_visible_len = Some(len);
-        len
-    }
-
-    fn compute_visible_tree_len(&self) -> usize {
-        let mut count = 0;
-        let mut skip_depth: Option<usize> = None;
-        for node in &self.tree {
-            if let Some(sd) = skip_depth {
-                if node.depth > sd {
-                    continue;
-                }
-                skip_depth = None;
-            }
-            count += 1;
-            if !node.expanded {
-                skip_depth = Some(node.depth);
-            }
+        // Derive from cached indices if available, otherwise compute
+        if let Some(ref indices) = self.cached_visible_indices {
+            let len = indices.len();
+            self.cached_visible_len = Some(len);
+            return len;
         }
-        count
+        let indices = self.visible_tree_indices_cached();
+        indices.len()
     }
 
-    /// Invalidate cached visible tree length. Must be called after any tree mutation.
+    /// Invalidate cached visible tree data. Must be called after any tree mutation.
     fn invalidate_tree_cache(&mut self) {
         self.cached_visible_len = None;
+        self.cached_visible_indices = None;
     }
 
     /// Load infrastructure data from SDI directory.
@@ -1505,6 +1526,7 @@ mod tests {
             help_viewport_height: 0,
             discovery_logs: VecDeque::new(),
             cached_visible_len: None,
+            cached_visible_indices: None,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -1722,6 +1744,7 @@ mod tests {
                     status: "Running".into(),
                     ready: "1/1".into(),
                     restarts: 0,
+                    restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
                 })
@@ -1998,6 +2021,7 @@ mod tests {
                     status: "Running".into(),
                     ready: "1/1".into(),
                     restarts: 0,
+                    restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
                 })
@@ -2057,6 +2081,7 @@ mod tests {
                     status: "Running".into(),
                     ready: "1/1".into(),
                     restarts: 0,
+                    restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
                 })
@@ -2280,6 +2305,7 @@ mod tests {
                     status: "Running".into(),
                     ready: "1/1".into(),
                     restarts: 0,
+                    restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
                 },
@@ -2289,6 +2315,7 @@ mod tests {
                     status: "Running".into(),
                     ready: "1/1".into(),
                     restarts: 0,
+                    restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
                 },
@@ -2482,6 +2509,7 @@ mod tests {
                     status: "Running".into(),
                     ready: "1/1".into(),
                     restarts: 0,
+                    restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
                 })
@@ -2693,6 +2721,56 @@ mod tests {
 
         assert!(!app.search_active);
         assert_eq!(app.search_query, Some("pod".into()));
+    }
+
+    // --- US-001 (R12): Search cleared on cluster/namespace switch ---
+
+    #[test]
+    fn search_cleared_on_cluster_select() {
+        let mut app = test_app();
+        // Set up active search filter
+        app.search_query = Some("test".into());
+        app.search_query_lower = Some("test".into());
+        // Expand tower cluster so Enter selects it (currently collapsed)
+        app.tree_cursor = 1; // tower cluster node
+        app.active_panel = ActivePanel::Sidebar;
+
+        app.handle_event(AppEvent::Enter);
+
+        assert_eq!(app.search_query, None, "search should clear on cluster select");
+        assert_eq!(app.search_query_lower, None);
+    }
+
+    #[test]
+    fn search_cleared_on_namespace_select() {
+        let mut app = test_app();
+        // Expand tower and add namespace children
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        app.tree.insert(
+            2,
+            TreeNode {
+                label: "default".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "default".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        // Set up active search filter
+        app.search_query = Some("nginx".into());
+        app.search_query_lower = Some("nginx".into());
+        app.tree_cursor = 2; // namespace node
+        app.active_panel = ActivePanel::Sidebar;
+
+        app.handle_event(AppEvent::Enter);
+
+        assert_eq!(app.search_query, None, "search should clear on namespace select");
+        assert_eq!(app.search_query_lower, None);
+        assert_eq!(app.selected_namespace, Some("default".into()));
     }
 
     // --- US-078: Tab switch resets cursor ---
@@ -3523,7 +3601,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         // US-600: populate namespace children from cached snapshots
                         app.sync_tree_from_snapshots();
                         // Recompute visible indices AFTER tree mutation to get correct cursor position
-                        let visible = app.visible_tree_indices();
+                        let visible = app.visible_tree_indices_cached();
                         if let Some(idx) = app.tree.iter().position(
                             |n| matches!(&n.node_type, NodeType::Cluster(c) if c == &name),
                         ) {

@@ -62,6 +62,9 @@ pub struct NodeInfo {
     pub roles_display: String,
     pub mem_capacity_display: String,
     pub mem_allocatable_display: String,
+    /// Pre-computed "allocatable/capacity" columns to avoid per-frame format!()
+    pub cpu_display: String,
+    pub mem_display: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,6 +74,8 @@ pub struct PodInfo {
     pub status: String,
     pub ready: String,
     pub restarts: i32,
+    /// Pre-computed restarts.to_string() to avoid per-frame allocation in render path
+    pub restarts_display: String,
     pub age: String,
     pub node: String,
 }
@@ -81,7 +86,11 @@ pub struct DeploymentInfo {
     pub namespace: String,
     pub ready: String,
     pub up_to_date: i32,
+    /// Pre-computed up_to_date.to_string() to avoid per-frame allocation
+    pub up_to_date_display: String,
     pub available: i32,
+    /// Pre-computed available.to_string() to avoid per-frame allocation
+    pub available_display: String,
     pub age: String,
 }
 
@@ -100,6 +109,8 @@ pub struct ConfigMapInfo {
     pub name: String,
     pub namespace: String,
     pub data_keys_count: usize,
+    /// Pre-computed data_keys_count.to_string() to avoid per-frame allocation
+    pub data_keys_display: String,
     pub age: String,
 }
 
@@ -191,6 +202,7 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
                 namespace: meta.namespace.clone().unwrap_or_default(),
                 status: effective_status,
                 ready: format!("{}/{}", ready_count, total_count),
+                restarts_display: restarts.to_string(),
                 restarts,
                 age,
                 node: spec.and_then(|s| s.node_name.clone()).unwrap_or_default(),
@@ -279,6 +291,12 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
             let mem_capacity_display = format_k8s_memory(&mem_cap);
             let mem_allocatable_display = format_k8s_memory(&mem_alloc);
 
+            let cpu_display = format!("{}/{}", cpu_alloc, cpu_cap);
+            let mem_display = format!(
+                "{}/{}",
+                mem_allocatable_display, mem_capacity_display
+            );
+
             NodeInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 status: node_status,
@@ -291,6 +309,8 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
                 roles_display,
                 mem_capacity_display,
                 mem_allocatable_display,
+                cpu_display,
+                mem_display,
             }
         })
         .collect())
@@ -331,7 +351,9 @@ pub async fn fetch_deployments(
                 name: meta.name.clone().unwrap_or_default(),
                 namespace: meta.namespace.clone().unwrap_or_default(),
                 ready: format!("{}/{}", ready, replicas),
+                up_to_date_display: up_to_date.to_string(),
                 up_to_date,
+                available_display: available.to_string(),
                 available,
                 age,
             }
@@ -369,6 +391,7 @@ pub async fn fetch_configmaps(
             ConfigMapInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 namespace: meta.namespace.clone().unwrap_or_default(),
+                data_keys_display: data_keys_count.to_string(),
                 data_keys_count,
                 age,
             }
@@ -959,6 +982,7 @@ mod tests {
             status: "Running".into(),
             ready: "1/1".into(),
             restarts: 0,
+            restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
         }];
@@ -998,6 +1022,7 @@ mod tests {
             status: "Failed".into(),
             ready: "0/1".into(),
             restarts: 0,
+            restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
         }];
@@ -1022,6 +1047,7 @@ mod tests {
             status: "OOMKilled".into(),
             ready: "0/1".into(),
             restarts: 1,
+            restarts_display: "1".into(),
             age: "1h".into(),
             node: "n1".into(),
         }];
@@ -1046,6 +1072,7 @@ mod tests {
             status: "ImagePullBackOff".into(),
             ready: "0/1".into(),
             restarts: 0,
+            restarts_display: "0".into(),
             age: "5m".into(),
             node: "n1".into(),
         }];
@@ -1192,6 +1219,7 @@ mod tests {
             name: "test-cm".into(),
             namespace: "default".into(),
             data_keys_count: 3,
+            data_keys_display: "3".into(),
             age: "1h".into(),
         };
         let json = serde_json::to_value(&cm).unwrap();
@@ -1217,6 +1245,7 @@ mod tests {
             status: "Running".into(),
             ready: "1/1".into(),
             restarts: 0,
+            restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
         }];
@@ -1392,6 +1421,7 @@ mod tests {
             status: "Evicted".into(),
             ready: "0/1".into(),
             restarts: 0,
+            restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
         }];
@@ -1408,6 +1438,7 @@ mod tests {
             status: status.into(),
             ready: "1/1".into(),
             restarts: 0,
+            restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
         };
@@ -1451,6 +1482,7 @@ mod tests {
             status: "Running".into(),
             ready: "1/1".into(),
             restarts: 0,
+            restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
         };
