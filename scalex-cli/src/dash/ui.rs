@@ -467,7 +467,10 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let marker_cols: usize = 2; // "● " or "  " — always 2 display columns
             let icon_cols: usize = 2; // "▼ " / "▶ " / "  " — always 2 display columns
             let prefix_cols = indent_cols + marker_cols + icon_cols;
-            let suffix_cols = conn_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0); // ASCII only
+            let suffix_cols = conn_suffix
+                .as_ref()
+                .map(|(s, _)| s.chars().count())
+                .unwrap_or(0);
             let available = (inner.width as usize).saturating_sub(prefix_cols + suffix_cols);
             // Labels are k8s names (ASCII), so chars().count() == display columns
             let label_char_count = label_with_ns.chars().count();
