@@ -147,11 +147,11 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 (NodeType::InfraItem(_), _) => "  ",
             };
 
-            // Selection marker: show ● for the active selection
+            // Selection marker: fixed-width 2 chars to maintain column alignment
             let marker = if is_active_selection && !is_cursor {
                 "● "
             } else {
-                ""
+                "  "
             };
 
             let indent = "  ".repeat(node.depth);
