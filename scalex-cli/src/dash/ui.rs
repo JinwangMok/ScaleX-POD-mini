@@ -942,7 +942,7 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
                     Style::default().fg(status_color)
                 }),
                 Cell::from(pod.ready.as_str()).style(base),
-                Cell::from(pod.restarts.to_string()).style(restart_style),
+                Cell::from(pod.restarts_display.as_str()).style(restart_style),
                 Cell::from(pod.age.as_str()).style(base),
                 Cell::from(pod.node.as_str()).style(base),
             ])
@@ -1010,8 +1010,8 @@ fn render_deployments_table(
                 Cell::from(dep.name.as_str()).style(base),
                 Cell::from(dep.namespace.as_str()).style(base),
                 Cell::from(dep.ready.as_str()).style(ready_style),
-                Cell::from(dep.up_to_date.to_string()).style(base),
-                Cell::from(dep.available.to_string()).style(base),
+                Cell::from(dep.up_to_date_display.as_str()).style(base),
+                Cell::from(dep.available_display.as_str()).style(base),
                 Cell::from(dep.age.as_str()).style(base),
             ])
         },
@@ -1080,19 +1080,14 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
         |node| app.matches_search(&node.name),
         |_i, node, is_selected| {
             let base = row_base_style(is_selected);
-            // Use pre-computed display strings (avoids per-frame format_k8s_memory + join)
-            let cpu_col = format!("{}/{}", node.cpu_allocatable, node.cpu_capacity);
-            let mem_col = format!(
-                "{}/{}",
-                node.mem_allocatable_display, node.mem_capacity_display
-            );
+            // Use pre-computed display strings (avoids per-frame format! + format_k8s_memory + join)
             if is_selected {
                 Row::new(vec![
                     Cell::from(node.name.as_str()).style(base),
                     Cell::from(node.status.as_str()).style(base),
                     Cell::from(node.roles_display.as_str()).style(base),
-                    Cell::from(cpu_col).style(base),
-                    Cell::from(mem_col).style(base),
+                    Cell::from(node.cpu_display.as_str()).style(base),
+                    Cell::from(node.mem_display.as_str()).style(base),
                     Cell::from(node.age.as_str()).style(base),
                 ])
             } else {
@@ -1107,8 +1102,8 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                     Cell::from(node.name.as_str()).style(Style::default().fg(theme::FG)),
                     Cell::from(node.status.as_str()).style(Style::default().fg(status_color)),
                     Cell::from(node.roles_display.as_str()).style(Style::default().fg(theme::FG3)),
-                    Cell::from(cpu_col).style(Style::default().fg(theme::BRIGHT_AQUA)),
-                    Cell::from(mem_col).style(Style::default().fg(theme::BRIGHT_PURPLE)),
+                    Cell::from(node.cpu_display.as_str()).style(Style::default().fg(theme::BRIGHT_AQUA)),
+                    Cell::from(node.mem_display.as_str()).style(Style::default().fg(theme::BRIGHT_PURPLE)),
                     Cell::from(node.age.as_str()).style(Style::default().fg(theme::FG3)),
                 ])
             }
@@ -1141,7 +1136,7 @@ fn render_configmaps_table(
             Row::new(vec![
                 Cell::from(cm.name.as_str()).style(base),
                 Cell::from(cm.namespace.as_str()).style(base),
-                Cell::from(cm.data_keys_count.to_string()).style(base),
+                Cell::from(cm.data_keys_display.as_str()).style(base),
                 Cell::from(cm.age.as_str()).style(base),
             ])
         },
@@ -1204,11 +1199,8 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(
                 format!(
-                    "  CPU: {}/{}  MEM: {}/{}",
-                    node.cpu_allocatable,
-                    node.cpu_capacity,
-                    node.mem_allocatable_display,
-                    node.mem_capacity_display
+                    "  CPU: {}  MEM: {}",
+                    node.cpu_display, node.mem_display
                 ),
                 Style::default().fg(theme::FG3),
             ),

@@ -89,8 +89,9 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Pre-lowercased search**: `search_query_lower: Option<String>` synced once per event cycle via `sync_search_lower()`. Eliminates per-item `to_lowercase()` on query string during search filtering.
 - **Zero-allocation search matching**: `contains_ignore_ascii_case()` performs char-by-char ASCII comparison without allocating `to_lowercase()` strings per item. K8s resource names are always ASCII.
 - **Viewport-only sidebar rendering**: `render_sidebar` only builds `Line` objects for visible viewport rows (`scroll_offset..scroll_offset+height`), not all tree nodes. Combined with single snapshot lookup per cluster node (health dot + namespace count reuse same lookup).
-- **Cached visible_tree_len**: `cached_visible_len: Option<usize>` avoids redundant O(n) tree scans across multiple callers per frame. Invalidated at start of each `handle_event` and after tree mutations (drain, splice).
-- **Pre-computed node display strings**: `NodeInfo` carries `roles_display`, `mem_capacity_display`, `mem_allocatable_display` computed once during fetch, eliminating per-frame `format_k8s_memory()` and `roles.join()` allocations in render path.
+- **Cached visible tree data**: `cached_visible_len: Option<usize>` and `cached_visible_indices: Option<Vec<usize>>` avoid redundant O(n) tree scans across multiple callers per frame. Invalidated at start of each `handle_event`, after tree mutations (drain, splice), and after expansion state changes.
+- **Pre-computed display strings**: All integer-to-string conversions are done once during fetch, not per-frame in render. `NodeInfo` carries `roles_display`, `mem_capacity_display`, `mem_allocatable_display`, `cpu_display`, `mem_display`. `PodInfo` carries `restarts_display`. `DeploymentInfo` carries `up_to_date_display`, `available_display`. `ConfigMapInfo` carries `data_keys_display`.
+- **Search cleared on context switch**: Selecting a cluster or namespace via `Enter` clears active search filter (`search_query` and `search_query_lower`) to prevent stale filters applying to new context.
 
 ### Header Layout
 
