@@ -10,6 +10,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -875,6 +876,7 @@ impl App {
             }
         } else {
             self.table_scroll_offset = 0;
+            self.table_cursor = 0;
         }
         if self.table_cursor < self.table_scroll_offset {
             self.table_scroll_offset = self.table_cursor;
@@ -1933,12 +1935,48 @@ mod tests {
     #[test]
     fn ensure_table_scroll_cursor_below_viewport() {
         let mut app = test_app();
+        app.selected_cluster = Some("tower".into());
+        // Need actual data so current_row_count() > 0 for scroll logic to engage
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: vec![],
+            pods: (0..25)
+                .map(|i| crate::dash::data::PodInfo {
+                    name: format!("pod-{}", i),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    age: "1h".into(),
+                    node: "n1".into(),
+                })
+                .collect(),
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
         app.table_cursor = 20;
         app.table_scroll_offset = 0;
 
         app.ensure_table_scroll_visible(10);
 
         assert_eq!(app.table_scroll_offset, 11); // 20 - 10 + 1
+    }
+
+    #[test]
+    fn ensure_table_scroll_resets_on_empty() {
+        let mut app = test_app();
+        app.table_cursor = 20;
+        app.table_scroll_offset = 15;
+
+        // No snapshots → current_row_count() == 0 → both reset
+        app.ensure_table_scroll_visible(10);
+
+        assert_eq!(app.table_cursor, 0);
+        assert_eq!(app.table_scroll_offset, 0);
     }
 
     #[test]
@@ -3337,9 +3375,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
 
     let mut app = App::new_with_names(&cluster_names, args.refresh);
     app.load_infra(); // Load infrastructure data once at startup
-    let tick_rate = Duration::from_millis(100);
     let refresh_interval = Duration::from_secs(args.refresh);
     let mut last_refresh = Instant::now();
+
+    // Event-driven input: crossterm EventStream + tokio tick (replaces 100ms poll)
+    let mut event_stream = crossterm::event::EventStream::new();
+    let mut tick_interval = tokio::time::interval(Duration::from_millis(100));
 
     // Channels for non-blocking communication
     let (discover_tx, mut discover_rx) =
@@ -3352,6 +3393,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
     // Phase 2: background cluster discovery (streaming per-cluster results)
     let discover_tx_retry = discover_tx.clone(); // Keep clone for retry (US-201)
     let cancel_discover = cancelled.clone();
+    let kubeconfig_dir_retry = kubeconfig_dir.clone(); // Clone before move for retry path
     tokio::spawn(async move {
         kube_client::discover_clusters_streaming(kubeconfig_dir, discover_tx, cancel_discover)
             .await;
@@ -3392,10 +3434,23 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
         // Draw first — shows skeleton UI instantly on startup (US-004)
         terminal.draw(|f| ui::render(f, &app))?;
 
-        // Handle events (never blocks longer than tick_rate = 100ms)
-        let evt = event::poll_event(tick_rate)?;
+        // Event-driven: wait for keyboard input, tick, or channel message (near-zero input latency)
+        let evt = tokio::select! {
+            biased; // Prioritize keyboard input over ticks
+            maybe_event = event_stream.next() => {
+                match maybe_event {
+                    Some(Ok(crossterm::event::Event::Key(key))) => event::map_key_event(key),
+                    Some(Ok(crossterm::event::Event::Resize(_, _))) => AppEvent::Tick,
+                    _ => AppEvent::None,
+                }
+            }
+            _ = tick_interval.tick() => AppEvent::Tick,
+        };
+        let is_tick = matches!(evt, AppEvent::Tick);
         app.handle_event(evt);
-        app.tick_count += 1;
+        if is_tick {
+            app.tick_count += 1;
+        }
 
         if !app.running {
             break Ok(());
@@ -3413,19 +3468,23 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     // Auto-select first connected cluster if none selected
                     if app.selected_cluster.is_none() {
                         app.selected_cluster = Some(name.clone());
-                        // Expand the cluster node in sidebar and move cursor to it (US-1003)
-                        let visible = app.visible_tree_indices();
+                        // Expand the cluster node in sidebar
                         if let Some(idx) = app.tree.iter().position(
                             |n| matches!(&n.node_type, NodeType::Cluster(c) if c == &name),
                         ) {
                             app.tree[idx].expanded = true;
-                            // Move tree_cursor to this cluster in visible indices
+                        }
+                        // US-600: populate namespace children from cached snapshots
+                        app.sync_tree_from_snapshots();
+                        // Recompute visible indices AFTER tree mutation to get correct cursor position
+                        let visible = app.visible_tree_indices();
+                        if let Some(idx) = app.tree.iter().position(
+                            |n| matches!(&n.node_type, NodeType::Cluster(c) if c == &name),
+                        ) {
                             if let Some(vi) = visible.iter().position(|&i| i == idx) {
                                 app.tree_cursor = vi;
                             }
                         }
-                        // US-600: populate namespace children from cached snapshots
-                        app.sync_tree_from_snapshots();
                     }
                     app.needs_refresh = true;
                     app.fetch_generation += 1;
@@ -3529,10 +3588,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     app.cluster_connection_status
                         .insert(name.clone(), ConnectionStatus::Discovering);
                 }
-                let dir = args
-                    .kubeconfig_dir
-                    .clone()
-                    .unwrap_or_else(|| std::path::PathBuf::from("_generated/clusters"));
+                let dir = kubeconfig_dir_retry.clone();
                 let retry_tx = discover_tx_retry.clone();
                 let retry_cancel = cancelled.clone();
                 let retry_names = failed_names;
