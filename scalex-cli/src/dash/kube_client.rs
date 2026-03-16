@@ -212,14 +212,11 @@ pub async fn discover_clusters_streaming(
                 let mut token = super::sa_provisioner::read_cached_token(&kubeconfig_path);
                 if token.is_none() {
                     if let Some(ref bh) = bastion {
-                        match super::sa_provisioner::provision_dash_sa(
+                        if let Ok(t) = super::sa_provisioner::provision_dash_sa(
                             &kubeconfig_path, &cluster_name, bh,
                         ).await {
-                            Ok(t) => {
-                                let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &t);
-                                token = Some(t);
-                            }
-                            _ => {}
+                            let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &t);
+                            token = Some(t);
                         }
                     }
                 }
@@ -677,26 +674,23 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
             }
 
             // Strategy 2: direct connection via kubeconfig IP
-            match build_client(&kubeconfig_path).await {
-                Ok(client) => {
-                    if kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
-                        .list(&kube::api::ListParams::default().limit(1))
-                        .await
-                        .is_ok()
-                    {
-                        let ver = fetch_server_version(&client).await;
-                        let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
-                        return Some(ClusterClient {
-                            name: cluster_name,
-                            kubeconfig_path,
-                            client,
-                            tunnel_pid: None,
-                            server_version: ver,
-                            endpoint: ep,
-                        });
-                    }
+            if let Ok(client) = build_client(&kubeconfig_path).await {
+                if kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
+                    .list(&kube::api::ListParams::default().limit(1))
+                    .await
+                    .is_ok()
+                {
+                    let ver = fetch_server_version(&client).await;
+                    let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
+                    return Some(ClusterClient {
+                        name: cluster_name,
+                        kubeconfig_path,
+                        client,
+                        tunnel_pid: None,
+                        server_version: ver,
+                        endpoint: ep,
+                    });
                 }
-                Err(_) => {}
             }
 
             // Strategy 2b: .original kubeconfig fallback

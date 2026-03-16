@@ -12,7 +12,7 @@ use crossterm::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -147,6 +147,8 @@ pub struct App {
     #[allow(dead_code)]
     pub clusters: Vec<ClusterClient>,
     pub snapshots: Vec<ClusterSnapshot>,
+    /// Index: cluster name → position in `snapshots` vec for O(1) lookup
+    pub snapshot_index: HashMap<String, usize>,
     pub infra: InfraSnapshot,
 
     // Timing
@@ -159,6 +161,8 @@ pub struct App {
     // Search
     pub search_active: bool,
     pub search_query: Option<String>,
+    /// Pre-lowercased search query to avoid per-item to_lowercase() allocation
+    pub search_query_lower: Option<String>,
 
     // Self-monitoring (sampled at refresh interval, not per-tick)
     pub self_rss_mb: Option<f64>,
@@ -214,7 +218,7 @@ pub struct App {
     pub help_viewport_height: u16,
 
     /// Discovery log messages for TUI status bar display (message, tick_count when received)
-    pub discovery_logs: Vec<(String, u64)>,
+    pub discovery_logs: VecDeque<(String, u64)>,
 }
 
 impl App {
@@ -274,12 +278,14 @@ impl App {
             selected_namespace: None,
             clusters,
             snapshots: Vec::new(),
+            snapshot_index: HashMap::new(),
             infra: InfraSnapshot::default(),
             api_latency_ms: 0,
             show_help: false,
             help_scroll_offset: 0,
             search_active: false,
             search_query: None,
+            search_query_lower: None,
             self_rss_mb: None,
             refresh_secs,
             needs_refresh: false,
@@ -297,7 +303,7 @@ impl App {
             page_size: 0,
             sidebar_page_size: 0,
             help_viewport_height: 0,
-            discovery_logs: Vec::new(),
+            discovery_logs: VecDeque::new(),
         }
     }
 
@@ -359,12 +365,14 @@ impl App {
             selected_namespace: None,
             clusters: Vec::new(),
             snapshots: Vec::new(),
+            snapshot_index: HashMap::new(),
             infra: InfraSnapshot::default(),
             api_latency_ms: 0,
             show_help: false,
             help_scroll_offset: 0,
             search_active: false,
             search_query: None,
+            search_query_lower: None,
             self_rss_mb: None,
             refresh_secs,
             needs_refresh: false,
@@ -382,7 +390,7 @@ impl App {
             page_size: 0,
             sidebar_page_size: 0,
             help_viewport_height: 0,
-            discovery_logs: Vec::new(),
+            discovery_logs: VecDeque::new(),
         }
     }
 
@@ -503,6 +511,7 @@ impl App {
                 }
                 _ => {}
             }
+            self.sync_search_lower();
             return;
         }
 
@@ -626,25 +635,35 @@ impl App {
             AppEvent::Tick | AppEvent::None | AppEvent::CharInput(_) => {}
             AppEvent::ForceQuit => {} // handled at top of handle_event
         }
+        // Sync lowercased search cache once per event (avoids per-item to_lowercase on query)
+        self.sync_search_lower();
+    }
+
+    /// Sync the pre-lowercased search query cache. Called once per event cycle.
+    pub fn sync_search_lower(&mut self) {
+        self.search_query_lower = self
+            .search_query
+            .as_ref()
+            .filter(|q| !q.is_empty())
+            .map(|q| q.to_lowercase());
     }
 
     /// Check if a name matches the current search query (case-insensitive)
     pub fn matches_search(&self, name: &str) -> bool {
-        match &self.search_query {
-            Some(q) if !q.is_empty() => name.to_lowercase().contains(&q.to_lowercase()),
-            _ => true,
+        match &self.search_query_lower {
+            Some(q) => name.to_lowercase().contains(q.as_str()),
+            None => true,
         }
     }
 
     /// Check if a resource matches search by name OR namespace (case-insensitive)
     pub fn matches_search_with_ns(&self, name: &str, namespace: &str) -> bool {
-        match &self.search_query {
-            Some(q) if !q.is_empty() => {
-                let q_lower = q.to_lowercase();
-                name.to_lowercase().contains(&q_lower)
-                    || namespace.to_lowercase().contains(&q_lower)
+        match &self.search_query_lower {
+            Some(q) => {
+                name.to_lowercase().contains(q.as_str())
+                    || namespace.to_lowercase().contains(q.as_str())
             }
-            _ => true,
+            None => true,
         }
     }
 
@@ -1307,9 +1326,23 @@ impl App {
     }
 
     pub fn current_snapshot(&self) -> Option<&ClusterSnapshot> {
-        self.selected_cluster
-            .as_ref()
-            .and_then(|name| self.snapshots.iter().find(|s| &s.name == name))
+        self.selected_cluster.as_ref().and_then(|name| {
+            // O(1) fast path via index (production), O(n) fallback (tests/stale index)
+            self.snapshot_index
+                .get(name)
+                .and_then(|&idx| self.snapshots.get(idx))
+                .filter(|s| &s.name == name)
+                .or_else(|| self.snapshots.iter().find(|s| &s.name == name))
+        })
+    }
+
+    /// Rebuild snapshot_index after snapshots are modified.
+    #[allow(dead_code)]
+    pub fn rebuild_snapshot_index(&mut self) {
+        self.snapshot_index.clear();
+        for (i, snap) in self.snapshots.iter().enumerate() {
+            self.snapshot_index.insert(snap.name.clone(), i);
+        }
     }
 
     /// Check if all discovered clusters have failed to connect
@@ -1325,7 +1358,7 @@ impl App {
     /// Get the latest non-expired discovery log message (~10s auto-fade at 4 ticks/sec)
     pub fn latest_discovery_log(&self) -> Option<&str> {
         self.discovery_logs
-            .last()
+            .back()
             .filter(|(_, tick)| self.tick_count.saturating_sub(*tick) < 40)
             .map(|(msg, _)| msg.as_str())
     }
@@ -1395,12 +1428,14 @@ mod tests {
             selected_namespace: None,
             clusters: vec![],
             snapshots: vec![],
+            snapshot_index: HashMap::new(),
             infra: InfraSnapshot::default(),
             api_latency_ms: 0,
             show_help: false,
             help_scroll_offset: 0,
             search_active: false,
             search_query: None,
+            search_query_lower: None,
             self_rss_mb: None,
             refresh_secs: 1,
             needs_refresh: false,
@@ -1418,7 +1453,7 @@ mod tests {
             page_size: 0,
             sidebar_page_size: 0,
             help_viewport_height: 0,
-            discovery_logs: Vec::new(),
+            discovery_logs: VecDeque::new(),
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -2178,6 +2213,7 @@ mod tests {
         });
         // Search for "alpha" → only 1 result
         app.search_query = Some("alpha".into());
+        app.sync_search_lower();
         app.table_cursor = 0;
         app.handle_event(AppEvent::Down);
         // Should not exceed filtered count (1 item → cursor stays at 0)
@@ -2770,6 +2806,7 @@ mod tests {
     fn search_matches_namespace() {
         let mut app = test_app();
         app.search_query = Some("kube-system".to_string());
+        app.sync_search_lower();
         assert!(app.matches_search_with_ns("coredns", "kube-system"));
         assert!(!app.matches_search_with_ns("coredns", "default"));
     }
@@ -2778,6 +2815,7 @@ mod tests {
     fn search_matches_name_or_namespace() {
         let mut app = test_app();
         app.search_query = Some("core".to_string());
+        app.sync_search_lower();
         // Matches name
         assert!(app.matches_search_with_ns("coredns", "default"));
         // Matches namespace
@@ -3153,10 +3191,12 @@ mod tests {
 
         // Filter for "alpha": only 1 node matches → 2 + max(1, 1) = 3
         app.search_query = Some("alpha".into());
+        app.sync_search_lower();
         assert_eq!(app.top_tab_line_count(), 3);
 
         // Filter for "nonexistent": 0 matches → 2 + max(0, 1) = 3 (shows "No results")
         app.search_query = Some("nonexistent".into());
+        app.sync_search_lower();
         assert_eq!(app.top_tab_line_count(), 3);
     }
 
@@ -3399,9 +3439,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     app.discover_complete = true;
                 }
                 kube_client::DiscoverEvent::Log { message } => {
-                    app.discovery_logs.push((message, app.tick_count));
+                    app.discovery_logs.push_back((message, app.tick_count));
                     if app.discovery_logs.len() > 10 {
-                        app.discovery_logs.remove(0);
+                        app.discovery_logs.pop_front();
                     }
                 }
             }
@@ -3420,9 +3460,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             // Selected cluster sends full data (all resources); non-selected send nodes-only.
             // Merge preserves cached data for fields not included in the fetch.
             for new_snap in result.snapshots {
-                if let Some(existing) =
-                    app.snapshots.iter_mut().find(|s| s.name == new_snap.name)
-                {
+                if let Some(&idx) = app.snapshot_index.get(&new_snap.name) {
+                    let existing = &mut app.snapshots[idx];
                     // Always update namespaces and nodes (fetched every cycle)
                     existing.namespaces = new_snap.namespaces;
                     existing.nodes = new_snap.nodes;
@@ -3441,6 +3480,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         data::compute_resource_usage(&existing.nodes, &existing.pods, None);
                 } else {
                     // New cluster not yet in snapshots — add it
+                    app.snapshot_index.insert(new_snap.name.clone(), app.snapshots.len());
                     app.snapshots.push(new_snap);
                 }
             }
