@@ -95,7 +95,8 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 | `p` `d` `s` `c` `n` | Switch resource view (center panel only) |
 | `/` | Enter search mode (filter by name) |
 | `r` | Force data refresh |
-| `?` | Toggle help overlay |
+| `?` | Toggle help overlay (context-sensitive: shows keys for current panel/view) |
+| `ESC` | Close help overlay / Cancel search |
 | `q`/`Ctrl+C` | Quit |
 
 ### UX Design Invariants
