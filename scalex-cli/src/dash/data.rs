@@ -9,7 +9,7 @@ use std::time::Duration;
 
 /// Which resource type the TUI is currently displaying.
 /// Used to selectively fetch only what's needed (reduces 7 API calls → 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActiveResource {
     Pods,
     Deployments,

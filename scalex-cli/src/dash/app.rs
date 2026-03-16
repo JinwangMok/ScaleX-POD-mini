@@ -12,7 +12,7 @@ use crossterm::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -196,6 +196,10 @@ pub struct App {
     /// Which resource was last fetched (for staleness indicator in UI)
     pub last_fetched_resource: Option<ActiveResource>,
 
+    /// Tracks which resource types have been fetched for the current cluster/namespace.
+    /// Used to distinguish "not yet fetched" (empty vec) from "fetched but truly empty".
+    pub fetched_resources: HashSet<ActiveResource>,
+
     /// Monotonic generation counter — incremented on every navigation/view change.
     /// Fetch results with a stale generation are discarded.
     pub fetch_generation: u64,
@@ -288,6 +292,7 @@ impl App {
             fetch_started_at: None,
             tick_count: 0,
             last_fetched_resource: None,
+            fetched_resources: HashSet::new(),
             fetch_generation: 0,
             fetch_timed_out: false,
             page_size: 0,
@@ -372,6 +377,7 @@ impl App {
             fetch_started_at: None,
             tick_count: 0,
             last_fetched_resource: None,
+            fetched_resources: HashSet::new(),
             fetch_generation: 0,
             fetch_timed_out: false,
             page_size: 0,
@@ -890,6 +896,7 @@ impl App {
                     self.needs_refresh = true;
                     self.fetch_generation += 1;
                     self.is_fetching = false;
+                    self.fetched_resources.clear();
                     // Immediately populate tree from cached snapshots
                     self.sync_tree_from_snapshots();
                 }
@@ -906,6 +913,7 @@ impl App {
                 self.needs_refresh = true;
                 self.fetch_generation += 1;
                 self.is_fetching = false;
+                self.fetched_resources.clear();
             }
             NodeType::InfraHeader => {
                 if self.tree[idx].expanded {
@@ -1395,6 +1403,7 @@ mod tests {
             fetch_started_at: None,
             tick_count: 0,
             last_fetched_resource: None,
+            fetched_resources: HashSet::new(),
             fetch_generation: 0,
             fetch_timed_out: false,
             page_size: 0,
@@ -3372,6 +3381,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 None => {
                     // Full fetch — replace everything
                     app.snapshots = result.snapshots;
+                    // Mark all resource types as fetched
+                    app.fetched_resources.insert(ActiveResource::Pods);
+                    app.fetched_resources.insert(ActiveResource::Deployments);
+                    app.fetched_resources.insert(ActiveResource::Services);
+                    app.fetched_resources.insert(ActiveResource::ConfigMaps);
+                    app.fetched_resources.insert(ActiveResource::Nodes);
                 }
                 Some(active) => {
                     // Selective fetch — merge only the fetched resource into existing snapshots
@@ -3407,6 +3422,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             }
             app.api_latency_ms = result.latency_ms;
             app.last_fetched_resource = result.active_resource;
+            // Track which resource types have been fetched (for loading vs empty distinction)
+            if let Some(active) = result.active_resource {
+                app.fetched_resources.insert(active);
+                // Nodes are always fetched in selective mode too
+                app.fetched_resources.insert(ActiveResource::Nodes);
+            }
             app.sync_tree_from_snapshots();
             app.self_rss_mb = read_self_rss_mb();
             app.is_fetching = false;

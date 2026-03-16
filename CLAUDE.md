@@ -86,8 +86,8 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 ### Header Layout
 
 The TUI header is k9s-style and responsive:
-- **Full mode** (terminal height ≥ 28): 8-line header with Context, Cluster endpoint, ScaleX version + cluster count, K8s revision, config path, and tab bar on the left. ASCII art `SCALEX` logo on the right (hidden when terminal width < 82 columns).
-- **Compact mode** (terminal height < 28): 4-line header with condensed info row + tab bar.
+- **Full mode** (terminal height ≥ 28): 8-line header with ASCII art `SCALEX` logo on the left and cluster info (Context, Cluster endpoint, K8s revision, ScaleX version + cluster count, config path) on the right. Logo hidden when terminal width < 82 columns.
+- **Compact mode** (terminal height < 28): 4-line header with condensed info rows (no logo). No tab bar — active tab is inferred from center panel content.
 - Header info sourced from active `ClusterClient`: `name` (Context), `endpoint` (Cluster), `server_version` (K8s Rev), `kubeconfig_path` (Config). Version from `env!("CARGO_PKG_VERSION")`.
 
 ### Keybindings
@@ -142,6 +142,8 @@ The TUI header is k9s-style and responsive:
 - **Discovery log channel**: `DiscoverEvent::Log { message }` replaces all `eprintln!` in streaming discovery paths to avoid TUI corruption. Messages stored in `app.discovery_logs` (capped at 10) and displayed in status bar with ~10s auto-fade. Headless mode (`discover_clusters()`) retains `eprintln!` since no TUI is active.
 - **Domain-first kubeconfig**: `install.sh` `cleanup_api_tunnels()` rewrites kubeconfigs with `api_endpoint` domain URLs after CF Tunnel is healthy. Original VM IP kubeconfigs saved as `kubeconfig.yaml.original` for fallback. `scalex dash` Strategy 2b tries `.original` file when primary kubeconfig has a domain URL that is unreachable.
 - **k9s attribution**: help overlay (`?` key) footer shows "Inspired by k9s (github.com/derailed/k9s)" in DarkGray.
+- **Cached data persistence**: `render_tab_preamble` returns cached snapshot even when `ConnectionStatus::Failed` — error shown as 1-line red banner via `render_connection_error_banner()`, not full-area replacement. Data stability: once displayed, data stays visible until next fetch result arrives.
+- **Per-resource fetch tracking**: `fetched_resources: HashSet<ActiveResource>` distinguishes "not yet fetched" (empty vec, not in set) from "fetched but truly empty" (empty vec, in set). Cleared on cluster/namespace change. View switch to unfetched resource shows "Loading {type}..." spinner instead of empty table.
 
 ## Key Patterns
 
