@@ -90,6 +90,8 @@ pub struct TreeNode {
     pub expanded: bool,
     pub node_type: NodeType,
     pub children_loaded: bool,
+    /// Pre-computed "name (Nns)" label for expanded cluster nodes. Updated on sync.
+    pub ns_count_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +230,10 @@ pub struct App {
     /// Cached visible tree indices — computed once per event cycle, reused across callers.
     /// Invalidated alongside cached_visible_len on tree mutations.
     cached_visible_indices: Option<Vec<usize>>,
+
+    /// Dirty flag — when false, terminal.draw() is skipped to avoid unnecessary renders.
+    /// Set true by: keyboard events, fetch results, discovery events, spinner ticks.
+    pub needs_redraw: bool,
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -262,6 +268,7 @@ impl App {
             expanded: true,
             node_type: NodeType::Root,
             children_loaded: true,
+            ns_count_label: None,
         }];
 
         // Add cluster nodes
@@ -272,6 +279,7 @@ impl App {
                 expanded: false,
                 node_type: NodeType::Cluster(c.name.clone()),
                 children_loaded: false,
+                ns_count_label: None,
             });
         }
 
@@ -282,6 +290,7 @@ impl App {
             expanded: false,
             node_type: NodeType::InfraHeader,
             children_loaded: false,
+            ns_count_label: None,
         });
 
         let tabs = vec![
@@ -338,6 +347,7 @@ impl App {
             discovery_logs: VecDeque::new(),
             cached_visible_len: None,
             cached_visible_indices: None,
+            needs_redraw: true,
         }
     }
 
@@ -350,6 +360,7 @@ impl App {
             expanded: true,
             node_type: NodeType::Root,
             children_loaded: true,
+            ns_count_label: None,
         }];
 
         let mut cluster_connection_status = HashMap::new();
@@ -361,6 +372,7 @@ impl App {
                 expanded: false,
                 node_type: NodeType::Cluster(name.clone()),
                 children_loaded: false,
+                ns_count_label: None,
             });
             cluster_connection_status.insert(name.clone(), ConnectionStatus::Discovering);
         }
@@ -371,6 +383,7 @@ impl App {
             expanded: false,
             node_type: NodeType::InfraHeader,
             children_loaded: false,
+            ns_count_label: None,
         });
 
         let tabs = vec![
@@ -427,6 +440,7 @@ impl App {
             discovery_logs: VecDeque::new(),
             cached_visible_len: None,
             cached_visible_indices: None,
+            needs_redraw: true,
         }
     }
 
@@ -1209,6 +1223,7 @@ impl App {
                         expanded: false,
                         node_type: NodeType::InfraItem(pool.pool_name.clone()),
                         children_loaded: false,
+                        ns_count_label: None,
                     });
                 }
 
@@ -1219,6 +1234,7 @@ impl App {
                         expanded: false,
                         node_type: NodeType::InfraItem("none".into()),
                         children_loaded: false,
+                        ns_count_label: None,
                     });
                 }
 
@@ -1249,6 +1265,10 @@ impl App {
                 .position(|n| matches!(&n.node_type, NodeType::Cluster(name) if name == snap_name));
 
             if let Some(idx) = cluster_idx {
+                // Always update namespace count label (used by render_sidebar)
+                self.tree[idx].ns_count_label =
+                    Some(format!("{} ({}ns)", snap_name, snap_namespaces.len()));
+
                 if !self.tree[idx].expanded {
                     continue;
                 }
@@ -1288,6 +1308,7 @@ impl App {
                         namespace: "All Namespaces".to_string(),
                     },
                     children_loaded: false,
+                    ns_count_label: None,
                 }];
 
                 for ns in snap_namespaces {
@@ -1300,6 +1321,7 @@ impl App {
                             namespace: ns.clone(),
                         },
                         children_loaded: false,
+                        ns_count_label: None,
                     });
                 }
 
@@ -1468,6 +1490,7 @@ mod tests {
                     expanded: true,
                     node_type: NodeType::Root,
                     children_loaded: true,
+                    ns_count_label: None,
                 },
                 TreeNode {
                     label: "tower".into(),
@@ -1475,6 +1498,7 @@ mod tests {
                     expanded: false,
                     node_type: NodeType::Cluster("tower".into()),
                     children_loaded: false,
+                    ns_count_label: None,
                 },
                 TreeNode {
                     label: "sandbox".into(),
@@ -1482,6 +1506,7 @@ mod tests {
                     expanded: false,
                     node_type: NodeType::Cluster("sandbox".into()),
                     children_loaded: false,
+                    ns_count_label: None,
                 },
                 TreeNode {
                     label: "Infrastructure".into(),
@@ -1489,6 +1514,7 @@ mod tests {
                     expanded: false,
                     node_type: NodeType::InfraHeader,
                     children_loaded: false,
+                    ns_count_label: None,
                 },
             ],
             tree_cursor: 0,
@@ -1527,6 +1553,7 @@ mod tests {
             discovery_logs: VecDeque::new(),
             cached_visible_len: None,
             cached_visible_indices: None,
+            needs_redraw: true,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -1610,6 +1637,7 @@ mod tests {
                     namespace: "kube-system".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         app.tree_cursor = 2; // on kube-system namespace
@@ -1832,6 +1860,7 @@ mod tests {
                     namespace: "All Namespaces".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         app.tree.insert(
@@ -1845,6 +1874,7 @@ mod tests {
                     namespace: "kube-system".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         app.tree.insert(
@@ -1858,6 +1888,7 @@ mod tests {
                     namespace: "default".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         // tree: ScaleX, tower(exp), AllNS, kube-system, default, sandbox, Infra
@@ -1893,6 +1924,7 @@ mod tests {
                         namespace: format!("ns-{}", i),
                     },
                     children_loaded: false,
+                    ns_count_label: None,
                 },
             );
         }
@@ -1927,6 +1959,7 @@ mod tests {
                     namespace: "child1".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         app.tree.insert(
@@ -1940,6 +1973,7 @@ mod tests {
                     namespace: "child2".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         // tree: ScaleX(0), tower(1), child1(2), child2(3), sandbox(4), Infra(5)
@@ -1990,6 +2024,7 @@ mod tests {
                     expanded: false,
                     node_type: NodeType::Cluster(format!("extra-{}", i)),
                     children_loaded: false,
+                    ns_count_label: None,
                 },
             );
         }
@@ -2588,6 +2623,7 @@ mod tests {
                     namespace: "All Namespaces".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         app.selected_cluster = Some("tower".into());
@@ -2758,6 +2794,7 @@ mod tests {
                     namespace: "default".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         // Set up active search filter
@@ -2921,6 +2958,7 @@ mod tests {
                     namespace: "All Namespaces".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         app.tree.insert(
@@ -2934,6 +2972,7 @@ mod tests {
                     namespace: "kube-system".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         // Cursor on kube-system (visible index 3)
@@ -3008,6 +3047,7 @@ mod tests {
                     namespace: "default".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         app.tree_cursor = 2; // on namespace
@@ -3411,6 +3451,7 @@ mod tests {
                     namespace: "kube-system".into(),
                 },
                 children_loaded: false,
+                ns_count_label: None,
             },
         );
         app.tree_cursor = 2;
@@ -3527,51 +3568,66 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
     });
 
     let result = loop {
-        // Adjust scroll offsets before drawing (US-034, US-035)
-        {
-            let term_size = terminal.size()?;
-            let header_height: u16 = if term_size.height >= 28 { 8 } else { 4 };
-            let status_bar_height: u16 = 3;
-            let body_height = term_size
-                .height
-                .saturating_sub(header_height + status_bar_height);
-            // Sidebar viewport = body height, minus 1 row for scroll indicator when content overflows (US-206)
-            let sidebar_overflows = app.visible_tree_len() > body_height as usize;
-            let sidebar_viewport =
-                (body_height as usize).saturating_sub(if sidebar_overflows { 1 } else { 0 });
-            app.ensure_sidebar_scroll_visible(sidebar_viewport);
-            // Table viewport = body height minus block borders (2) minus header row (1, Resources only) minus optional search bar (1)
-            let search_offset: u16 = if app.search_active { 1 } else { 0 };
-            let header_row: u16 = if app.active_tab == 0 { 1 } else { 0 }; // US-203: Top tab has no header row
-            let table_viewport =
-                body_height.saturating_sub(2 + header_row + search_offset) as usize;
-            app.ensure_table_scroll_visible(table_viewport);
-            // Cache viewport heights for PageUp/PageDown
-            app.page_size = table_viewport;
-            app.sidebar_page_size = sidebar_viewport;
-            // Help popup viewport height (US-204) — only compute when help is visible
-            if app.show_help {
-                let help_content = app.help_content_line_count();
-                let max_popup = term_size.height.saturating_sub(2).max(5);
-                let popup_h = (help_content + 2).min(max_popup);
-                app.help_viewport_height = popup_h.saturating_sub(2);
+        // Only redraw when something changed (dirty-flag optimization)
+        if app.needs_redraw {
+            // Adjust scroll offsets before drawing (US-034, US-035)
+            {
+                let term_size = terminal.size()?;
+                let header_height: u16 = if term_size.height >= 28 { 8 } else { 4 };
+                let status_bar_height: u16 = 3;
+                let body_height = term_size
+                    .height
+                    .saturating_sub(header_height + status_bar_height);
+                // Sidebar viewport = body height, minus 1 row for scroll indicator when content overflows (US-206)
+                let sidebar_overflows = app.visible_tree_len() > body_height as usize;
+                let sidebar_viewport =
+                    (body_height as usize).saturating_sub(if sidebar_overflows { 1 } else { 0 });
+                app.ensure_sidebar_scroll_visible(sidebar_viewport);
+                // Table viewport = body height minus block borders (2) minus header row (1, Resources only) minus optional search bar (1)
+                let search_offset: u16 = if app.search_active { 1 } else { 0 };
+                let header_row: u16 = if app.active_tab == 0 { 1 } else { 0 }; // US-203: Top tab has no header row
+                let table_viewport =
+                    body_height.saturating_sub(2 + header_row + search_offset) as usize;
+                app.ensure_table_scroll_visible(table_viewport);
+                // Cache viewport heights for PageUp/PageDown
+                app.page_size = table_viewport;
+                app.sidebar_page_size = sidebar_viewport;
+                // Help popup viewport height (US-204) — only compute when help is visible
+                if app.show_help {
+                    let help_content = app.help_content_line_count();
+                    let max_popup = term_size.height.saturating_sub(2).max(5);
+                    let popup_h = (help_content + 2).min(max_popup);
+                    app.help_viewport_height = popup_h.saturating_sub(2);
+                }
             }
-        }
 
-        // Draw first — shows skeleton UI instantly on startup (US-004)
-        terminal.draw(|f| ui::render(f, &app))?;
+            terminal.draw(|f| ui::render(f, &app))?;
+            app.needs_redraw = false;
+        }
 
         // Event-driven: wait for keyboard input, tick, or channel message (near-zero input latency)
         let evt = tokio::select! {
             biased; // Prioritize keyboard input over ticks
             maybe_event = event_stream.next() => {
                 match maybe_event {
-                    Some(Ok(crossterm::event::Event::Key(key))) => event::map_key_event(key),
-                    Some(Ok(crossterm::event::Event::Resize(_, _))) => AppEvent::Tick,
+                    Some(Ok(crossterm::event::Event::Key(key))) => {
+                        app.needs_redraw = true;
+                        event::map_key_event(key)
+                    }
+                    Some(Ok(crossterm::event::Event::Resize(_, _))) => {
+                        app.needs_redraw = true;
+                        AppEvent::Tick
+                    }
                     _ => AppEvent::None,
                 }
             }
-            _ = tick_interval.tick() => AppEvent::Tick,
+            _ = tick_interval.tick() => {
+                // Only redraw on tick when spinner is visible (discovery/fetch in progress)
+                if app.is_fetching || !app.discover_complete {
+                    app.needs_redraw = true;
+                }
+                AppEvent::Tick
+            }
         };
         app.handle_event(evt);
         app.tick_count += 1;
@@ -3582,6 +3638,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
 
         // --- Process discover results (non-blocking) ---
         while let Ok(event) = discover_rx.try_recv() {
+            app.needs_redraw = true;
             match event {
                 kube_client::DiscoverEvent::Connected(client) => {
                     app.tunnel_pids.extend(client.tunnel_pid);
@@ -3632,6 +3689,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
 
         // --- Process fetch results (non-blocking) ---
         while let Ok(result) = fetch_rx.try_recv() {
+            app.needs_redraw = true;
             // Discard stale results from a previous generation.
             // Do NOT clear is_fetching here — a newer generation's fetch may be in-flight.
             // Only clear fetch_timed_out to avoid stale timeout banners (US-602).
@@ -3691,6 +3749,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 app.is_fetching = false;
                 app.fetch_started_at = None;
                 app.fetch_timed_out = true;
+                app.needs_redraw = true;
             }
         }
 
