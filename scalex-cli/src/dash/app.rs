@@ -678,7 +678,16 @@ impl App {
                 self.is_fetching = false;
             }
             NodeType::InfraHeader => {
-                self.tree[idx].expanded = !self.tree[idx].expanded;
+                if self.tree[idx].expanded {
+                    // Collapse: remove children and reset loaded flag
+                    self.tree[idx].expanded = false;
+                    self.tree[idx].children_loaded = false;
+                    self.remove_children(idx);
+                } else {
+                    // Expand: populate infra children from cached data
+                    self.tree[idx].expanded = true;
+                    self.sync_infra_tree();
+                }
             }
             NodeType::InfraItem(_) => {}
         }
