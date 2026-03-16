@@ -73,13 +73,50 @@ fn load_api_endpoints(repo_root: &Path) -> HashMap<String, String> {
 }
 
 /// Build a kube Client with a replaced server URL (for api_endpoint override).
-async fn build_client_with_endpoint(kubeconfig_path: &Path, endpoint: &str) -> Result<Client> {
+/// When connecting via CF Tunnel, the edge presents a public CA cert (not the K8s self-signed CA),
+/// so we strip the kubeconfig's certificate-authority-data and use system root CAs instead.
+/// If `bearer_token` is provided, it replaces client cert auth (needed for CF Tunnel which
+/// cannot proxy mTLS client certificates).
+async fn build_client_with_endpoint(
+    kubeconfig_path: &Path,
+    endpoint: &str,
+    bearer_token: Option<&str>,
+) -> Result<Client> {
     let content = std::fs::read_to_string(kubeconfig_path)
         .context("Reading kubeconfig for endpoint override")?;
     let (original_url, _, _) =
         extract_server_url(kubeconfig_path).context("Cannot parse server URL")?;
     let modified = content.replace(&original_url, endpoint);
-    build_client_from_content(&modified).await
+
+    // Parse, strip cluster CA (CF Tunnel terminates TLS with public CA), rebuild.
+    // With root_cert=None, kube-rs automatically uses system native root CAs.
+    let mut kubeconfig: kube::config::Kubeconfig =
+        serde_yaml::from_str(&modified).context("Parsing modified kubeconfig")?;
+    for cluster in &mut kubeconfig.clusters {
+        if let Some(ref mut c) = cluster.cluster {
+            c.certificate_authority = None;
+            c.certificate_authority_data = None;
+        }
+    }
+
+    // Replace client cert auth with bearer token (CF Tunnel cannot proxy mTLS)
+    if let Some(token) = bearer_token {
+        for auth in &mut kubeconfig.auth_infos {
+            if let Some(ref mut info) = auth.auth_info {
+                info.token = Some(secrecy::SecretString::from(token.to_string()));
+                info.client_certificate = None;
+                info.client_certificate_data = None;
+                info.client_key = None;
+                info.client_key_data = None;
+            }
+        }
+    }
+
+    let config = kube::Config::from_custom_kubeconfig(kubeconfig, &Default::default())
+        .await
+        .context("Building kube config from modified content")?;
+
+    Client::try_from(config).context("Creating kube client with system CAs")
 }
 
 /// Probe cluster connectivity: build client + list 1 namespace, with timeout.
@@ -169,9 +206,26 @@ pub async fn discover_clusters_streaming(
                 return;
             }
 
-            // Strategy 1: api_endpoint (domain URL)
+            // Strategy 1: api_endpoint (domain URL via CF Tunnel + SA token)
             if let Some(ref ep) = endpoint {
-                match build_client_with_endpoint(&kubeconfig_path, ep).await {
+                // Resolve or auto-provision SA token for CF Tunnel auth
+                let mut token = super::sa_provisioner::read_cached_token(&kubeconfig_path);
+                if token.is_none() {
+                    if let Some(ref bh) = bastion {
+                        match super::sa_provisioner::provision_dash_sa(
+                            &kubeconfig_path, &cluster_name, bh,
+                        ).await {
+                            Ok(t) => {
+                                let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &t);
+                                token = Some(t);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let token = token;
+
+                match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
                         if probe_client(&client).await {
                             let _ = tx
@@ -376,9 +430,10 @@ pub async fn discover_clusters_streaming_filtered(
                 return;
             }
 
-            // Strategy 1: api_endpoint
+            // Strategy 1: api_endpoint (domain URL via CF Tunnel + SA token)
             if let Some(ref ep) = endpoint {
-                match build_client_with_endpoint(&kubeconfig_path, ep).await {
+                let token = super::sa_provisioner::read_cached_token(&kubeconfig_path);
+                match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
                         if probe_client(&client).await {
                             let _ = tx
@@ -549,6 +604,7 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
         .and_then(|p| p.parent())
         .unwrap_or(Path::new("."));
     let bastion = resolve_bastion(repo_root);
+    let api_endpoints = load_api_endpoints(repo_root);
     let mut next_local_port: u16 = 16443;
 
     for entry in entries {
@@ -569,7 +625,52 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
             .unwrap_or("unknown")
             .to_string();
 
-        // Try direct connection first
+        // Strategy 1: api_endpoint (domain URL via CF Tunnel + SA token)
+        if let Some(ep) = api_endpoints.get(&cluster_name) {
+            // Resolve or auto-provision SA token
+            let mut token = super::sa_provisioner::read_cached_token(&kubeconfig_path);
+            if token.is_none() {
+                if let Some(ref bh) = bastion {
+                    eprintln!("{}: provisioning dash SA...", cluster_name);
+                    match super::sa_provisioner::provision_dash_sa(
+                        &kubeconfig_path, &cluster_name, bh,
+                    ).await {
+                        Ok(t) => {
+                            let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &t);
+                            token = Some(t);
+                        }
+                        Err(e) => {
+                            eprintln!("{}: SA provision failed: {}", cluster_name, e);
+                        }
+                    }
+                }
+            }
+
+            match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
+                Ok(client) => {
+                    if probe_client(&client).await {
+                        eprintln!("{}: connected via domain ({})", cluster_name, ep);
+                        let ver = fetch_server_version(&client).await;
+                        clusters.push(ClusterClient {
+                            name: cluster_name,
+                            kubeconfig_path,
+                            client,
+                            tunnel_pid: None,
+                            server_version: ver,
+                            endpoint: Some(ep.clone()),
+                        });
+                        continue;
+                    } else {
+                        eprintln!("{}: domain probe failed ({})", cluster_name, ep);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}: domain client build failed ({}): {}", cluster_name, ep, e);
+                }
+            }
+        }
+
+        // Strategy 2: direct connection via kubeconfig IP
         match build_client(&kubeconfig_path).await {
             Ok(client) => {
                 // Verify connectivity with a quick API call

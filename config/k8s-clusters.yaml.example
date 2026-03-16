@@ -116,5 +116,5 @@ config:
   domains:
     auth: "auth.jinwang.dev"
     argocd: "cd.jinwang.dev"
-    tower_api: "api.tower.jinwang.dev"
-    sandbox_api: "api.sandbox.jinwang.dev"
+    tower_api: "tower-api.jinwang.dev"
+    sandbox_api: "sandbox-api.jinwang.dev"

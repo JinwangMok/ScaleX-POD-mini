@@ -36,15 +36,15 @@
 
 ```
 클라이언트 kubectl
-  │ server: https://api.tower.jinwang.dev  (Tower)
-  │         https://api.sandbox.jinwang.dev  (Sandbox)
+  │ server: https://tower-api.jinwang.dev  (Tower)
+  │         https://sandbox-api.jinwang.dev  (Sandbox)
   │ exec: kubectl oidc-login → 브라우저 → auth.jinwang.dev
   ▼
 Cloudflare Edge (퍼블릭 TLS)
   ▼
 Cloudflare Tunnel → cloudflared 파드
-  │ api.tower.jinwang.dev → https://kubernetes.default.svc:443
-  │ api.sandbox.jinwang.dev → https://192.168.88.110:6443
+  │ tower-api.jinwang.dev → https://192.168.88.100:6443
+  │ sandbox-api.jinwang.dev → https://192.168.88.110:6443
   │ auth.jinwang.dev → http://keycloak.keycloak.svc:80
   │ cd.jinwang.dev → http://argocd-server.argocd.svc:8080
   ▼
@@ -107,15 +107,15 @@ All nodes on 192.168.88.0/24 LAN:
 
 ```
 Client kubectl
-  │ server: https://api.tower.jinwang.dev  (Tower)
-  │         https://api.sandbox.jinwang.dev  (Sandbox)
+  │ server: https://tower-api.jinwang.dev  (Tower)
+  │         https://sandbox-api.jinwang.dev  (Sandbox)
   │ exec: kubectl oidc-login → browser → auth.jinwang.dev
   ▼
 Cloudflare Edge (public TLS)
   ▼
 Cloudflare Tunnel → cloudflared pod
-  │ api.tower.jinwang.dev → https://kubernetes.default.svc:443
-  │ api.sandbox.jinwang.dev → https://192.168.88.110:6443
+  │ tower-api.jinwang.dev → https://192.168.88.100:6443
+  │ sandbox-api.jinwang.dev → https://192.168.88.110:6443
   │ auth.jinwang.dev → http://keycloak.keycloak.svc:80
   │ cd.jinwang.dev → http://argocd-server.argocd.svc:8080
   ▼

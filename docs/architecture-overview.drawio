@@ -28,7 +28,7 @@
         <mxCell id="tailscale-ext" value="Tailscale&#xa;Mesh VPN" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="ext-group">
           <mxGeometry x="470" y="25" width="150" height="85" as="geometry" />
         </mxCell>
-        <mxCell id="domains" value="cd.jinwang.dev (ArgoCD)&#xa;auth.jinwang.dev (Keycloak)&#xa;api.tower.jinwang.dev (Tower K8s API)&#xa;api.sandbox.jinwang.dev (Sandbox K8s API)" style="text;html=1;align=left;fontSize=10;fontStyle=2;fillColor=#fff2cc;strokeColor=#d6b656;rounded=1;" vertex="1" parent="ext-group">
+        <mxCell id="domains" value="cd.jinwang.dev (ArgoCD)&#xa;auth.jinwang.dev (Keycloak)&#xa;tower-api.jinwang.dev (Tower K8s API)&#xa;sandbox-api.jinwang.dev (Sandbox K8s API)" style="text;html=1;align=left;fontSize=10;fontStyle=2;fillColor=#fff2cc;strokeColor=#d6b656;rounded=1;" vertex="1" parent="ext-group">
           <mxGeometry x="640" y="30" width="150" height="60" as="geometry" />
         </mxCell>
         <mxCell id="e-client-cf" style="edgeStyle=orthogonalEdgeStyle;" edge="1" parent="ext-group" source="client" target="cf-edge">
