@@ -1036,13 +1036,14 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
         app,
         nodes,
         area,
-        resource_header(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY"]),
+        resource_header(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY", "AGE"]),
         &[
             Constraint::Min(16),
             Constraint::Length(10),
             Constraint::Min(12),
             Constraint::Min(10),
             Constraint::Min(14),
+            Constraint::Length(6),
         ],
         "No nodes found",
         |node| app.matches_search(&node.name),
@@ -1062,6 +1063,7 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                         .style(base),
                     Cell::from(format!("{}/{}", node.mem_allocatable, node.mem_capacity))
                         .style(base),
+                    Cell::from(node.age.as_str()).style(base),
                 ])
             } else {
                 let status_color = if node.status == "Ready" {
@@ -1077,6 +1079,7 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                         .style(Style::default().fg(theme::BRIGHT_AQUA)),
                     Cell::from(format!("{}/{}", node.mem_allocatable, node.mem_capacity))
                         .style(Style::default().fg(theme::BRIGHT_PURPLE)),
+                    Cell::from(node.age.as_str()).style(Style::default().fg(theme::FG3)),
                 ])
             }
         },
@@ -1292,29 +1295,9 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     // Line 2: CPU/Mem bars per cluster + self overhead + latency
     let mut usage_spans: Vec<Span> = vec![Span::styled(" ", Style::default().fg(theme::FG4))];
+    let very_narrow = inner.width < 60;
 
-    let bar_width = if narrow { 5 } else { 8 };
-    for snapshot in &app.snapshots {
-        let ru = &snapshot.resource_usage;
-        usage_spans.push(Span::styled(
-            format!("{}: ", snapshot.name),
-            Style::default().fg(theme::FG3),
-        ));
-        usage_spans.extend(render_usage_bar(
-            "CPU",
-            ru.cpu_percent,
-            bar_width,
-            theme::BRIGHT_AQUA,
-        ));
-        usage_spans.extend(render_usage_bar(
-            "MEM",
-            ru.mem_percent,
-            bar_width,
-            theme::BRIGHT_PURPLE,
-        ));
-    }
-
-    // Self overhead + fetch indicator
+    // Self overhead + fetch indicator (always shown)
     let rss_str = app
         .self_rss_mb
         .map(|mb| format!("{:.0}MB", mb))
@@ -1324,6 +1307,30 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
+
+    if !very_narrow {
+        let bar_width = if narrow { 5 } else { 8 };
+        for snapshot in &app.snapshots {
+            let ru = &snapshot.resource_usage;
+            usage_spans.push(Span::styled(
+                format!("{}: ", snapshot.name),
+                Style::default().fg(theme::FG3),
+            ));
+            usage_spans.extend(render_usage_bar(
+                "CPU",
+                ru.cpu_percent,
+                bar_width,
+                theme::BRIGHT_AQUA,
+            ));
+            usage_spans.extend(render_usage_bar(
+                "MEM",
+                ru.mem_percent,
+                bar_width,
+                theme::BRIGHT_PURPLE,
+            ));
+        }
+    }
+
     usage_spans.push(Span::styled(
         format!(
             "| self: {} | latency: {}ms{}",
@@ -1442,7 +1449,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
     lines.push(key("q/Ctrl+C", "Quit"));
     lines.push(key("Tab", "Switch panel (Sidebar ↔ Center)"));
     lines.push(key("Shift+Tab", "Switch panel (reverse)"));
-    lines.push(key("Ctrl+N", "Switch to tab N"));
+    lines.push(key("1/2", "Switch to tab (Resources/Top)"));
     lines.push(key("/", "Search (filter by name/namespace)"));
     lines.push(key("ESC", "Clear active filter / close overlay"));
     lines.push(key("r", "Force refresh"));

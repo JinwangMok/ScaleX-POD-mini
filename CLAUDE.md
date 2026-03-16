@@ -100,7 +100,7 @@ The TUI header is k9s-style and responsive:
 | `PgUp`/`PgDn` | Jump half viewport up/down |
 | `Home`/`End` | Jump to first/last item |
 | `Tab`/`Shift+Tab` | Cycle between Sidebar and Center panel |
-| `Ctrl+N` | Switch to tab N (1=Resources, 2=Top) |
+| `1` `2` | Switch to tab (1=Resources, 2=Top) |
 | `p` `d` `s` `c` `n` | Switch resource view (works from both panels; from Sidebar also switches to Center) |
 | `/` | Enter search mode (filter by name and namespace) |
 | `r` | Force data refresh + retry failed cluster connections |
@@ -127,6 +127,9 @@ The TUI header is k9s-style and responsive:
 - **Sidebar scroll indicator**: `N/M` position indicator shown at bottom-left when sidebar content overflows viewport.
 - **Table column constraints**: resource tables use `Min`/`Length` constraints instead of percentages for better narrow terminal support — fixed-width columns (READY, AGE, RESTARTS) don't shrink, flexible columns (NAME, NAMESPACE) absorb remaining space.
 - **Shared tab preamble**: `render_tab_preamble()` deduplicates connection error + loading state rendering between Resources and Top tabs.
+- **Node AGE column**: Nodes table shows AGE computed from node `creation_timestamp`, consistent with all other resource views.
+- **Service nodePort display**: Service PORTS column shows `port:nodePort/proto` for NodePort/LoadBalancer services, `port/proto` for ClusterIP.
+- **Status bar narrow terminal**: per-cluster CPU/MEM usage bars hidden when terminal width < 60 cols; self/latency info always shown.
 
 ## Key Patterns
 
