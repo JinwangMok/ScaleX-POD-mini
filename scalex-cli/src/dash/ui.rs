@@ -425,9 +425,9 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             // Truncate label to fit sidebar width.
             // Use display-column widths, not byte lengths — Unicode markers (●, ▼, ▶)
             // are 3 bytes each but 1 display column.
-            let indent_cols = 2 * node.depth;  // "  ".repeat(depth) — pure ASCII
-            let marker_cols: usize = 2;        // "● " or "  " — always 2 display columns
-            let icon_cols: usize = 2;          // "▼ " / "▶ " / "  " — always 2 display columns
+            let indent_cols = 2 * node.depth; // "  ".repeat(depth) — pure ASCII
+            let marker_cols: usize = 2; // "● " or "  " — always 2 display columns
+            let icon_cols: usize = 2; // "▼ " / "▶ " / "  " — always 2 display columns
             let prefix_cols = indent_cols + marker_cols + icon_cols;
             let suffix_cols = conn_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0); // ASCII only
             let available = (inner.width as usize).saturating_sub(prefix_cols + suffix_cols);
@@ -489,7 +489,8 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         let x = inner.x;
         let y = inner.y + inner.height.saturating_sub(1);
         if y < inner.y + inner.height {
-            let indicator_area = Rect::new(x, y, indicator.len().min(inner.width as usize) as u16, 1);
+            let indicator_area =
+                Rect::new(x, y, indicator.len().min(inner.width as usize) as u16, 1);
             let indicator_widget = Paragraph::new(Span::styled(
                 indicator,
                 Style::default().fg(theme::FG4).bg(theme::BG_HARD),
@@ -633,7 +634,11 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
 
 /// Render connection error or empty/loading state for a tab.
 /// Returns `Some(snapshot)` if data is available, `None` if a placeholder was rendered.
-fn render_tab_preamble<'a>(f: &mut Frame, app: &'a App, area: Rect) -> Option<&'a data::ClusterSnapshot> {
+fn render_tab_preamble<'a>(
+    f: &mut Frame,
+    app: &'a App,
+    area: Rect,
+) -> Option<&'a data::ClusterSnapshot> {
     // Check for connection failure
     if let Some(cluster_name) = &app.selected_cluster {
         if let Some(ConnectionStatus::Failed(err_msg)) =
@@ -673,7 +678,8 @@ fn render_tab_preamble<'a>(f: &mut Frame, app: &'a App, area: Rect) -> Option<&'
     } else if app.snapshots.is_empty() && app.is_fetching {
         format!("  {} Loading cluster data...", spinner)
     } else if app.all_clusters_failed() {
-        "  All clusters failed to connect. Check sidebar for details. Press 'r' to retry.".to_string()
+        "  All clusters failed to connect. Check sidebar for details. Press 'r' to retry."
+            .to_string()
     } else if app.snapshots.is_empty() && app.clusters.is_empty() {
         "  No clusters found. Run 'scalex cluster init' first.".to_string()
     } else if app.is_fetching || (app.selected_cluster.is_some() && app.needs_refresh) {
@@ -781,7 +787,15 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
         app,
         pods,
         area,
-        resource_header(vec!["NAME", "NAMESPACE", "STATUS", "READY", "RESTARTS", "AGE", "NODE"]),
+        resource_header(vec![
+            "NAME",
+            "NAMESPACE",
+            "STATUS",
+            "READY",
+            "RESTARTS",
+            "AGE",
+            "NODE",
+        ]),
         &[
             Constraint::Min(16),
             Constraint::Min(10),
@@ -801,8 +815,13 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
                     theme::BRIGHT_YELLOW
                 }
                 "Succeeded" | "Completed" => theme::BRIGHT_BLUE,
-                "Failed" | "CrashLoopBackOff" | "Error" | "OOMKilled"
-                | "ImagePullBackOff" | "ErrImagePull" | "CreateContainerConfigError"
+                "Failed"
+                | "CrashLoopBackOff"
+                | "Error"
+                | "OOMKilled"
+                | "ImagePullBackOff"
+                | "ErrImagePull"
+                | "CreateContainerConfigError"
                 | "InvalidImageName" => theme::BRIGHT_RED,
                 s if s.starts_with("Init:") => {
                     if s.contains("Error") || s.contains("CrashLoopBackOff") {
@@ -851,7 +870,14 @@ fn render_deployments_table(
         app,
         deployments,
         area,
-        resource_header(vec!["NAME", "NAMESPACE", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"]),
+        resource_header(vec![
+            "NAME",
+            "NAMESPACE",
+            "READY",
+            "UP-TO-DATE",
+            "AVAILABLE",
+            "AGE",
+        ]),
         &[
             Constraint::Min(16),
             Constraint::Min(10),
@@ -910,7 +936,14 @@ fn render_services_table(
         app,
         services,
         area,
-        resource_header(vec!["NAME", "NAMESPACE", "TYPE", "CLUSTER-IP", "PORTS", "AGE"]),
+        resource_header(vec![
+            "NAME",
+            "NAMESPACE",
+            "TYPE",
+            "CLUSTER-IP",
+            "PORTS",
+            "AGE",
+        ]),
         &[
             Constraint::Min(16),
             Constraint::Min(10),
@@ -1340,11 +1373,12 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
 
     // Footer
     lines.push(Line::from(""));
-    let footer_text = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) && !app.search_active {
-        "  Press ESC to clear filter, ? to close"
-    } else {
-        "  Press ESC or ? to close"
-    };
+    let footer_text =
+        if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) && !app.search_active {
+            "  Press ESC to clear filter, ? to close"
+        } else {
+            "  Press ESC or ? to close"
+        };
     lines.push(Line::from(Span::styled(
         footer_text.to_string(),
         Style::default().fg(theme::FG4),
