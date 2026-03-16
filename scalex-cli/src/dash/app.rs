@@ -171,6 +171,9 @@ pub struct App {
     /// Set to true to force a data refresh on next tick (e.g., on view switch)
     pub needs_refresh: bool,
 
+    /// Set to true only by manual 'r' refresh — triggers retry of failed cluster discovery (US-400)
+    pub retry_failed_clusters: bool,
+
     // --- Non-blocking architecture fields (v2) ---
     /// Per-cluster connection status during discovery
     pub cluster_connection_status: HashMap<String, ConnectionStatus>,
@@ -274,6 +277,7 @@ impl App {
             self_rss_mb: None,
             refresh_secs,
             needs_refresh: false,
+            retry_failed_clusters: false,
             cluster_connection_status: HashMap::new(),
             discover_complete: true, // already have clients
             tunnel_pids: Vec::new(),
@@ -356,6 +360,7 @@ impl App {
             self_rss_mb: None,
             refresh_secs,
             needs_refresh: false,
+            retry_failed_clusters: false,
             cluster_connection_status,
             discover_complete: false,
             tunnel_pids: Vec::new(),
@@ -582,6 +587,7 @@ impl App {
             }
             AppEvent::Refresh => {
                 self.needs_refresh = true;
+                self.retry_failed_clusters = true; // US-400: only 'r' retries failed clusters
                 self.fetch_generation += 1;
                 self.is_fetching = false;
             }
@@ -1358,6 +1364,7 @@ mod tests {
             self_rss_mb: None,
             refresh_secs: 1,
             needs_refresh: false,
+            retry_failed_clusters: false,
             cluster_connection_status: HashMap::new(),
             discover_complete: true,
             tunnel_pids: Vec::new(),
@@ -3069,6 +3076,65 @@ mod tests {
         app.search_query = Some("nonexistent".into());
         assert_eq!(app.top_tab_line_count(), 3);
     }
+
+    // --- US-400: Only Refresh ('r') triggers retry, not view switch ---
+
+    #[test]
+    fn view_switch_does_not_set_retry_flag() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Pods;
+
+        app.handle_event(AppEvent::ResourceType('d'));
+
+        assert!(app.needs_refresh);
+        assert!(
+            !app.retry_failed_clusters,
+            "View switch should NOT set retry_failed_clusters"
+        );
+    }
+
+    #[test]
+    fn refresh_key_sets_retry_flag() {
+        let mut app = test_app();
+
+        app.handle_event(AppEvent::Refresh);
+
+        assert!(app.needs_refresh);
+        assert!(
+            app.retry_failed_clusters,
+            "Refresh ('r') key should set retry_failed_clusters"
+        );
+    }
+
+    #[test]
+    fn enter_on_namespace_does_not_set_retry_flag() {
+        let mut app = test_app();
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        app.tree.insert(
+            2,
+            TreeNode {
+                label: "kube-system".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "kube-system".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        app.tree_cursor = 2;
+
+        app.handle_event(AppEvent::Enter);
+
+        assert!(app.needs_refresh);
+        assert!(
+            !app.retry_failed_clusters,
+            "Enter on namespace should NOT retry failed clusters"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3276,8 +3342,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             }
         }
 
-        // --- Retry failed cluster discovery on manual refresh (US-201) ---
-        if app.needs_refresh {
+        // --- Retry failed cluster discovery on manual refresh (US-201, US-400) ---
+        if app.retry_failed_clusters {
+            app.retry_failed_clusters = false;
             let failed_names: Vec<String> = app
                 .cluster_connection_status
                 .iter()

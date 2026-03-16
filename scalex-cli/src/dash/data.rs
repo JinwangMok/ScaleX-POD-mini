@@ -700,6 +700,10 @@ fn derive_effective_status(
 fn format_age(now: chrono::DateTime<Utc>, created: chrono::DateTime<Utc>) -> String {
     let duration = now.signed_duration_since(created);
     let secs = duration.num_seconds();
+    // Guard: clock skew — created in the future (US-402)
+    if secs < 0 {
+        return "0s".to_string();
+    }
     if secs < 60 {
         format!("{}s", secs)
     } else if secs < 3600 {
@@ -787,6 +791,13 @@ mod tests {
         let now = Utc::now();
         let created = now - chrono::Duration::days(3);
         assert_eq!(format_age(now, created), "3d");
+    }
+
+    #[test]
+    fn format_age_clock_skew_returns_zero() {
+        let now = Utc::now();
+        let future = now + chrono::Duration::seconds(30);
+        assert_eq!(format_age(now, future), "0s");
     }
 
     #[test]

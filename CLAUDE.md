@@ -101,7 +101,7 @@ The TUI header is k9s-style and responsive:
 | `Home`/`End` | Jump to first/last item |
 | `Tab`/`Shift+Tab` | Cycle between Sidebar and Center panel |
 | `Ctrl+N` | Switch to tab N (1=Resources, 2=Top) |
-| `p` `d` `s` `c` `n` | Switch resource view (center panel only) |
+| `p` `d` `s` `c` `n` | Switch resource view (works from both panels; from Sidebar also switches to Center) |
 | `/` | Enter search mode (filter by name and namespace) |
 | `r` | Force data refresh + retry failed cluster connections |
 | `?` | Toggle help overlay (context-sensitive: shows keys for current panel/view) |
@@ -114,13 +114,13 @@ The TUI header is k9s-style and responsive:
 - **Active selection indicator**: selected node shown with `●` marker + bold aqua, distinct from yellow cursor highlight.
 - **Sidebar health dots**: connected clusters show colored health dot (● green/yellow/red, ○ unknown) as suffix. Discovering shows `[..]`, failed shows `[!!]`.
 - **Sidebar namespace count**: expanded cluster labels show namespace count suffix like `tower (12ns)`.
-- **Retry failed connections**: `r` key re-spawns cluster discovery for failed connections via `discover_clusters_streaming_filtered`.
-- **View switch triggers refresh**: `p`/`d`/`s`/`c`/`n` sets `needs_refresh=true` for immediate re-fetch.
-- **Stale data indicator**: when a selective fetch completes for resource X, views showing other resource types display `[cached]` in their panel title (orange text). `App::is_view_stale()` compares `last_fetched_resource` against the current `ResourceView`.
+- **Retry failed connections**: `r` key (and only `r`) re-spawns cluster discovery for failed connections via `discover_clusters_streaming_filtered`. View switches (`p`/`d`/`s`/`c`/`n`) do NOT trigger retry — only `retry_failed_clusters` flag controls this.
+- **View switch triggers refresh**: `p`/`d`/`s`/`c`/`n` sets `needs_refresh=true` for immediate re-fetch. Works from both Sidebar and Center panel; from Sidebar also switches `active_panel` to Center.
+- **Stale data indicator**: when a selective fetch completes for resource X, the Resources tab title shows `[cached]` (orange text) if viewing a different resource type. Top tab never shows `[cached]` since nodes are always fetched. `App::is_view_stale()` compares `last_fetched_resource` against the current `ResourceView`.
 - **Connection failure display**: if `cluster_connection_status` maps a cluster to `ConnectionStatus::Failed`, the center panel (both Resources and Top tabs) renders an error message with retry hint instead of the resource table. Sidebar shows `[!!]` suffix in red.
 - **Stale fetch discard**: `App::fetch_generation` (u64 counter) is incremented on every navigation/view change. Each spawned fetch task captures the generation at launch; results are dropped if `result.generation != app.fetch_generation` on arrival, preventing stale overwrites.
 - **Left navigates to parent**: `h`/Left on a leaf node (namespace, infra item) or already-collapsed node navigates cursor to its parent. Leaf nodes cannot expand/collapse.
-- **Search matches name + namespace**: `/` search filters center table rows by both resource name and namespace (case-insensitive). Nodes view filters by name only.
+- **Search matches name + namespace**: `/` search filters center table rows by both resource name and namespace (case-insensitive). Nodes view and Top tab filter by node name only.
 - **Status color coding**: Pod RESTARTS column: yellow (1-10), red (>10). Deployment READY column: green (ready≥desired), yellow (0<ready<desired), red (ready=0). Node roles show `<none>` when empty.
 - **Full-width cursor highlight**: sidebar cursor highlight fills the entire row width, not just text length. Padding is computed using display-column widths (not byte lengths) to correctly handle Unicode markers (●, ▼, ▶, …).
 - **Responsive sidebar width**: sidebar width adapts to terminal: 20 cols (<60), 24 cols (<80), 28 cols (≥80). Labels truncated with `…` when overflowing.
