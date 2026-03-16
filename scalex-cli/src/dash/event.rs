@@ -21,6 +21,8 @@ pub enum AppEvent {
     Search, // /
     // Help
     Help, // ?
+    // Escape (close overlay / cancel)
+    Escape,
     // Refresh
     Refresh, // r
     // Tick (periodic refresh)
@@ -75,6 +77,7 @@ fn map_key_event(key: KeyEvent) -> AppEvent {
         // Search & Help
         KeyCode::Char('/') => AppEvent::Search,
         KeyCode::Char('?') => AppEvent::Help,
+        KeyCode::Esc => AppEvent::Escape,
 
         // Refresh
         KeyCode::Char('r') if !ctrl => AppEvent::Refresh,
@@ -134,6 +137,14 @@ mod tests {
         assert_eq!(
             map_key_event(key(KeyCode::Char('/'), KeyModifiers::NONE)),
             AppEvent::Search
+        );
+    }
+
+    #[test]
+    fn esc_maps_to_escape() {
+        assert_eq!(
+            map_key_event(key(KeyCode::Esc, KeyModifiers::NONE)),
+            AppEvent::Escape
         );
     }
 }

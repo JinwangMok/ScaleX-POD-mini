@@ -43,7 +43,7 @@ pub fn render(f: &mut Frame, app: &App) {
     render_status_bar(f, app, vertical[2]);
 
     if app.show_help {
-        render_help_overlay(f, size);
+        render_help_overlay(f, app, size);
     }
 }
 
@@ -954,93 +954,123 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 // Help overlay
 // ---------------------------------------------------------------------------
 
-fn render_help_overlay(f: &mut Frame, area: Rect) {
+/// Render context-sensitive help overlay.
+/// Reads: app.active_panel, app.active_tab, app.resource_view, app.search_active
+fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
+    // -- Determine context title --
+    let context_label = if app.search_active {
+        "Search".to_string()
+    } else {
+        match app.active_panel {
+            ActivePanel::Sidebar => "Sidebar".to_string(),
+            ActivePanel::Center => {
+                if app.active_tab == 1 {
+                    "Top".to_string()
+                } else {
+                    app.resource_view.label().to_string()
+                }
+            }
+        }
+    };
+    let title = format!(" Help — {} ", context_label);
+
+    // -- Build help lines --
+    let key = |k: &str, desc: &str| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(
+                format!("  {:<10}", k),
+                Style::default().fg(theme::BRIGHT_AQUA),
+            ),
+            Span::styled(desc.to_string(), Style::default().fg(theme::FG)),
+        ])
+    };
+    let section = |label: &str| -> Line<'static> {
+        Line::from(Span::styled(
+            format!(" {} ", label),
+            Style::default()
+                .fg(theme::BRIGHT_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        ))
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Context-specific section
+    if app.search_active {
+        lines.push(section("Search Mode"));
+        lines.push(Line::from(""));
+        lines.push(key("<type>", "Filter by name"));
+        lines.push(key("Enter", "Confirm search"));
+        lines.push(key("ESC", "Cancel search"));
+        lines.push(key("Backspace", "Delete character"));
+    } else {
+        match app.active_panel {
+            ActivePanel::Sidebar => {
+                lines.push(section("Sidebar Navigation"));
+                lines.push(Line::from(""));
+                lines.push(key("j/k", "Move cursor (no selection)"));
+                lines.push(key("h/l", "Collapse / Expand node"));
+                lines.push(key("Enter", "Select cluster/namespace"));
+            }
+            ActivePanel::Center => {
+                if app.active_tab == 1 {
+                    lines.push(section("Top — Node Resources"));
+                    lines.push(Line::from(""));
+                    lines.push(key("j/k", "Scroll nodes"));
+                } else {
+                    let view = app.resource_view.label();
+                    lines.push(section(&format!("Resources — {}", view)));
+                    lines.push(Line::from(""));
+                    lines.push(key("j/k", "Scroll table rows"));
+                    lines.push(key("p d s c n", "Switch resource view"));
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "            ".to_string(),
+                            Style::default().fg(theme::FG4),
+                        ),
+                        Span::styled(
+                            "p=Pods d=Deploy s=Svc c=CM n=Nodes".to_string(),
+                            Style::default().fg(theme::FG4),
+                        ),
+                    ]));
+                }
+            }
+        }
+    }
+
+    // Global section
+    lines.push(Line::from(""));
+    lines.push(section("Global"));
+    lines.push(Line::from(""));
+    lines.push(key("q", "Quit"));
+    lines.push(key("Tab", "Switch panel (Sidebar ↔ Center)"));
+    lines.push(key("Ctrl+N", "Switch to tab N"));
+    lines.push(key("/", "Search (filter by name)"));
+    lines.push(key("r", "Force refresh"));
+    lines.push(key("?", "Toggle this help"));
+
+    // Footer
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Press ESC or ? to close".to_string(),
+        Style::default().fg(theme::FG4),
+    )));
+
+    // -- Layout: auto-size height, centered --
     let popup_width = 50.min(area.width.saturating_sub(4));
-    let popup_height = 20.min(area.height.saturating_sub(4));
+    let popup_height = (lines.len() as u16 + 2).min(area.height.saturating_sub(4)); // +2 for borders
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
 
     let popup_area = Rect::new(x, y, popup_width, popup_height);
-
     f.render_widget(Clear, popup_area);
 
-    let help_text = vec![
-        Line::from(Span::styled(
-            " Keyboard Shortcuts ",
-            Style::default()
-                .fg(theme::BRIGHT_YELLOW)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  q       ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Quit", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  j/k     ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Move cursor (no selection)", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  h/l     ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Collapse/Expand tree node", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Enter   ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Select cluster/namespace", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Tab     ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Switch panel", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+N  ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Switch to tab N", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  p       ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Pods view", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  d       ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Deployments view", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  s       ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Services view", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  c       ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("ConfigMaps view", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  n       ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Nodes view", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  /       ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Search (filter by name)", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  r       ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Force refresh", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(vec![
-            Span::styled("  ?       ", Style::default().fg(theme::BRIGHT_AQUA)),
-            Span::styled("Toggle this help", Style::default().fg(theme::FG)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Press ? or q to close",
-            Style::default().fg(theme::FG4),
-        )),
-    ];
-
     let block = Block::default()
-        .title(" Help ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::BRIGHT_YELLOW))
         .style(Style::default().bg(theme::BG_HARD));
 
-    let paragraph = Paragraph::new(help_text).block(block);
+    let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, popup_area);
 }

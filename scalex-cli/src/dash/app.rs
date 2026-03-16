@@ -351,7 +351,7 @@ impl App {
                     // Submit search — keep query as filter, exit search mode
                     self.search_active = false;
                 }
-                AppEvent::Quit | AppEvent::Help => {
+                AppEvent::Quit | AppEvent::Help | AppEvent::Escape => {
                     // Cancel search — clear query and exit
                     self.search_active = false;
                     self.search_query = None;
@@ -389,8 +389,10 @@ impl App {
             return;
         }
 
+        // show_help and search_active are mutually exclusive by construction:
+        // search intercepts Help/Quit (above), and help blocks Search (below).
         if self.show_help {
-            if matches!(evt, AppEvent::Help | AppEvent::Quit | AppEvent::Enter) {
+            if matches!(evt, AppEvent::Help | AppEvent::Quit | AppEvent::Enter | AppEvent::Escape) {
                 self.show_help = false;
             }
             return;
@@ -440,7 +442,7 @@ impl App {
                 self.search_query = Some(String::new());
                 self.table_cursor = 0;
             }
-            AppEvent::Refresh | AppEvent::Tick | AppEvent::None => {}
+            AppEvent::Refresh | AppEvent::Tick | AppEvent::None | AppEvent::Escape => {}
         }
     }
 
