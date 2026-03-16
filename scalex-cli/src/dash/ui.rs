@@ -800,11 +800,11 @@ fn render_resource_table<'a, T, F, R>(
     }
 
     let clamped_cursor = app.table_cursor.min(filtered.len() - 1);
-    // Defensively clamp scroll offset to prevent blank table when filter shrinks results
+    let viewport_rows = area.height.saturating_sub(1) as usize;
+    // Defensively clamp scroll offset to prevent blank rows (US-211)
     let clamped_scroll = app
         .table_scroll_offset
-        .min(filtered.len().saturating_sub(1));
-    let viewport_rows = area.height.saturating_sub(1) as usize;
+        .min(filtered.len().saturating_sub(viewport_rows.max(1)));
     let rows: Vec<Row> = filtered
         .iter()
         .enumerate()

@@ -40,6 +40,7 @@ pub struct ClusterSnapshot {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[allow(dead_code)] // Unknown variant used by UI display but not constructed in data layer
 pub enum HealthStatus {
     Green,
     Yellow,

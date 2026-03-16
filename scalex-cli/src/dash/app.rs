@@ -1,4 +1,5 @@
 use crate::commands::dash::DashArgs;
+#[allow(unused_imports)] // HealthStatus used by tests
 use crate::dash::data::{self, ActiveResource, ClusterSnapshot, HealthStatus};
 use crate::dash::event::{self, AppEvent};
 use crate::dash::infra::{self, InfraSnapshot};
@@ -3244,27 +3245,15 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         None
                     };
                     handles.push(tokio::spawn(async move {
-                        match data::fetch_cluster_snapshot(
+                        // US-210: Return None on error to preserve cached data in merge
+                        data::fetch_cluster_snapshot(
                             &client,
                             &name,
                             cluster_ns.as_deref(),
                             active_res,
                         )
                         .await
-                        {
-                            Ok(snapshot) => snapshot,
-                            Err(_) => ClusterSnapshot {
-                                name,
-                                health: HealthStatus::Unknown,
-                                namespaces: vec![],
-                                nodes: vec![],
-                                pods: vec![],
-                                deployments: vec![],
-                                services: vec![],
-                                configmaps: vec![],
-                                resource_usage: Default::default(),
-                            },
-                        }
+                        .ok()
                     }));
                 }
 
@@ -3273,7 +3262,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     if cancel.load(Ordering::Relaxed) {
                         return;
                     }
-                    if let Ok(snapshot) = handle.await {
+                    if let Ok(Some(snapshot)) = handle.await {
                         snapshots.push(snapshot);
                     }
                 }
