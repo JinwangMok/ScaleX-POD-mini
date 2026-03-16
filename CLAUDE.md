@@ -79,7 +79,8 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - After `install.sh`, `scalex dash` works without manual tunnel setup
 - `metrics_server_enabled` is hardcoded `false` in `kubespray.rs` — metrics utilization bars show N/A until enabled
 - **Skeleton startup**: TUI draws immediately on launch before first data fetch
-- **Parallel fetch**: `tokio::join!` for 7 intra-cluster API calls + `tokio::spawn` per cluster for cross-cluster parallelism
+- **Selective fetch**: `ActiveResource` enum drives per-view fetching — only namespaces + nodes + the active resource type are fetched (3 API calls vs 7). Each API call has a 3s `tokio::time::timeout`. Headless mode (`--headless`) always does full fetch (all resources in parallel).
+- **Incremental snapshot merge**: selective fetch results are merged into existing `ClusterSnapshot` — only the fetched resource field is replaced; other fields retain their last known values. Health/resource_usage are recomputed on every merge using the freshest available pods + nodes.
 
 ### Keybindings
 
@@ -101,6 +102,8 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Cursor ≠ selection**: `j`/`k` never changes `selected_cluster`/`selected_namespace`. Only `Enter` commits selection. `l`/Right expands without selecting.
 - **Active selection indicator**: selected node shown with `●` marker + bold aqua, distinct from yellow cursor highlight.
 - **View switch triggers refresh**: `p`/`d`/`s`/`c`/`n` sets `needs_refresh=true` for immediate re-fetch.
+- **Stale data indicator**: when a selective fetch completes for resource X, views showing other resource types display `[cached]` in their panel title (orange text). `App::is_view_stale()` compares `last_fetched_resource` against the current `ResourceView`.
+- **Connection failure display**: if `cluster_connection_status` maps a cluster to `ConnectionStatus::Failed`, the center panel renders an error message with retry hint instead of the resource table. Sidebar shows `[!!]` suffix in red.
 
 ## Key Patterns
 
