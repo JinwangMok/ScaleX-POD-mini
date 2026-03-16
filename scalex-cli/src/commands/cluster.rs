@@ -164,20 +164,20 @@ fn run_init(
             }
         };
         let inventory_path = cluster_dir.join("inventory.ini");
+        std::fs::write(&inventory_path, &inventory)?;
         if dry_run {
             println!("[dry-run] inventory.ini:\n{}", inventory);
         } else {
-            std::fs::write(&inventory_path, &inventory)?;
             println!("[cluster] Generated {}", inventory_path.display());
         }
 
         // Generate cluster vars
         let vars = kubespray::generate_cluster_vars(cluster, &k8s_config.config.common);
         let vars_path = cluster_dir.join("cluster-vars.yml");
+        std::fs::write(&vars_path, &vars)?;
         if dry_run {
             println!("[dry-run] cluster-vars.yml:\n{}", vars);
         } else {
-            std::fs::write(&vars_path, &vars)?;
             println!("[cluster] Generated {}", vars_path.display());
         }
 
@@ -200,7 +200,8 @@ fn run_init(
             collect_kubeconfig(&cluster_dir, &cluster.cluster_name, &sdi_spec, cluster)?;
         } else {
             println!(
-                "[dry-run] Would run kubespray and collect kubeconfig for {}",
+                "[dry-run] Files written to {}. Kubespray NOT executed for {}",
+                cluster_dir.display(),
                 cluster.cluster_name
             );
         }

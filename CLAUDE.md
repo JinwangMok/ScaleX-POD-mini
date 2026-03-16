@@ -17,6 +17,7 @@ Physical (4 bare-metal) → SDI (OpenTofu virtualization) → Node Pools → Clu
 - **Sandbox cluster**: Workload cluster. Provisioned via Kubespray on SDI VMs or bare-metal nodes.
 - **All clusters use Kubespray** (production-grade). No k3s.
 - **External access**: Cloudflare Tunnel + Tailscale. LAN access via switch.
+- **External DNS pattern**: API endpoints follow `{cluster}-api.jinwang.dev` (e.g., `tower-api.jinwang.dev`). Single-level subdomain required — CF free tier wildcard certs only cover `*.jinwang.dev`, not `*.*.jinwang.dev`.
 
 ## CLI (`scalex`)
 
@@ -75,7 +76,7 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 ```
 
 - Displays clusters, node health, pod status, and resource capacity across all kubeconfigs in `_generated/`
-- **3-tier cluster discovery**: `discover_clusters_streaming()` in `kube_client.rs` tries per cluster in parallel via `tokio::spawn`: (1) `api_endpoint` domain URL from `k8s-clusters.yaml` → (2) kubeconfig original IP → (3) SSH tunnel via bastion (500ms settle wait). Each probe has a 3s timeout. Each connected `ClusterClient` carries `server_version` (fetched with 500ms timeout via `client.apiserver_version()`, `None` on failure) and `endpoint` (the URL that succeeded).
+- **4-strategy cluster discovery**: `discover_clusters_streaming()` in `kube_client.rs` tries per cluster in parallel via `tokio::spawn`: (1) `api_endpoint` domain URL + SA bearer token (CF Tunnel path) → (2) kubeconfig original IP → (2b) `.original` kubeconfig VM IP fallback when primary kubeconfig has an unreachable domain URL → (3) SSH tunnel via bastion (500ms settle wait). Each probe has a 3s timeout. Each connected `ClusterClient` carries `server_version` (fetched with 500ms timeout via `client.apiserver_version()`, `None` on failure) and `endpoint` (the URL that succeeded).
 - **`api_endpoint` field**: Optional field on `ClusterDef` (`models/cluster.rs`). Set in `config/k8s-clusters.yaml` to provide a stable external URL (e.g., Cloudflare Tunnel domain) for dash connectivity without relying on LAN IPs or SSH tunnels.
 - After `install.sh`, `scalex dash` works without manual tunnel setup
 - `metrics_server_enabled` is hardcoded `false` in `kubespray.rs` — metrics utilization bars show N/A until enabled
@@ -141,6 +142,7 @@ The TUI header is k9s-style and responsive:
 - **No-metrics sentinel**: `compute_resource_usage` returns `-1.0` for CPU/MEM when no metrics-server data. `render_usage_bar` shows `N/A` for negative values. Top tab title shows `(no metrics)` suffix.
 - **Discovery log channel**: `DiscoverEvent::Log { message }` replaces all `eprintln!` in streaming discovery paths to avoid TUI corruption. Messages stored in `app.discovery_logs` (capped at 10) and displayed in status bar with ~10s auto-fade. Headless mode (`discover_clusters()`) retains `eprintln!` since no TUI is active.
 - **Domain-first kubeconfig**: `install.sh` `cleanup_api_tunnels()` rewrites kubeconfigs with `api_endpoint` domain URLs after CF Tunnel is healthy. Original VM IP kubeconfigs saved as `kubeconfig.yaml.original` for fallback. `scalex dash` Strategy 2b tries `.original` file when primary kubeconfig has a domain URL that is unreachable.
+- **CF Tunnel SA token auth**: CF Tunnel cannot proxy mTLS client certs, so `build_client_with_endpoint()` strips kubeconfig CA + client cert and injects a ServiceAccount bearer token. SA `scalex-dash` in `scalex-system` namespace, bound to `view` ClusterRole. Token cached at `_generated/clusters/{name}/dash-token`. Auto-provisioned on first run via SSH through bastion if cached token absent. Module: `sa_provisioner.rs`. To re-provision: delete `dash-token` and relaunch.
 - **k9s attribution**: help overlay (`?` key) footer shows "Inspired by k9s (github.com/derailed/k9s)" in DarkGray.
 - **Cached data persistence**: `render_tab_preamble` returns cached snapshot even when `ConnectionStatus::Failed` — error shown as 1-line red banner via `render_connection_error_banner()`, not full-area replacement. Data stability: once displayed, data stays visible until next fetch result arrives.
 - **Per-resource fetch tracking**: `fetched_resources: HashSet<ActiveResource>` distinguishes "not yet fetched" (empty vec, not in set) from "fetched but truly empty" (empty vec, in set). Cleared on cluster/namespace change. View switch to unfetched resource shows "Loading {type}..." spinner instead of empty table.
@@ -152,6 +154,7 @@ The TUI header is k9s-style and responsive:
 - **Idempotent**: Every CLI operation safe to re-run.
 - **Pure Functions**: Rust CLI uses pure functions for HCL/inventory/vars generation. No side effects in generators.
 - **Secrets**: Created by CLI, stored in `credentials/` (gitignored). Templates in `credentials/*.example`.
+- **Auto-SAN from `api_endpoint`**: `generate_cluster_vars()` auto-appends `supplementary_addresses_in_ssl_keys` when `api_endpoint` contains a DNS hostname (not an IP). Ensures K8s API server cert includes external domain for CF Tunnel TLS verification.
 - **Generated output**: `_generated/` (gitignored) holds SDI HCL, kubespray inventory, kubeconfigs.
 
 ## GitOps Pattern
