@@ -362,6 +362,10 @@ impl App {
                 AppEvent::Enter => {
                     // Submit search — keep query as filter, exit search mode
                     self.search_active = false;
+                    // Clean up empty query to None (no filter)
+                    if self.search_query.as_ref().is_some_and(|q| q.is_empty()) {
+                        self.search_query = None;
+                    }
                 }
                 AppEvent::Escape => {
                     // Cancel search — clear query and exit
@@ -469,7 +473,12 @@ impl App {
             AppEvent::Right | AppEvent::ArrowRight => self.expand_node(),
             AppEvent::Tab(n) => {
                 if n > 0 && n <= self.tabs.len() {
-                    self.active_tab = n - 1;
+                    let new_tab = n - 1;
+                    if self.active_tab != new_tab {
+                        self.active_tab = new_tab;
+                        self.table_cursor = 0;
+                        self.table_scroll_offset = 0;
+                    }
                 }
             }
             AppEvent::NextPanel => {
@@ -2154,6 +2163,60 @@ mod tests {
         assert_eq!(app.table_cursor, 0);
         assert_eq!(app.table_scroll_offset, 0);
         assert_eq!(app.search_query, Some("x".into()));
+    }
+
+    // --- US-076: Empty search submit clears query ---
+
+    #[test]
+    fn search_enter_on_empty_clears_query() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+
+        app.handle_event(AppEvent::Enter);
+
+        assert!(!app.search_active);
+        assert_eq!(app.search_query, None); // cleaned up, not Some("")
+    }
+
+    #[test]
+    fn search_enter_on_nonempty_keeps_filter() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("pod".into());
+
+        app.handle_event(AppEvent::Enter);
+
+        assert!(!app.search_active);
+        assert_eq!(app.search_query, Some("pod".into()));
+    }
+
+    // --- US-078: Tab switch resets cursor ---
+
+    #[test]
+    fn tab_switch_resets_table_cursor() {
+        let mut app = test_app();
+        app.active_tab = 0;
+        app.table_cursor = 10;
+        app.table_scroll_offset = 5;
+
+        app.handle_event(AppEvent::Tab(2)); // switch to Top tab
+
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.table_cursor, 0);
+        assert_eq!(app.table_scroll_offset, 0);
+    }
+
+    #[test]
+    fn same_tab_does_not_reset_cursor() {
+        let mut app = test_app();
+        app.active_tab = 0;
+        app.table_cursor = 10;
+
+        app.handle_event(AppEvent::Tab(1)); // same tab
+
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.table_cursor, 10); // unchanged
     }
 }
 
