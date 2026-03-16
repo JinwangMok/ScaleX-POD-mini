@@ -115,8 +115,6 @@ pub enum ConnectionStatus {
 pub struct FetchResult {
     pub snapshots: Vec<ClusterSnapshot>,
     pub latency_ms: u64,
-    /// Which resource was selectively fetched (None = full fetch)
-    pub active_resource: Option<ActiveResource>,
     /// Generation counter to detect stale results
     pub generation: u64,
 }
@@ -171,6 +169,10 @@ pub struct App {
     /// Set to true to force a data refresh on next tick (e.g., on view switch)
     pub needs_refresh: bool,
 
+    /// When true, only fetch the selected cluster (skip others). Set by view/namespace switch.
+    /// Timer and manual refresh clear this to fetch all clusters.
+    pub refresh_selected_only: bool,
+
     /// Set to true only by manual 'r' refresh — triggers retry of failed cluster discovery (US-400)
     pub retry_failed_clusters: bool,
 
@@ -192,9 +194,6 @@ pub struct App {
 
     /// Monotonic tick counter for spinner animation
     pub tick_count: u64,
-
-    /// Which resource was last fetched (for staleness indicator in UI)
-    pub last_fetched_resource: Option<ActiveResource>,
 
     /// Tracks which resource types have been fetched for the current cluster/namespace.
     /// Used to distinguish "not yet fetched" (empty vec) from "fetched but truly empty".
@@ -284,6 +283,7 @@ impl App {
             self_rss_mb: None,
             refresh_secs,
             needs_refresh: false,
+            refresh_selected_only: false,
             retry_failed_clusters: false,
             cluster_connection_status: HashMap::new(),
             discover_complete: true, // already have clients
@@ -291,7 +291,6 @@ impl App {
             is_fetching: false,
             fetch_started_at: None,
             tick_count: 0,
-            last_fetched_resource: None,
             fetched_resources: HashSet::new(),
             fetch_generation: 0,
             fetch_timed_out: false,
@@ -369,6 +368,7 @@ impl App {
             self_rss_mb: None,
             refresh_secs,
             needs_refresh: false,
+            refresh_selected_only: false,
             retry_failed_clusters: false,
             cluster_connection_status,
             discover_complete: false,
@@ -376,7 +376,6 @@ impl App {
             is_fetching: false,
             fetch_started_at: None,
             tick_count: 0,
-            last_fetched_resource: None,
             fetched_resources: HashSet::new(),
             fetch_generation: 0,
             fetch_timed_out: false,
@@ -583,9 +582,14 @@ impl App {
                         self.resource_view = rv;
                         self.table_cursor = 0;
                         self.table_scroll_offset = 0;
-                        self.needs_refresh = true;
-                        self.fetch_generation += 1;
-                        self.is_fetching = false;
+                        // Only fetch if resource type not yet cached (full prefetch makes this instant)
+                        let ar = rv.to_active_resource();
+                        if !self.fetched_resources.contains(&ar) {
+                            self.needs_refresh = true;
+                            self.refresh_selected_only = true;
+                            self.fetch_generation += 1;
+                            self.is_fetching = false;
+                        }
                     }
                     // Switch to center panel to show the resource view
                     self.active_panel = ActivePanel::Center;
@@ -894,6 +898,7 @@ impl App {
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
                     self.needs_refresh = true;
+                    self.refresh_selected_only = true;
                     self.fetch_generation += 1;
                     self.is_fetching = false;
                     self.fetched_resources.clear();
@@ -911,6 +916,7 @@ impl App {
                 self.table_cursor = 0;
                 self.table_scroll_offset = 0;
                 self.needs_refresh = true;
+                self.refresh_selected_only = true;
                 self.fetch_generation += 1;
                 self.is_fetching = false;
                 self.fetched_resources.clear();
@@ -1218,11 +1224,10 @@ impl App {
     }
 
     /// Check if a resource view is showing stale (cached) data from a previous fetch cycle
-    pub fn is_view_stale(&self, view: ResourceView) -> bool {
-        match self.last_fetched_resource {
-            None => false, // full fetch or no fetch yet — not stale
-            Some(active) => active != view.to_active_resource(),
-        }
+    pub fn is_view_stale(&self, _view: ResourceView) -> bool {
+        // Full prefetch: selected cluster always fetches all resources,
+        // so views are never stale after a successful fetch.
+        false
     }
 
     /// Number of content lines in the Top tab (for scroll clamping).
@@ -1399,6 +1404,7 @@ mod tests {
             self_rss_mb: None,
             refresh_secs: 1,
             needs_refresh: false,
+            refresh_selected_only: false,
             retry_failed_clusters: false,
             cluster_connection_status: HashMap::new(),
             discover_complete: true,
@@ -1406,7 +1412,6 @@ mod tests {
             is_fetching: false,
             fetch_started_at: None,
             tick_count: 0,
-            last_fetched_resource: None,
             fetched_resources: HashSet::new(),
             fetch_generation: 0,
             fetch_timed_out: false,
@@ -3335,11 +3340,13 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             // Cache viewport heights for PageUp/PageDown
             app.page_size = table_viewport;
             app.sidebar_page_size = sidebar_viewport;
-            // Help popup viewport height (US-204)
-            let help_content = app.help_content_line_count();
-            let max_popup = term_size.height.saturating_sub(2).max(5);
-            let popup_h = (help_content + 2).min(max_popup);
-            app.help_viewport_height = popup_h.saturating_sub(2);
+            // Help popup viewport height (US-204) — only compute when help is visible
+            if app.show_help {
+                let help_content = app.help_content_line_count();
+                let max_popup = term_size.height.saturating_sub(2).max(5);
+                let popup_h = (help_content + 2).min(max_popup);
+                app.help_viewport_height = popup_h.saturating_sub(2);
+            }
         }
 
         // Draw first — shows skeleton UI instantly on startup (US-004)
@@ -3409,57 +3416,41 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 app.fetch_timed_out = false;
                 continue;
             }
-            match result.active_resource {
-                None => {
-                    // Full fetch — replace everything
-                    app.snapshots = result.snapshots;
-                    // Mark all resource types as fetched
-                    app.fetched_resources.insert(ActiveResource::Pods);
-                    app.fetched_resources.insert(ActiveResource::Deployments);
-                    app.fetched_resources.insert(ActiveResource::Services);
-                    app.fetched_resources.insert(ActiveResource::ConfigMaps);
-                    app.fetched_resources.insert(ActiveResource::Nodes);
-                }
-                Some(active) => {
-                    // Selective fetch — merge only the fetched resource into existing snapshots
-                    for new_snap in result.snapshots {
-                        if let Some(existing) =
-                            app.snapshots.iter_mut().find(|s| s.name == new_snap.name)
-                        {
-                            // Always update namespaces and nodes (fetched every cycle)
-                            existing.namespaces = new_snap.namespaces;
-                            existing.nodes = new_snap.nodes;
-                            // Only update the actively fetched resource
-                            match active {
-                                ActiveResource::Pods => existing.pods = new_snap.pods,
-                                ActiveResource::Deployments => {
-                                    existing.deployments = new_snap.deployments
-                                }
-                                ActiveResource::Services => existing.services = new_snap.services,
-                                ActiveResource::ConfigMaps => {
-                                    existing.configmaps = new_snap.configmaps
-                                }
-                                ActiveResource::Nodes => {} // nodes already updated above
-                            }
-                            // Recompute health from merged nodes + pods
-                            existing.health = data::compute_health(&existing.nodes, &existing.pods);
-                            existing.resource_usage =
-                                data::compute_resource_usage(&existing.nodes, &existing.pods, None);
-                        } else {
-                            // New cluster not yet in snapshots — add it
-                            app.snapshots.push(new_snap);
-                        }
+            // Merge fetch results: each cluster's snapshot is merged individually.
+            // Selected cluster sends full data (all resources); non-selected send nodes-only.
+            // Merge preserves cached data for fields not included in the fetch.
+            for new_snap in result.snapshots {
+                if let Some(existing) =
+                    app.snapshots.iter_mut().find(|s| s.name == new_snap.name)
+                {
+                    // Always update namespaces and nodes (fetched every cycle)
+                    existing.namespaces = new_snap.namespaces;
+                    existing.nodes = new_snap.nodes;
+                    // Update resource fields only if they were fetched (non-empty or full fetch)
+                    // Full fetch for selected cluster populates all; nodes-only for others leaves empty
+                    let is_selected = app.selected_cluster.as_ref() == Some(&new_snap.name);
+                    if is_selected {
+                        existing.pods = new_snap.pods;
+                        existing.deployments = new_snap.deployments;
+                        existing.services = new_snap.services;
+                        existing.configmaps = new_snap.configmaps;
                     }
+                    // Recompute health from merged nodes + pods
+                    existing.health = data::compute_health(&existing.nodes, &existing.pods);
+                    existing.resource_usage =
+                        data::compute_resource_usage(&existing.nodes, &existing.pods, None);
+                } else {
+                    // New cluster not yet in snapshots — add it
+                    app.snapshots.push(new_snap);
                 }
             }
             app.api_latency_ms = result.latency_ms;
-            app.last_fetched_resource = result.active_resource;
-            // Track which resource types have been fetched (for loading vs empty distinction)
-            if let Some(active) = result.active_resource {
-                app.fetched_resources.insert(active);
-                // Nodes are always fetched in selective mode too
-                app.fetched_resources.insert(ActiveResource::Nodes);
-            }
+            // Mark all resource types as fetched (full prefetch for selected cluster)
+            app.fetched_resources.insert(ActiveResource::Pods);
+            app.fetched_resources.insert(ActiveResource::Deployments);
+            app.fetched_resources.insert(ActiveResource::Services);
+            app.fetched_resources.insert(ActiveResource::ConfigMaps);
+            app.fetched_resources.insert(ActiveResource::Nodes);
             app.sync_tree_from_snapshots();
             app.self_rss_mb = read_self_rss_mb();
             app.is_fetching = false;
@@ -3518,47 +3509,60 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
         }
 
         // --- Trigger background fetch if needed ---
-        let was_manual_refresh = app.needs_refresh;
-        if !app.is_fetching
-            && !app.clusters.is_empty()
-            && (last_refresh.elapsed() >= refresh_interval || app.needs_refresh)
-        {
-            // Reload infra data on manual refresh (r key)
-            if was_manual_refresh {
+        let is_timer_refresh = last_refresh.elapsed() >= refresh_interval;
+        let wants_refresh = app.needs_refresh || is_timer_refresh;
+        if !app.is_fetching && !app.clusters.is_empty() && wants_refresh {
+            // Reload infra data on explicit refresh triggers (view switch, cluster select, r key)
+            if app.needs_refresh {
                 app.load_infra();
             }
+            let selected_only = app.refresh_selected_only && !is_timer_refresh;
             app.needs_refresh = false;
+            app.refresh_selected_only = false;
             app.is_fetching = true;
             app.fetch_started_at = Some(Instant::now());
 
             let tx = fetch_tx.clone();
-            // Clone only (name, client) pairs — avoid cloning kubeconfig_path, endpoint, etc.
-            let cluster_refs: Vec<(String, kube::Client)> = app
-                .clusters
-                .iter()
-                .map(|c| (c.name.clone(), c.client.clone()))
-                .collect();
             let selected_cluster = app.selected_cluster.clone();
             let ns = app.selected_namespace.clone();
             let cancel = cancelled.clone();
-            let active_res = Some(app.resource_view.to_active_resource());
             let generation = app.fetch_generation;
+
+            // Build per-cluster fetch plan:
+            // - Selected cluster: full fetch (all resources) for instant view switching
+            // - Non-selected clusters: nodes-only (for health/status bar), skipped when selected_only
+            let cluster_refs: Vec<(String, kube::Client, Option<ActiveResource>)> = app
+                .clusters
+                .iter()
+                .filter_map(|c| {
+                    let is_selected = selected_cluster.as_ref() == Some(&c.name);
+                    if selected_only && !is_selected {
+                        return None; // Skip non-selected clusters on view/namespace switch
+                    }
+                    // Selected cluster: full fetch (None = all resources)
+                    // Non-selected: nodes-only fetch (for health dots + status bar)
+                    let active_res = if is_selected {
+                        None // full fetch
+                    } else {
+                        Some(ActiveResource::Nodes) // nodes-only
+                    };
+                    Some((c.name.clone(), c.client.clone(), active_res))
+                })
+                .collect();
 
             tokio::spawn(async move {
                 let start = Instant::now();
                 let mut handles = Vec::new();
-                for (name, client) in &cluster_refs {
+                for (name, client, active_res) in &cluster_refs {
                     let client = client.clone();
                     let name = name.clone();
-                    // Only apply namespace filter to the selected cluster;
-                    // other clusters fetch all namespaces for accurate status bar counts
                     let cluster_ns = if selected_cluster.as_ref() == Some(&name) {
                         ns.clone()
                     } else {
                         None
                     };
+                    let active_res = *active_res;
                     handles.push(tokio::spawn(async move {
-                        // US-210: Return None on error to preserve cached data in merge
                         data::fetch_cluster_snapshot(
                             &client,
                             &name,
@@ -3584,7 +3588,6 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     .send(FetchResult {
                         snapshots,
                         latency_ms,
-                        active_resource: active_res,
                         generation,
                     })
                     .await;

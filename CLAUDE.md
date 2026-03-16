@@ -81,8 +81,9 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - After `install.sh`, `scalex dash` works without manual tunnel setup
 - `metrics_server_enabled` is hardcoded `false` in `kubespray.rs` — metrics utilization bars show N/A until enabled
 - **Skeleton startup**: TUI draws immediately on launch before first data fetch
-- **Selective fetch**: `ActiveResource` enum drives per-view fetching — only namespaces + nodes + the active resource type are fetched (3 API calls vs 7). Each API call has a 2s `tokio::time::timeout` (`API_CALL_TIMEOUT` in `data.rs`). Headless mode (`--headless`) always does full fetch (all resources in parallel).
-- **Incremental snapshot merge**: selective fetch results are merged into existing `ClusterSnapshot` — only the fetched resource field is replaced; other fields retain their last known values. Health/resource_usage are recomputed on every merge using the freshest available pods + nodes.
+- **Full prefetch for selected cluster**: Selected cluster always fetches ALL resource types (pods, deployments, services, configmaps, nodes, namespaces) in parallel on every fetch cycle. This makes view switching (p/d/s/c/n) instant — no network fetch needed since all data is cached. Non-selected clusters only fetch namespaces + nodes (for health dots + status bar). Each API call has a 2s `tokio::time::timeout` (`API_CALL_TIMEOUT` in `data.rs`). Headless mode (`--headless`) fetches all clusters in parallel with full resources.
+- **Selected-cluster-only fetch on navigation**: View switch (p/d/s/c/n), cluster select, and namespace select set `refresh_selected_only=true`, which skips non-selected clusters entirely. Timer refresh and manual refresh (`r` key) fetch all clusters. View switch skips fetch entirely if the target resource is already in `fetched_resources`.
+- **Incremental snapshot merge**: fetch results are merged per-cluster into existing `ClusterSnapshot` — selected cluster gets all resource fields updated; non-selected clusters only get namespaces + nodes updated (preserving cached pods/deployments/etc). Health/resource_usage are recomputed on every merge using the freshest available pods + nodes.
 
 ### Header Layout
 
@@ -117,7 +118,7 @@ The TUI header is k9s-style and responsive:
 - **Sidebar namespace count**: expanded cluster labels show namespace count suffix like `tower (12ns)`.
 - **Retry failed connections**: `r` key (and only `r`) re-spawns cluster discovery for failed connections via `discover_clusters_streaming_filtered`. View switches (`p`/`d`/`s`/`c`/`n`) do NOT trigger retry — only `retry_failed_clusters` flag controls this.
 - **View switch triggers refresh**: `p`/`d`/`s`/`c`/`n` sets `needs_refresh=true` for immediate re-fetch. Works from both Sidebar and Center panel; from Sidebar also switches `active_panel` to Center.
-- **Stale data indicator**: when a selective fetch completes for resource X, the Resources tab title shows `[cached]` (orange text) if viewing a different resource type. Top tab never shows `[cached]` since nodes are always fetched. `App::is_view_stale()` compares `last_fetched_resource` against the current `ResourceView`.
+- **No stale data**: full prefetch for selected cluster means all resource types are always up-to-date. `App::is_view_stale()` always returns `false`. The `[cached]` indicator is never shown.
 - **Connection failure display**: if `cluster_connection_status` maps a cluster to `ConnectionStatus::Failed`, the center panel (both Resources and Top tabs) renders an error message with retry hint instead of the resource table. Sidebar shows `[!!]` suffix in red.
 - **Stale fetch discard**: `App::fetch_generation` (u64 counter) is incremented on every navigation/view change. Each spawned fetch task captures the generation at launch; results are dropped if `result.generation != app.fetch_generation` on arrival, preventing stale overwrites.
 - **Left navigates to parent**: `h`/Left on a leaf node (namespace, infra item) or already-collapsed node navigates cursor to its parent. Leaf nodes cannot expand/collapse.

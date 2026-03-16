@@ -60,16 +60,21 @@ pub mod headless {
             return Ok(());
         }
 
-        let mut cluster_data = Vec::new();
+        // Fetch all clusters in parallel for minimum latency
+        let mut handles = Vec::new();
         for cluster in &target_clusters {
-            let snapshot = data::fetch_cluster_snapshot(
-                &cluster.client,
-                &cluster.name,
-                args.namespace.as_deref(),
-                None, // headless: fetch all resources
-            )
-            .await?;
-            cluster_data.push(snapshot);
+            let client = cluster.client.clone();
+            let name = cluster.name.clone();
+            let ns = args.namespace.clone();
+            handles.push(tokio::spawn(async move {
+                data::fetch_cluster_snapshot(&client, &name, ns.as_deref(), None).await
+            }));
+        }
+        let mut cluster_data = Vec::new();
+        for handle in handles {
+            if let Ok(Ok(snapshot)) = handle.await {
+                cluster_data.push(snapshot);
+            }
         }
 
         // Filter by resource type if specified
