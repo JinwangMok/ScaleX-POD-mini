@@ -597,6 +597,7 @@ impl App {
                 self.retry_failed_clusters = true; // US-400: only 'r' retries failed clusters
                 self.fetch_generation += 1;
                 self.is_fetching = false;
+                self.fetch_timed_out = false; // US-800: clear timeout banner immediately on retry
             }
             AppEvent::Backspace => {} // no-op in normal mode; only used in search mode
             AppEvent::Escape => {
