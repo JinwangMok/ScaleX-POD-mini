@@ -137,13 +137,13 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let icon = match (&node.node_type, node.expanded) {
-                (NodeType::Root, true) => "v ",
-                (NodeType::Root, false) => "> ",
-                (NodeType::Cluster(_), true) => "v ",
-                (NodeType::Cluster(_), false) => "> ",
+                (NodeType::Root, true) => "▼ ",
+                (NodeType::Root, false) => "▶ ",
+                (NodeType::Cluster(_), true) => "▼ ",
+                (NodeType::Cluster(_), false) => "▶ ",
                 (NodeType::Namespace { .. }, _) => "  ",
-                (NodeType::InfraHeader, true) => "v ",
-                (NodeType::InfraHeader, false) => "> ",
+                (NodeType::InfraHeader, true) => "▼ ",
+                (NodeType::InfraHeader, false) => "▶ ",
                 (NodeType::InfraItem(_), _) => "  ",
             };
 
@@ -231,9 +231,22 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
         _ => "No cluster selected".to_string(),
     };
 
-    let title = format!(" {} | {} ", app.resource_view.label(), ctx_label);
+    let mut title_spans = vec![Span::styled(
+        format!(" {} ", app.resource_view.label()),
+        Style::default().fg(theme::FG),
+    )];
+    if app.is_view_stale(app.resource_view) {
+        title_spans.push(Span::styled(
+            "[cached] ",
+            Style::default().fg(theme::BRIGHT_ORANGE),
+        ));
+    }
+    title_spans.push(Span::styled(
+        format!("| {} ", ctx_label),
+        Style::default().fg(theme::FG),
+    ));
     let block = Block::default()
-        .title(title)
+        .title(Line::from(title_spans))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
         .style(Style::default().bg(theme::BG));
@@ -281,6 +294,34 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
+    // Check for connection failure before attempting snapshot lookup
+    if let Some(cluster_name) = &app.selected_cluster {
+        if let Some(ConnectionStatus::Failed(err_msg)) =
+            app.cluster_connection_status.get(cluster_name)
+        {
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("  [!!] ", Style::default().fg(theme::BRIGHT_RED)),
+                    Span::styled(
+                        format!("Cannot connect to {}", cluster_name),
+                        Style::default().fg(theme::BRIGHT_RED),
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    format!("       {}", err_msg),
+                    Style::default().fg(theme::FG4),
+                )),
+                Line::from(Span::styled(
+                    "       Press 'r' to retry",
+                    Style::default().fg(theme::FG4),
+                )),
+            ];
+            let paragraph = Paragraph::new(lines).style(Style::default().bg(theme::BG));
+            f.render_widget(paragraph, area);
+            return;
+        }
+    }
+
     let snapshot = match app.current_snapshot() {
         Some(s) => s,
         None => {
@@ -325,6 +366,7 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
     .style(
         Style::default()
             .fg(theme::BRIGHT_YELLOW)
+            .bg(theme::BG1)
             .add_modifier(Modifier::BOLD),
     )
     .bottom_margin(0);
@@ -333,6 +375,20 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
         .iter()
         .filter(|p| app.matches_search(&p.name))
         .collect();
+
+    if filtered.is_empty() {
+        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
+            format!(
+                "  No results for \"{}\"",
+                app.search_query.as_deref().unwrap_or("")
+            )
+        } else {
+            "  No pods in this namespace".to_string()
+        };
+        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+        f.render_widget(paragraph, area);
+        return;
+    }
 
     let rows: Vec<Row> = filtered
         .iter()
@@ -357,7 +413,7 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
                 Cell::from(pod.name.as_str()).style(base),
                 Cell::from(pod.namespace.as_str()).style(base),
                 Cell::from(pod.status.as_str()).style(if is_selected {
-                    base
+                    Style::default().fg(status_color).bg(theme::BRIGHT_YELLOW)
                 } else {
                     Style::default().fg(status_color)
                 }),
@@ -404,6 +460,7 @@ fn render_deployments_table(
     .style(
         Style::default()
             .fg(theme::BRIGHT_YELLOW)
+            .bg(theme::BG1)
             .add_modifier(Modifier::BOLD),
     );
 
@@ -411,6 +468,20 @@ fn render_deployments_table(
         .iter()
         .filter(|d| app.matches_search(&d.name))
         .collect();
+
+    if filtered.is_empty() {
+        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
+            format!(
+                "  No results for \"{}\"",
+                app.search_query.as_deref().unwrap_or("")
+            )
+        } else {
+            "  No deployments in this namespace".to_string()
+        };
+        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+        f.render_widget(paragraph, area);
+        return;
+    }
 
     let rows: Vec<Row> = filtered
         .iter()
@@ -467,6 +538,7 @@ fn render_services_table(
     .style(
         Style::default()
             .fg(theme::BRIGHT_YELLOW)
+            .bg(theme::BG1)
             .add_modifier(Modifier::BOLD),
     );
 
@@ -474,6 +546,20 @@ fn render_services_table(
         .iter()
         .filter(|s| app.matches_search(&s.name))
         .collect();
+
+    if filtered.is_empty() {
+        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
+            format!(
+                "  No results for \"{}\"",
+                app.search_query.as_deref().unwrap_or("")
+            )
+        } else {
+            "  No services in this namespace".to_string()
+        };
+        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+        f.render_widget(paragraph, area);
+        return;
+    }
 
     let rows: Vec<Row> = filtered
         .iter()
@@ -517,6 +603,7 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
     let header = Row::new(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY"]).style(
         Style::default()
             .fg(theme::BRIGHT_YELLOW)
+            .bg(theme::BG1)
             .add_modifier(Modifier::BOLD),
     );
 
@@ -524,6 +611,20 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
         .iter()
         .filter(|n| app.matches_search(&n.name))
         .collect();
+
+    if filtered.is_empty() {
+        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
+            format!(
+                "  No results for \"{}\"",
+                app.search_query.as_deref().unwrap_or("")
+            )
+        } else {
+            "  No nodes in this namespace".to_string()
+        };
+        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+        f.render_widget(paragraph, area);
+        return;
+    }
 
     let rows: Vec<Row> = filtered
         .iter()
@@ -540,7 +641,8 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                 let base = Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW);
                 Row::new(vec![
                     Cell::from(node.name.as_str()).style(base),
-                    Cell::from(node.status.as_str()).style(base),
+                    Cell::from(node.status.as_str())
+                        .style(Style::default().fg(status_color).bg(theme::BRIGHT_YELLOW)),
                     Cell::from(node.roles.join(",")).style(base),
                     Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
                         .style(base),
@@ -586,6 +688,7 @@ fn render_configmaps_table(
     let header = Row::new(vec!["NAME", "NAMESPACE", "KEYS", "AGE"]).style(
         Style::default()
             .fg(theme::BRIGHT_YELLOW)
+            .bg(theme::BG1)
             .add_modifier(Modifier::BOLD),
     );
 
@@ -593,6 +696,20 @@ fn render_configmaps_table(
         .iter()
         .filter(|cm| app.matches_search(&cm.name))
         .collect();
+
+    if filtered.is_empty() {
+        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
+            format!(
+                "  No results for \"{}\"",
+                app.search_query.as_deref().unwrap_or("")
+            )
+        } else {
+            "  No configmaps in this namespace".to_string()
+        };
+        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+        f.render_widget(paragraph, area);
+        return;
+    }
 
     let rows: Vec<Row> = filtered
         .iter()
@@ -725,7 +842,7 @@ fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color
     vec![
         Span::styled(format!("{} [", label), Style::default().fg(theme::FG4)),
         Span::styled("=".repeat(filled), Style::default().fg(bar_color)),
-        Span::styled("-".repeat(empty), Style::default().fg(theme::BG3)),
+        Span::styled("-".repeat(empty), Style::default().fg(theme::FG4)),
         Span::styled(
             format!("] {:>3.0}% ", percent),
             Style::default().fg(theme::FG3),

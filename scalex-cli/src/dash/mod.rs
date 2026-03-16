@@ -65,6 +65,7 @@ pub mod headless {
                 &cluster.client,
                 &cluster.name,
                 args.namespace.as_deref(),
+                None, // headless: fetch all resources
             )
             .await?;
             cluster_data.push(snapshot);
