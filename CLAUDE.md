@@ -87,7 +87,10 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Event-driven input loop**: TUI uses `tokio::select!` with crossterm `EventStream` instead of 100ms polling. Keyboard input has near-zero latency. Tick interval (100ms) drives spinner animation and periodic refresh checks. Biased select prioritizes keyboard over ticks.
 - **O(1) snapshot lookup**: `snapshot_index: HashMap<String, usize>` maps cluster name → position in `snapshots` vec. Updated inline during fetch merge. `current_snapshot()` uses index with name-guard + linear scan fallback.
 - **Pre-lowercased search**: `search_query_lower: Option<String>` synced once per event cycle via `sync_search_lower()`. Eliminates per-item `to_lowercase()` on query string during search filtering.
+- **Zero-allocation search matching**: `contains_ignore_ascii_case()` performs char-by-char ASCII comparison without allocating `to_lowercase()` strings per item. K8s resource names are always ASCII.
 - **Viewport-only sidebar rendering**: `render_sidebar` only builds `Line` objects for visible viewport rows (`scroll_offset..scroll_offset+height`), not all tree nodes. Combined with single snapshot lookup per cluster node (health dot + namespace count reuse same lookup).
+- **Cached visible_tree_len**: `cached_visible_len: Option<usize>` avoids redundant O(n) tree scans across multiple callers per frame. Invalidated at start of each `handle_event` and after tree mutations (drain, splice).
+- **Pre-computed node display strings**: `NodeInfo` carries `roles_display`, `mem_capacity_display`, `mem_allocatable_display` computed once during fetch, eliminating per-frame `format_k8s_memory()` and `roles.join()` allocations in render path.
 
 ### Header Layout
 
@@ -127,6 +130,7 @@ The TUI header is k9s-style and responsive:
 - **Stale fetch discard**: `App::fetch_generation` (u64 counter) is incremented on every navigation/view change. Each spawned fetch task captures the generation at launch; results are dropped if `result.generation != app.fetch_generation` on arrival, preventing stale overwrites.
 - **Left navigates to parent**: `h`/Left on a leaf node (namespace, infra item) or already-collapsed node navigates cursor to its parent. Leaf nodes cannot expand/collapse.
 - **Search matches name + namespace**: `/` search filters center table rows by both resource name and namespace (case-insensitive). Nodes view and Top tab filter by node name only.
+- **k9s-style pod sorting**: Pods table sorted by status severity — errors/crashes first (CrashLoopBackOff, OOMKilled, Failed, Evicted), then pending/init, then running, then completed. Stable sort preserves order within each group. Sort applied during `fetch_cluster_snapshot` via `sort_pods_by_severity()`.
 - **Status color coding**: Pod RESTARTS column: yellow (1-10), red (>10). Deployment READY column: green (ready≥desired), yellow (0<ready<desired), red (ready=0). Node roles show `<none>` when empty.
 - **Full-width cursor highlight**: sidebar cursor highlight fills the entire row width, not just text length. Padding is computed using display-column widths (not byte lengths) to correctly handle Unicode markers (●, ▼, ▶, …).
 - **Responsive sidebar width**: sidebar width adapts to terminal: 20 cols (<60), 24 cols (<80), 28 cols (≥80). Labels truncated with `…` when overflowing.

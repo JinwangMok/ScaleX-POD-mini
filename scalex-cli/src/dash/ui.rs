@@ -1080,24 +1080,19 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
         |node| app.matches_search(&node.name),
         |_i, node, is_selected| {
             let base = row_base_style(is_selected);
-            let roles_str = if node.roles.is_empty() {
-                "<none>".to_string()
-            } else {
-                node.roles.join(",")
-            };
+            // Use pre-computed display strings (avoids per-frame format_k8s_memory + join)
+            let cpu_col = format!("{}/{}", node.cpu_allocatable, node.cpu_capacity);
+            let mem_col = format!(
+                "{}/{}",
+                node.mem_allocatable_display, node.mem_capacity_display
+            );
             if is_selected {
                 Row::new(vec![
                     Cell::from(node.name.as_str()).style(base),
                     Cell::from(node.status.as_str()).style(base),
-                    Cell::from(roles_str).style(base),
-                    Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
-                        .style(base),
-                    Cell::from(format!(
-                        "{}/{}",
-                        data::format_k8s_memory(&node.mem_allocatable),
-                        data::format_k8s_memory(&node.mem_capacity)
-                    ))
-                    .style(base),
+                    Cell::from(node.roles_display.as_str()).style(base),
+                    Cell::from(cpu_col).style(base),
+                    Cell::from(mem_col).style(base),
                     Cell::from(node.age.as_str()).style(base),
                 ])
             } else {
@@ -1111,15 +1106,9 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                 Row::new(vec![
                     Cell::from(node.name.as_str()).style(Style::default().fg(theme::FG)),
                     Cell::from(node.status.as_str()).style(Style::default().fg(status_color)),
-                    Cell::from(roles_str).style(Style::default().fg(theme::FG3)),
-                    Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
-                        .style(Style::default().fg(theme::BRIGHT_AQUA)),
-                    Cell::from(format!(
-                        "{}/{}",
-                        data::format_k8s_memory(&node.mem_allocatable),
-                        data::format_k8s_memory(&node.mem_capacity)
-                    ))
-                    .style(Style::default().fg(theme::BRIGHT_PURPLE)),
+                    Cell::from(node.roles_display.as_str()).style(Style::default().fg(theme::FG3)),
+                    Cell::from(cpu_col).style(Style::default().fg(theme::BRIGHT_AQUA)),
+                    Cell::from(mem_col).style(Style::default().fg(theme::BRIGHT_PURPLE)),
                     Cell::from(node.age.as_str()).style(Style::default().fg(theme::FG3)),
                 ])
             }
@@ -1218,8 +1207,8 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
                     "  CPU: {}/{}  MEM: {}/{}",
                     node.cpu_allocatable,
                     node.cpu_capacity,
-                    data::format_k8s_memory(&node.mem_allocatable),
-                    data::format_k8s_memory(&node.mem_capacity)
+                    node.mem_allocatable_display,
+                    node.mem_capacity_display
                 ),
                 Style::default().fg(theme::FG3),
             ),

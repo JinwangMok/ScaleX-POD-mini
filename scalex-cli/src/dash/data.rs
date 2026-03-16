@@ -48,7 +48,7 @@ pub enum HealthStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct NodeInfo {
     pub name: String,
     pub status: String,
@@ -58,6 +58,10 @@ pub struct NodeInfo {
     pub cpu_allocatable: String,
     pub mem_allocatable: String,
     pub age: String,
+    /// Pre-computed display strings to avoid per-frame allocations in render path
+    pub roles_display: String,
+    pub mem_capacity_display: String,
+    pub mem_allocatable_display: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -250,27 +254,43 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
                 .map(|ts| format_age(now, ts.0))
                 .unwrap_or_else(|| "<unknown>".into());
 
+            let cpu_cap = capacity
+                .and_then(|c| c.get("cpu"))
+                .map(|v| v.0.clone())
+                .unwrap_or_default();
+            let mem_cap = capacity
+                .and_then(|c| c.get("memory"))
+                .map(|v| v.0.clone())
+                .unwrap_or_default();
+            let cpu_alloc = allocatable
+                .and_then(|a| a.get("cpu"))
+                .map(|v| v.0.clone())
+                .unwrap_or_default();
+            let mem_alloc = allocatable
+                .and_then(|a| a.get("memory"))
+                .map(|v| v.0.clone())
+                .unwrap_or_default();
+
+            let roles_display = if roles.is_empty() {
+                "<none>".to_string()
+            } else {
+                roles.join(",")
+            };
+            let mem_capacity_display = format_k8s_memory(&mem_cap);
+            let mem_allocatable_display = format_k8s_memory(&mem_alloc);
+
             NodeInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 status: node_status,
                 roles,
-                cpu_capacity: capacity
-                    .and_then(|c| c.get("cpu"))
-                    .map(|v| v.0.clone())
-                    .unwrap_or_default(),
-                mem_capacity: capacity
-                    .and_then(|c| c.get("memory"))
-                    .map(|v| v.0.clone())
-                    .unwrap_or_default(),
-                cpu_allocatable: allocatable
-                    .and_then(|a| a.get("cpu"))
-                    .map(|v| v.0.clone())
-                    .unwrap_or_default(),
-                mem_allocatable: allocatable
-                    .and_then(|a| a.get("memory"))
-                    .map(|v| v.0.clone())
-                    .unwrap_or_default(),
+                cpu_capacity: cpu_cap,
+                mem_capacity: mem_cap,
+                cpu_allocatable: cpu_alloc,
+                mem_allocatable: mem_alloc,
                 age,
+                roles_display,
+                mem_capacity_display,
+                mem_allocatable_display,
             }
         })
         .collect())
@@ -420,6 +440,41 @@ pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<
 }
 
 // ---------------------------------------------------------------------------
+// k9s-style pod sorting by status severity (errors first)
+// ---------------------------------------------------------------------------
+
+/// Status severity rank for k9s-style pod sorting.
+/// Lower number = higher severity (shown first in table).
+fn pod_status_severity(status: &str) -> u8 {
+    match status {
+        // Critical errors: shown first
+        "Failed" | "Error" | "OOMKilled" | "CrashLoopBackOff" | "ImagePullBackOff"
+        | "ErrImagePull" | "CreateContainerConfigError" | "InvalidImageName" | "Evicted"
+        | "NodeLost" | "Shutdown" => 0,
+        // Init errors
+        s if s.starts_with("Init:") && (s.contains("Error") || s.contains("CrashLoopBackOff")) => {
+            1
+        }
+        // Pending/Initializing states
+        "Pending" | "ContainerCreating" | "PodInitializing" | "Terminating" => 2,
+        // Init in progress
+        s if s.starts_with("Init:") => 3,
+        // Normal running
+        "Running" => 4,
+        // Completed successfully
+        "Succeeded" | "Completed" => 5,
+        // Unknown
+        _ => 3,
+    }
+}
+
+/// Sort pods by status severity (k9s-style: errors first, then pending, then running).
+/// Stable sort preserves original order within each severity group.
+pub fn sort_pods_by_severity(pods: &mut [PodInfo]) {
+    pods.sort_by_key(|p| pod_status_severity(&p.status));
+}
+
+// ---------------------------------------------------------------------------
 // Cluster snapshot (aggregate)
 // ---------------------------------------------------------------------------
 
@@ -488,18 +543,21 @@ pub async fn fetch_cluster_snapshot(
         }
     };
 
+    // Sort pods by status severity (k9s-style: errors first)
+    let mut pods_vec = pods.unwrap_or_default();
+    sort_pods_by_severity(&mut pods_vec);
+
     // For health computation, use pods if we have them, otherwise empty
     // (health will be recomputed on next full fetch)
-    let pods_for_health = pods.as_deref().unwrap_or(&[]);
-    let health = compute_health(&nodes, pods_for_health);
-    let resource_usage = compute_resource_usage(&nodes, pods_for_health, None);
+    let health = compute_health(&nodes, &pods_vec);
+    let resource_usage = compute_resource_usage(&nodes, &pods_vec, None);
 
     Ok(ClusterSnapshot {
         name: cluster_name.to_string(),
         health,
         namespaces,
         nodes,
-        pods: pods.unwrap_or_default(),
+        pods: pods_vec,
         deployments: deployments.unwrap_or_default(),
         services: services.unwrap_or_default(),
         configmaps: configmaps.unwrap_or_default(),
@@ -894,7 +952,7 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-        }];
+            ..Default::default()        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -918,7 +976,7 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-        }];
+            ..Default::default()        }];
         assert_eq!(compute_health(&nodes, &[]), HealthStatus::Red);
     }
 
@@ -933,7 +991,7 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-        }];
+            ..Default::default()        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -957,7 +1015,7 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-        }];
+            ..Default::default()        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -981,7 +1039,7 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-        }];
+            ..Default::default()        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -1152,7 +1210,7 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-        }];
+            ..Default::default()        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -1179,7 +1237,7 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-        }];
+            ..Default::default()        }];
         let metrics = vec![NodeMetrics {
             name: "n1".into(),
             cpu_usage: 2.0,
@@ -1327,7 +1385,7 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-        }];
+            ..Default::default()        }];
         let pods = vec![PodInfo {
             name: "evicted-pod".into(),
             namespace: "default".into(),
@@ -1338,5 +1396,68 @@ mod tests {
             node: "n1".into(),
         }];
         assert_eq!(compute_health(&nodes, &pods), HealthStatus::Yellow);
+    }
+
+    // --- US-004: k9s-style pod sorting by status severity ---
+
+    #[test]
+    fn pod_sort_order_errors_first() {
+        let make_pod = |name: &str, status: &str| PodInfo {
+            name: name.into(),
+            namespace: "default".into(),
+            status: status.into(),
+            ready: "1/1".into(),
+            restarts: 0,
+            age: "1h".into(),
+            node: "n1".into(),
+        };
+        let mut pods = vec![
+            make_pod("running-1", "Running"),
+            make_pod("crash-1", "CrashLoopBackOff"),
+            make_pod("completed-1", "Succeeded"),
+            make_pod("pending-1", "Pending"),
+            make_pod("error-1", "Error"),
+            make_pod("running-2", "Running"),
+            make_pod("oom-1", "OOMKilled"),
+            make_pod("init-err", "Init:CrashLoopBackOff (sidecar)"),
+            make_pod("init-ok", "Init:1/2"),
+        ];
+        sort_pods_by_severity(&mut pods);
+        let names: Vec<&str> = pods.iter().map(|p| p.name.as_str()).collect();
+        // Errors first (severity 0): crash-1, error-1, oom-1
+        // Init errors (severity 1): init-err
+        // Pending (severity 2): pending-1
+        // Init in progress (severity 3): init-ok
+        // Running (severity 4): running-1, running-2
+        // Succeeded (severity 5): completed-1
+        assert_eq!(
+            names,
+            vec![
+                "crash-1", "error-1", "oom-1",
+                "init-err",
+                "pending-1",
+                "init-ok",
+                "running-1", "running-2",
+                "completed-1",
+            ]
+        );
+    }
+
+    #[test]
+    fn pod_sort_stable_within_group() {
+        let make_pod = |name: &str| PodInfo {
+            name: name.into(),
+            namespace: "default".into(),
+            status: "Running".into(),
+            ready: "1/1".into(),
+            restarts: 0,
+            age: "1h".into(),
+            node: "n1".into(),
+        };
+        let mut pods = vec![make_pod("b-pod"), make_pod("a-pod"), make_pod("c-pod")];
+        sort_pods_by_severity(&mut pods);
+        // All same severity → original order preserved (stable sort)
+        let names: Vec<&str> = pods.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["b-pod", "a-pod", "c-pod"]);
     }
 }

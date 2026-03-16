@@ -220,6 +220,33 @@ pub struct App {
 
     /// Discovery log messages for TUI status bar display (message, tick_count when received)
     pub discovery_logs: VecDeque<(String, u64)>,
+
+    /// Cached visible tree length — invalidated (set to None) on tree mutations.
+    /// Avoids redundant O(n) scans across multiple callers per frame.
+    cached_visible_len: Option<usize>,
+}
+
+/// ASCII case-insensitive substring search without allocation.
+/// K8s resource names are always ASCII, so this is safe and avoids
+/// the per-item `to_lowercase()` String allocation in search hot paths.
+/// `needle` must already be lowercase.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let needle_bytes = needle.as_bytes();
+    let haystack_bytes = haystack.as_bytes();
+    if needle_bytes.len() > haystack_bytes.len() {
+        return false;
+    }
+    haystack_bytes
+        .windows(needle_bytes.len())
+        .any(|window| {
+            window
+                .iter()
+                .zip(needle_bytes.iter())
+                .all(|(h, n)| h.to_ascii_lowercase() == *n)
+        })
 }
 
 impl App {
@@ -305,6 +332,7 @@ impl App {
             sidebar_page_size: 0,
             help_viewport_height: 0,
             discovery_logs: VecDeque::new(),
+            cached_visible_len: None,
         }
     }
 
@@ -392,10 +420,15 @@ impl App {
             sidebar_page_size: 0,
             help_viewport_height: 0,
             discovery_logs: VecDeque::new(),
+            cached_visible_len: None,
         }
     }
 
     pub fn handle_event(&mut self, evt: AppEvent) {
+        // Invalidate tree cache at the start of each event cycle.
+        // First visible_tree_len() call recomputes; subsequent calls use cache through render.
+        self.invalidate_tree_cache();
+
         // ForceQuit (Ctrl+C) always exits regardless of mode
         if matches!(evt, AppEvent::ForceQuit) {
             self.running = false;
@@ -649,21 +682,19 @@ impl App {
             .map(|q| q.to_lowercase());
     }
 
-    /// Check if a name matches the current search query (case-insensitive)
+    /// Check if a name matches the current search query (case-insensitive, zero-allocation).
+    /// Uses ASCII case-insensitive comparison since K8s resource names are always ASCII.
     pub fn matches_search(&self, name: &str) -> bool {
         match &self.search_query_lower {
-            Some(q) => name.to_lowercase().contains(q.as_str()),
+            Some(q) => contains_ignore_ascii_case(name, q),
             None => true,
         }
     }
 
-    /// Check if a resource matches search by name OR namespace (case-insensitive)
+    /// Check if a resource matches search by name OR namespace (case-insensitive, zero-allocation).
     pub fn matches_search_with_ns(&self, name: &str, namespace: &str) -> bool {
         match &self.search_query_lower {
-            Some(q) => {
-                name.to_lowercase().contains(q.as_str())
-                    || namespace.to_lowercase().contains(q.as_str())
-            }
+            Some(q) => contains_ignore_ascii_case(name, q) || contains_ignore_ascii_case(namespace, q),
             None => true,
         }
     }
@@ -1051,6 +1082,7 @@ impl App {
         if count > 0 {
             // Drain the range in one O(n) operation instead of O(n*k)
             self.tree.drain((parent_idx + 1)..(parent_idx + 1 + count));
+            self.invalidate_tree_cache();
         }
         // Clamp cursor to visible range after children removal
         let visible_len = self.visible_tree_len();
@@ -1080,7 +1112,16 @@ impl App {
         result
     }
 
-    pub fn visible_tree_len(&self) -> usize {
+    pub fn visible_tree_len(&mut self) -> usize {
+        if let Some(cached) = self.cached_visible_len {
+            return cached;
+        }
+        let len = self.compute_visible_tree_len();
+        self.cached_visible_len = Some(len);
+        len
+    }
+
+    fn compute_visible_tree_len(&self) -> usize {
         let mut count = 0;
         let mut skip_depth: Option<usize> = None;
         for node in &self.tree {
@@ -1096,6 +1137,11 @@ impl App {
             }
         }
         count
+    }
+
+    /// Invalidate cached visible tree length. Must be called after any tree mutation.
+    fn invalidate_tree_cache(&mut self) {
+        self.cached_visible_len = None;
     }
 
     /// Load infrastructure data from SDI directory.
@@ -1159,6 +1205,7 @@ impl App {
                 let insert_at = idx + 1;
                 self.tree.splice(insert_at..insert_at, children);
                 self.tree[idx].children_loaded = true;
+                self.invalidate_tree_cache();
             }
         }
     }
@@ -1240,6 +1287,7 @@ impl App {
                 self.tree.splice(insert_at..insert_at, children);
 
                 self.tree[idx].children_loaded = true;
+                self.invalidate_tree_cache();
             }
         }
     }
@@ -1281,8 +1329,8 @@ impl App {
                 }
             }
         };
-        // Global section: blank + section + blank + 8 keys + blank + footer = 13
-        context_lines + 13
+        // Global section: blank + section + blank + 8 keys + blank + footer + blank + k9s attribution = 15
+        context_lines + 15
     }
 
     /// Maximum scroll offset for help overlay, accounting for viewport height (US-204).
@@ -1456,6 +1504,7 @@ mod tests {
             sidebar_page_size: 0,
             help_viewport_height: 0,
             discovery_logs: VecDeque::new(),
+            cached_visible_len: None,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -2911,7 +2960,7 @@ mod tests {
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
                 age: "1d".into(),
-},
+                ..Default::default()},
                 crate::dash::data::NodeInfo {
                     name: "node-1".into(),
                     status: "Ready".into(),
@@ -2921,7 +2970,7 @@ mod tests {
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
                 age: "1d".into(),
-},
+                ..Default::default()},
             ],
             pods: vec![],
             deployments: vec![],
@@ -2957,7 +3006,7 @@ mod tests {
                 cpu_allocatable: "4".into(),
                 mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-}],
+            ..Default::default()}],
             pods: vec![],
             deployments: vec![],
             services: vec![],
@@ -3038,7 +3087,7 @@ mod tests {
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
                 age: "1d".into(),
-})
+                ..Default::default()})
                 .collect(),
             pods: vec![],
             deployments: vec![],
@@ -3080,7 +3129,7 @@ mod tests {
                 cpu_allocatable: "4".into(),
                 mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-}],
+            ..Default::default()}],
             pods: vec![],
             deployments: vec![],
             services: vec![],
@@ -3205,7 +3254,7 @@ mod tests {
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
                 age: "1d".into(),
-},
+                ..Default::default()},
                 crate::dash::data::NodeInfo {
                     name: "node-beta".into(),
                     status: "Ready".into(),
@@ -3215,7 +3264,7 @@ mod tests {
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
                 age: "1d".into(),
-},
+                ..Default::default()},
             ],
             pods: vec![],
             deployments: vec![],
