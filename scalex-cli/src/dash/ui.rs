@@ -1198,7 +1198,7 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
 
 /// Render a compact utilization bar: `CPU [========--] 82%` or `CPU N/A`
 fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color) -> Vec<Span<'a>> {
-    if percent <= 0.0 {
+    if percent < 0.0 {
         return vec![
             Span::styled(format!("{} ", label), Style::default().fg(theme::FG4)),
             Span::styled("N/A ", Style::default().fg(theme::FG4)),
@@ -1279,15 +1279,35 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         if narrow {
             // Abbreviated: name + pod count only
             health_spans.push(Span::styled(
-                format!("{} {}/{}  ", snapshot.name, ru.running_pods, ru.total_pods),
+                if ru.succeeded_pods > 0 {
+                    format!(
+                        "{} {}+{}/{}  ",
+                        snapshot.name, ru.running_pods, ru.succeeded_pods, ru.total_pods
+                    )
+                } else {
+                    format!("{} {}/{}  ", snapshot.name, ru.running_pods, ru.total_pods)
+                },
                 Style::default().fg(theme::FG3),
             ));
         } else {
             health_spans.push(Span::styled(
-                format!(
-                    "{} pods:{}/{} nodes:{}/{}  ",
-                    snapshot.name, ru.running_pods, ru.total_pods, ru.ready_nodes, ru.total_nodes
-                ),
+                if ru.succeeded_pods > 0 {
+                    format!(
+                        "{} pods:{}+{}/{} nodes:{}/{}  ",
+                        snapshot.name,
+                        ru.running_pods,
+                        ru.succeeded_pods,
+                        ru.total_pods,
+                        ru.ready_nodes,
+                        ru.total_nodes
+                    )
+                } else {
+                    format!(
+                        "{} pods:{}/{} nodes:{}/{}  ",
+                        snapshot.name, ru.running_pods, ru.total_pods, ru.ready_nodes,
+                        ru.total_nodes
+                    )
+                },
                 Style::default().fg(theme::FG3),
             ));
         }
