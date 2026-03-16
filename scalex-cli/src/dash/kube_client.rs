@@ -27,6 +27,8 @@ pub enum DiscoverEvent {
     Failed { name: String, error: String },
     /// All clusters have been processed.
     Complete,
+    /// Log message from discovery (replaces eprintln to avoid TUI corruption).
+    Log { message: String },
 }
 
 /// Scan kubeconfig directory for cluster names without any network I/O.
@@ -169,25 +171,63 @@ pub async fn discover_clusters_streaming(
 
             // Strategy 1: api_endpoint (domain URL)
             if let Some(ref ep) = endpoint {
-                if let Ok(client) = build_client_with_endpoint(&kubeconfig_path, ep).await {
-                    if probe_client(&client).await {
-                        let ver = fetch_server_version(&client).await;
+                match build_client_with_endpoint(&kubeconfig_path, ep).await {
+                    Ok(client) => {
+                        if probe_client(&client).await {
+                            let _ = tx
+                                .send(DiscoverEvent::Log {
+                                    message: format!("{}: connected via domain", cluster_name),
+                                })
+                                .await;
+                            let ver = fetch_server_version(&client).await;
+                            let _ = tx
+                                .send(DiscoverEvent::Connected(ClusterClient {
+                                    name: cluster_name,
+                                    kubeconfig_path,
+                                    client,
+                                    tunnel_pid: None,
+                                    server_version: ver,
+                                    endpoint: Some(ep.clone()),
+                                }))
+                                .await;
+                            return;
+                        } else {
+                            let _ = tx
+                                .send(DiscoverEvent::Log {
+                                    message: format!(
+                                        "{}: domain probe timed out ({})",
+                                        cluster_name, ep
+                                    ),
+                                })
+                                .await;
+                        }
+                    }
+                    Err(e) => {
+                        let reason = format!("{}", e);
+                        let category = if reason.contains("dns") || reason.contains("resolve") {
+                            "DNS"
+                        } else if reason.contains("certificate")
+                            || reason.contains("tls")
+                            || reason.contains("ssl")
+                        {
+                            "TLS"
+                        } else {
+                            "connect"
+                        };
                         let _ = tx
-                            .send(DiscoverEvent::Connected(ClusterClient {
-                                name: cluster_name,
-                                kubeconfig_path,
-                                client,
-                                tunnel_pid: None,
-                                server_version: ver,
-                                endpoint: Some(ep.clone()),
-                            }))
+                            .send(DiscoverEvent::Log {
+                                message: format!(
+                                    "{}: domain probe failed ({}: {})",
+                                    cluster_name, category, ep
+                                ),
+                            })
                             .await;
-                        return;
                     }
                 }
             }
 
             // Strategy 2: direct connection via kubeconfig IP (with timeout)
+            // If kubeconfig has a domain URL (post-rewrite), also try .original for VM IP fallback
             if let Ok(client) = build_client(&kubeconfig_path).await {
                 if probe_client(&client).await {
                     let ver = fetch_server_version(&client).await;
@@ -206,16 +246,51 @@ pub async fn discover_clusters_streaming(
                 }
             }
 
+            // Strategy 2b: try .original kubeconfig (VM IP fallback after domain rewrite)
+            let original_path = kubeconfig_path.with_extension("yaml.original");
+            if original_path.exists() {
+                if let Ok(client) = build_client(&original_path).await {
+                    if probe_client(&client).await {
+                        let _ = tx
+                            .send(DiscoverEvent::Log {
+                                message: format!(
+                                    "{}: connected via .original kubeconfig (VM IP)",
+                                    cluster_name
+                                ),
+                            })
+                            .await;
+                        let ver = fetch_server_version(&client).await;
+                        let ep =
+                            extract_server_url(&original_path).map(|(url, _, _)| url);
+                        let _ = tx
+                            .send(DiscoverEvent::Connected(ClusterClient {
+                                name: cluster_name,
+                                kubeconfig_path: original_path,
+                                client,
+                                tunnel_pid: None,
+                                server_version: ver,
+                                endpoint: ep,
+                            }))
+                            .await;
+                        return;
+                    }
+                }
+            }
+
             // Strategy 3: SSH tunnel fallback
             if let Some(ref bastion_host) = bastion {
                 match setup_auto_tunnel(&kubeconfig_path, &cluster_name, bastion_host, local_port)
                     .await
                 {
                     Ok((client, pid)) => {
-                        eprintln!(
-                            "Auto-tunnel: {} → localhost:{} via {}",
-                            cluster_name, local_port, bastion_host
-                        );
+                        let _ = tx
+                            .send(DiscoverEvent::Log {
+                                message: format!(
+                                    "{}: connected via SSH tunnel (localhost:{})",
+                                    cluster_name, local_port
+                                ),
+                            })
+                            .await;
                         let ver = fetch_server_version(&client).await;
                         let _ = tx
                             .send(DiscoverEvent::Connected(ClusterClient {
@@ -303,20 +378,57 @@ pub async fn discover_clusters_streaming_filtered(
 
             // Strategy 1: api_endpoint
             if let Some(ref ep) = endpoint {
-                if let Ok(client) = build_client_with_endpoint(&kubeconfig_path, ep).await {
-                    if probe_client(&client).await {
-                        let ver = fetch_server_version(&client).await;
+                match build_client_with_endpoint(&kubeconfig_path, ep).await {
+                    Ok(client) => {
+                        if probe_client(&client).await {
+                            let _ = tx
+                                .send(DiscoverEvent::Log {
+                                    message: format!("{}: connected via domain", cluster_name),
+                                })
+                                .await;
+                            let ver = fetch_server_version(&client).await;
+                            let _ = tx
+                                .send(DiscoverEvent::Connected(ClusterClient {
+                                    name: cluster_name,
+                                    kubeconfig_path,
+                                    client,
+                                    tunnel_pid: None,
+                                    server_version: ver,
+                                    endpoint: Some(ep.clone()),
+                                }))
+                                .await;
+                            return;
+                        } else {
+                            let _ = tx
+                                .send(DiscoverEvent::Log {
+                                    message: format!(
+                                        "{}: domain probe timed out ({})",
+                                        cluster_name, ep
+                                    ),
+                                })
+                                .await;
+                        }
+                    }
+                    Err(e) => {
+                        let reason = format!("{}", e);
+                        let category = if reason.contains("dns") || reason.contains("resolve") {
+                            "DNS"
+                        } else if reason.contains("certificate")
+                            || reason.contains("tls")
+                            || reason.contains("ssl")
+                        {
+                            "TLS"
+                        } else {
+                            "connect"
+                        };
                         let _ = tx
-                            .send(DiscoverEvent::Connected(ClusterClient {
-                                name: cluster_name,
-                                kubeconfig_path,
-                                client,
-                                tunnel_pid: None,
-                                server_version: ver,
-                                endpoint: Some(ep.clone()),
-                            }))
+                            .send(DiscoverEvent::Log {
+                                message: format!(
+                                    "{}: domain probe failed ({}: {})",
+                                    cluster_name, category, ep
+                                ),
+                            })
                             .await;
-                        return;
                     }
                 }
             }
@@ -337,6 +449,37 @@ pub async fn discover_clusters_streaming_filtered(
                         }))
                         .await;
                     return;
+                }
+            }
+
+            // Strategy 2b: try .original kubeconfig (VM IP fallback)
+            let original_path = kubeconfig_path.with_extension("yaml.original");
+            if original_path.exists() {
+                if let Ok(client) = build_client(&original_path).await {
+                    if probe_client(&client).await {
+                        let _ = tx
+                            .send(DiscoverEvent::Log {
+                                message: format!(
+                                    "{}: connected via .original kubeconfig",
+                                    cluster_name
+                                ),
+                            })
+                            .await;
+                        let ver = fetch_server_version(&client).await;
+                        let ep =
+                            extract_server_url(&original_path).map(|(url, _, _)| url);
+                        let _ = tx
+                            .send(DiscoverEvent::Connected(ClusterClient {
+                                name: cluster_name,
+                                kubeconfig_path: original_path,
+                                client,
+                                tunnel_pid: None,
+                                server_version: ver,
+                                endpoint: ep,
+                            }))
+                            .await;
+                        return;
+                    }
                 }
             }
 

@@ -356,6 +356,51 @@ except: pass
     fi
   done
   API_TUNNEL_BACKUPS=()
+
+  # --- Phase 2: Rewrite kubeconfigs with domain URLs (if api_endpoint configured) ---
+  # When Cloudflare Tunnel provides stable domain URLs, kubeconfigs should use them
+  # so they work from any network without SSH tunnels.
+  local clusters_yaml="config/k8s-clusters.yaml"
+  if [[ -f "$clusters_yaml" ]]; then
+    local clusters_dir="_generated/clusters"
+    # Extract cluster_name + api_endpoint pairs from YAML
+    local current_cluster="" current_endpoint=""
+    while IFS= read -r line; do
+      local trimmed; trimmed=$(echo "$line" | sed 's/^[[:space:]]*//')
+      if [[ "$trimmed" == cluster_name:* ]]; then
+        current_cluster=$(echo "$trimmed" | sed 's/cluster_name:[[:space:]]*//; s/"//g; s/'\''//g')
+        current_endpoint=""
+      elif [[ "$trimmed" == api_endpoint:* ]]; then
+        current_endpoint=$(echo "$trimmed" | sed 's/api_endpoint:[[:space:]]*//; s/"//g; s/'\''//g')
+      fi
+
+      # When we have both, process the pair
+      if [[ -n "$current_cluster" && -n "$current_endpoint" ]]; then
+        local kc_path="${clusters_dir}/${current_cluster}/kubeconfig.yaml"
+        if [[ -f "$kc_path" ]]; then
+          # Save original kubeconfig with VM IP for fallback
+          cp "$kc_path" "${kc_path}.original"
+
+          # Probe domain URL (retry up to 60s — CF Tunnel needs ArgoCD sync time)
+          log_info "$(i18n "Probing domain endpoint for ${current_cluster}: ${current_endpoint}" \
+            "${current_cluster} 도메인 엔드포인트 확인 중: ${current_endpoint}")"
+          if curl -sk --connect-timeout 5 --retry 6 --retry-delay 5 --retry-max-time 60 \
+            "${current_endpoint}/healthz" >/dev/null 2>&1; then
+            # Rewrite kubeconfig server field to domain URL
+            local current_url; current_url=$(grep 'server:' "$kc_path" | head -1 | awk '{print $2}' | tr -d '"')
+            sed -i "s|${current_url}|${current_endpoint}|g" "$kc_path"
+            log_info "$(i18n "kubeconfig ${current_cluster}: server → ${current_endpoint}" \
+              "kubeconfig ${current_cluster}: server → ${current_endpoint}")"
+          else
+            log_warn "$(i18n "Domain endpoint unreachable for ${current_cluster} — keeping CP IP" \
+              "${current_cluster} 도메인 엔드포인트 접근 불가 — CP IP 유지")"
+          fi
+        fi
+        current_cluster=""
+        current_endpoint=""
+      fi
+    done < "$clusters_yaml"
+  fi
 }
 
 # --- SSH config generation ---

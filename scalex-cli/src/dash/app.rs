@@ -209,6 +209,9 @@ pub struct App {
     pub sidebar_page_size: usize,
     /// Cached help popup inner height for scroll clamping (US-204)
     pub help_viewport_height: u16,
+
+    /// Discovery log messages for TUI status bar display (message, tick_count when received)
+    pub discovery_logs: Vec<(String, u64)>,
 }
 
 impl App {
@@ -290,6 +293,7 @@ impl App {
             page_size: 0,
             sidebar_page_size: 0,
             help_viewport_height: 0,
+            discovery_logs: Vec::new(),
         }
     }
 
@@ -373,6 +377,7 @@ impl App {
             page_size: 0,
             sidebar_page_size: 0,
             help_viewport_height: 0,
+            discovery_logs: Vec::new(),
         }
     }
 
@@ -1299,6 +1304,14 @@ impl App {
                 .values()
                 .all(|s| matches!(s, ConnectionStatus::Failed(_)))
     }
+
+    /// Get the latest non-expired discovery log message (~10s auto-fade at 4 ticks/sec)
+    pub fn latest_discovery_log(&self) -> Option<&str> {
+        self.discovery_logs
+            .last()
+            .filter(|(_, tick)| self.tick_count.saturating_sub(*tick) < 40)
+            .map(|(msg, _)| msg.as_str())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1387,6 +1400,7 @@ mod tests {
             page_size: 0,
             sidebar_page_size: 0,
             help_viewport_height: 0,
+            discovery_logs: Vec::new(),
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -3335,6 +3349,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 }
                 kube_client::DiscoverEvent::Complete => {
                     app.discover_complete = true;
+                }
+                kube_client::DiscoverEvent::Log { message } => {
+                    app.discovery_logs.push((message, app.tick_count));
+                    if app.discovery_logs.len() > 10 {
+                        app.discovery_logs.remove(0);
+                    }
                 }
             }
         }
