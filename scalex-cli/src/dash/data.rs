@@ -154,7 +154,12 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
 
             // Derive effective status: check container waiting reasons
             // (e.g., CrashLoopBackOff shows phase=Running but container is waiting)
-            let effective_status = derive_effective_status(&phase, &container_statuses);
+            let has_deletion_timestamp = meta.deletion_timestamp.is_some();
+            let effective_status = if has_deletion_timestamp {
+                "Terminating".to_string()
+            } else {
+                derive_effective_status(&phase, &container_statuses)
+            };
 
             let ready_count = container_statuses.iter().filter(|c| c.ready).count();
             let total_count = container_statuses.len();
