@@ -2,7 +2,7 @@ use crate::commands::dash::DashArgs;
 use crate::dash::data::{self, ClusterSnapshot, HealthStatus};
 use crate::dash::event::{self, AppEvent};
 use crate::dash::infra::{self, InfraSnapshot};
-use crate::dash::kube_client::ClusterClient;
+use crate::dash::kube_client::{self, ClusterClient};
 use crate::dash::ui;
 use anyhow::Result;
 use crossterm::{
@@ -11,7 +11,11 @@ use crossterm::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use std::collections::HashMap;
 use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -86,6 +90,23 @@ pub enum NodeType {
 }
 
 // ---------------------------------------------------------------------------
+// Connection status for per-cluster discovery tracking
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionStatus {
+    Discovering,
+    Connected,
+    Failed(String),
+}
+
+/// Result of a background data fetch
+pub struct FetchResult {
+    pub snapshots: Vec<ClusterSnapshot>,
+    pub latency_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
 // App struct
 // ---------------------------------------------------------------------------
 
@@ -131,9 +152,29 @@ pub struct App {
 
     /// Set to true to force a data refresh on next tick (e.g., on view switch)
     pub needs_refresh: bool,
+
+    // --- Non-blocking architecture fields (v2) ---
+    /// Per-cluster connection status during discovery
+    pub cluster_connection_status: HashMap<String, ConnectionStatus>,
+
+    /// True when background discover_clusters_streaming has sent Complete
+    pub discover_complete: bool,
+
+    /// SSH tunnel PIDs accumulated from discovered clusters (for cleanup)
+    pub tunnel_pids: Vec<u32>,
+
+    /// True when a background fetch task is in-flight
+    pub is_fetching: bool,
+
+    /// When the current fetch started (for 30s timeout defense)
+    pub fetch_started_at: Option<Instant>,
+
+    /// Monotonic tick counter for spinner animation
+    pub tick_count: u64,
 }
 
 impl App {
+    #[cfg(test)]
     pub fn new(clusters: Vec<ClusterClient>, refresh_secs: u64) -> Self {
         let mut tree = vec![TreeNode {
             label: "ScaleX".to_string(),
@@ -195,6 +236,85 @@ impl App {
             self_rss_mb: None,
             refresh_secs,
             needs_refresh: false,
+            cluster_connection_status: HashMap::new(),
+            discover_complete: true, // already have clients
+            tunnel_pids: Vec::new(),
+            is_fetching: false,
+            fetch_started_at: None,
+            tick_count: 0,
+        }
+    }
+
+    /// Create App with cluster names only (no clients yet).
+    /// Used for non-blocking TUI startup — clients arrive via channel later.
+    pub fn new_with_names(cluster_names: &[String], refresh_secs: u64) -> Self {
+        let mut tree = vec![TreeNode {
+            label: "ScaleX".to_string(),
+            depth: 0,
+            expanded: true,
+            node_type: NodeType::Root,
+            children_loaded: true,
+        }];
+
+        let mut cluster_connection_status = HashMap::new();
+
+        for name in cluster_names {
+            tree.push(TreeNode {
+                label: name.clone(),
+                depth: 1,
+                expanded: false,
+                node_type: NodeType::Cluster(name.clone()),
+                children_loaded: false,
+            });
+            cluster_connection_status.insert(name.clone(), ConnectionStatus::Discovering);
+        }
+
+        tree.push(TreeNode {
+            label: "Infrastructure".to_string(),
+            depth: 0,
+            expanded: false,
+            node_type: NodeType::InfraHeader,
+            children_loaded: false,
+        });
+
+        let tabs = vec![
+            Tab {
+                name: "Resources".to_string(),
+                closable: false,
+            },
+            Tab {
+                name: "Top".to_string(),
+                closable: false,
+            },
+        ];
+
+        Self {
+            running: true,
+            active_panel: ActivePanel::Sidebar,
+            active_tab: 0,
+            tabs,
+            resource_view: ResourceView::Pods,
+            tree,
+            tree_cursor: 0,
+            table_cursor: 0,
+            selected_cluster: None,
+            selected_namespace: None,
+            clusters: Vec::new(),
+            snapshots: Vec::new(),
+            infra: InfraSnapshot::default(),
+            api_latency_ms: 0,
+            show_help: false,
+            search_active: false,
+            search_query: None,
+            self_rss_mb: None,
+            refresh_secs,
+            needs_refresh: false,
+            cluster_connection_status,
+            discover_complete: false,
+            tunnel_pids: Vec::new(),
+            is_fetching: false,
+            fetch_started_at: None,
+            tick_count: 0,
         }
     }
 
@@ -360,7 +480,9 @@ impl App {
                     self.tree[idx].expanded = true;
                     self.selected_cluster = Some(name.clone());
                     self.selected_namespace = None;
-                    // Children will be populated on next data refresh
+                    self.needs_refresh = true;
+                    // Immediately populate tree from cached snapshots
+                    self.sync_tree_from_snapshots();
                 }
             }
             NodeType::Namespace { cluster, namespace } => {
@@ -371,6 +493,7 @@ impl App {
                     Some(namespace.clone())
                 };
                 self.table_cursor = 0;
+                self.needs_refresh = true;
             }
             NodeType::InfraHeader => {
                 self.tree[idx].expanded = !self.tree[idx].expanded;
@@ -620,8 +743,14 @@ mod tests {
             search_active: false,
             search_query: None,
             self_rss_mb: None,
-            refresh_secs: 5,
+            refresh_secs: 1,
             needs_refresh: false,
+            cluster_connection_status: HashMap::new(),
+            discover_complete: true,
+            tunnel_pids: Vec::new(),
+            is_fetching: false,
+            fetch_started_at: None,
+            tick_count: 0,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -770,7 +899,10 @@ pub fn read_self_rss_mb() -> Option<f64> {
 // TUI entry point
 // ---------------------------------------------------------------------------
 
-pub async fn run_tui(args: DashArgs, clusters: Vec<ClusterClient>) -> Result<()> {
+pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
+    // Phase 1: sync scan for cluster names (filesystem only, <100ms)
+    let cluster_names = kube_client::scan_kubeconfig_names(&kubeconfig_dir);
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -778,78 +910,155 @@ pub async fn run_tui(args: DashArgs, clusters: Vec<ClusterClient>) -> Result<()>
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(clusters.clone(), args.refresh);
+    let mut app = App::new_with_names(&cluster_names, args.refresh);
     let tick_rate = Duration::from_millis(100);
     let refresh_interval = Duration::from_secs(args.refresh);
-    let mut last_refresh = Instant::now() - refresh_interval; // trigger refresh after first draw
+    let mut last_refresh = Instant::now();
+
+    // Channels for non-blocking communication
+    let (discover_tx, mut discover_rx) =
+        tokio::sync::mpsc::channel::<kube_client::DiscoverEvent>(32);
+    let (fetch_tx, mut fetch_rx) = tokio::sync::mpsc::channel::<FetchResult>(32);
+
+    // Cancellation flag (shared with background tasks)
+    let cancelled = Arc::new(AtomicBool::new(false));
+
+    // Phase 2: background cluster discovery (streaming per-cluster results)
+    let cancel_discover = cancelled.clone();
+    tokio::spawn(async move {
+        kube_client::discover_clusters_streaming(kubeconfig_dir, discover_tx, cancel_discover)
+            .await;
+    });
 
     let result = loop {
         // Draw first — shows skeleton UI instantly on startup (US-004)
         terminal.draw(|f| ui::render(f, &app))?;
 
-        // Handle events
+        // Handle events (never blocks longer than tick_rate = 100ms)
         let evt = event::poll_event(tick_rate)?;
         if evt == AppEvent::Refresh {
             app.needs_refresh = true;
         }
         app.handle_event(evt);
+        app.tick_count += 1;
 
         if !app.running {
             break Ok(());
         }
 
-        // Refresh data if interval elapsed or forced (view switch, manual refresh)
-        if last_refresh.elapsed() >= refresh_interval || app.needs_refresh {
-            app.needs_refresh = false;
-            let start = Instant::now();
-
-            // Fetch all clusters in parallel (US-002)
-            let mut handles = Vec::new();
-            for cluster in &clusters {
-                let client = cluster.client.clone();
-                let name = cluster.name.clone();
-                let ns = app.selected_namespace.clone();
-                handles.push(tokio::spawn(async move {
-                    match data::fetch_cluster_snapshot(&client, &name, ns.as_deref()).await {
-                        Ok(snapshot) => snapshot,
-                        Err(_) => ClusterSnapshot {
-                            name,
-                            health: HealthStatus::Unknown,
-                            namespaces: vec![],
-                            nodes: vec![],
-                            pods: vec![],
-                            deployments: vec![],
-                            services: vec![],
-                            configmaps: vec![],
-                            resource_usage: Default::default(),
-                        },
-                    }
-                }));
-            }
-
-            let mut snapshots = Vec::new();
-            for handle in handles {
-                if let Ok(snapshot) = handle.await {
-                    snapshots.push(snapshot);
+        // --- Process discover results (non-blocking) ---
+        while let Ok(event) = discover_rx.try_recv() {
+            match event {
+                kube_client::DiscoverEvent::Connected(client) => {
+                    app.tunnel_pids.extend(client.tunnel_pid);
+                    app.cluster_connection_status
+                        .insert(client.name.clone(), ConnectionStatus::Connected);
+                    app.clusters.push(client);
+                    app.needs_refresh = true;
+                }
+                kube_client::DiscoverEvent::Failed { name, error } => {
+                    app.cluster_connection_status
+                        .insert(name, ConnectionStatus::Failed(error));
+                }
+                kube_client::DiscoverEvent::Complete => {
+                    app.discover_complete = true;
                 }
             }
+        }
 
-            app.api_latency_ms = start.elapsed().as_millis() as u64;
-            app.snapshots = snapshots;
+        // --- Process fetch results (non-blocking) ---
+        while let Ok(result) = fetch_rx.try_recv() {
+            app.snapshots = result.snapshots;
+            app.api_latency_ms = result.latency_ms;
             app.sync_tree_from_snapshots();
             app.load_infra();
             app.self_rss_mb = read_self_rss_mb();
+            app.is_fetching = false;
+            app.fetch_started_at = None;
             last_refresh = Instant::now();
         }
+
+        // --- is_fetching timeout defense (30s) ---
+        if let Some(started) = app.fetch_started_at {
+            if started.elapsed() > Duration::from_secs(30) {
+                app.is_fetching = false;
+                app.fetch_started_at = None;
+            }
+        }
+
+        // --- Trigger background fetch if needed ---
+        if !app.is_fetching
+            && !app.clusters.is_empty()
+            && (last_refresh.elapsed() >= refresh_interval || app.needs_refresh)
+        {
+            app.needs_refresh = false;
+            app.is_fetching = true;
+            app.fetch_started_at = Some(Instant::now());
+
+            let tx = fetch_tx.clone();
+            let clusters = app.clusters.clone();
+            let ns = app.selected_namespace.clone();
+            let cancel = cancelled.clone();
+
+            tokio::spawn(async move {
+                let start = Instant::now();
+                let mut handles = Vec::new();
+                for cluster in &clusters {
+                    let client = cluster.client.clone();
+                    let name = cluster.name.clone();
+                    let ns = ns.clone();
+                    handles.push(tokio::spawn(async move {
+                        match data::fetch_cluster_snapshot(&client, &name, ns.as_deref()).await {
+                            Ok(snapshot) => snapshot,
+                            Err(_) => ClusterSnapshot {
+                                name,
+                                health: HealthStatus::Unknown,
+                                namespaces: vec![],
+                                nodes: vec![],
+                                pods: vec![],
+                                deployments: vec![],
+                                services: vec![],
+                                configmaps: vec![],
+                                resource_usage: Default::default(),
+                            },
+                        }
+                    }));
+                }
+
+                let mut snapshots = Vec::new();
+                for handle in handles {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    if let Ok(snapshot) = handle.await {
+                        snapshots.push(snapshot);
+                    }
+                }
+                let latency_ms = start.elapsed().as_millis() as u64;
+                let _ = tx
+                    .send(FetchResult {
+                        snapshots,
+                        latency_ms,
+                    })
+                    .await;
+            });
+        }
     };
+
+    // Signal cancellation to background tasks
+    cancelled.store(true, Ordering::Relaxed);
 
     // Restore terminal
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    // Cleanup auto-tunnels
-    crate::dash::kube_client::cleanup_tunnels(&clusters);
+    // Cleanup all SSH tunnels (panic-safe: tunnel_pids accumulated during run)
+    for &pid in &app.tunnel_pids {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
 
     result
 }

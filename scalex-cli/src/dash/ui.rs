@@ -1,4 +1,4 @@
-use crate::dash::app::{ActivePanel, App, NodeType, ResourceView};
+use crate::dash::app::{ActivePanel, App, ConnectionStatus, NodeType, ResourceView};
 use crate::dash::data::HealthStatus;
 use crate::dash::theme;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -179,7 +179,17 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(label_color).bg(theme::BG_HARD)
             };
 
-            Line::from(vec![
+            // Connection status suffix for cluster nodes
+            let conn_suffix = match &node.node_type {
+                NodeType::Cluster(name) => match app.cluster_connection_status.get(name) {
+                    Some(ConnectionStatus::Discovering) => Some((" [..]", theme::FG4)),
+                    Some(ConnectionStatus::Failed(_)) => Some((" [!!]", theme::BRIGHT_RED)),
+                    Some(ConnectionStatus::Connected) | None => None,
+                },
+                _ => None,
+            };
+
+            let mut spans = vec![
                 Span::styled(indent, Style::default().bg(theme::BG_HARD)),
                 Span::styled(
                     marker,
@@ -187,7 +197,15 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(icon, style),
                 Span::styled(&node.label, style),
-            ])
+            ];
+            if let Some((suffix, color)) = conn_suffix {
+                spans.push(Span::styled(
+                    suffix,
+                    Style::default().fg(color).bg(theme::BG_HARD),
+                ));
+            }
+
+            Line::from(spans)
         })
         .collect();
 
@@ -266,10 +284,18 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
     let snapshot = match app.current_snapshot() {
         Some(s) => s,
         None => {
-            let msg = if app.snapshots.is_empty() {
-                "Loading cluster data..."
+            let spinner_chars = ['|', '/', '-', '\\'];
+            let spinner = spinner_chars[(app.tick_count as usize) % 4];
+            let msg = if !app.discover_complete {
+                format!("  {} Discovering clusters...", spinner)
+            } else if app.snapshots.is_empty() && app.is_fetching {
+                format!("  {} Loading cluster data...", spinner)
+            } else if app.snapshots.is_empty() && app.clusters.is_empty() {
+                "  No clusters found. Run 'scalex cluster init' first.".to_string()
+            } else if app.selected_cluster.is_some() && app.is_fetching {
+                format!("  {} Loading...", spinner)
             } else {
-                "Select a cluster and press Enter"
+                "  Select a cluster and press Enter".to_string()
             };
             let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
             f.render_widget(paragraph, area);
@@ -607,10 +633,14 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
     let snapshot = match app.current_snapshot() {
         Some(s) => s,
         None => {
-            let msg = if app.snapshots.is_empty() {
-                "Loading cluster data..."
+            let spinner_chars = ['|', '/', '-', '\\'];
+            let spinner = spinner_chars[(app.tick_count as usize) % 4];
+            let msg = if !app.discover_complete {
+                format!("  {} Discovering clusters...", spinner)
+            } else if app.is_fetching {
+                format!("  {} Loading...", spinner)
             } else {
-                "Select a cluster and press Enter"
+                "  Select a cluster and press Enter".to_string()
             };
             let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
             f.render_widget(paragraph, area);
@@ -713,9 +743,22 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     // Line 1: cluster health indicators + pod/node counts
-    let mut health_spans: Vec<Span> = if app.snapshots.is_empty() {
+    let spinner_chars = ['|', '/', '-', '\\'];
+    let spinner = spinner_chars[(app.tick_count as usize) % 4];
+
+    let mut health_spans: Vec<Span> = if !app.discover_complete {
         vec![Span::styled(
-            " Connecting to clusters...",
+            format!(" {} Discovering clusters...", spinner),
+            Style::default().fg(theme::BRIGHT_YELLOW),
+        )]
+    } else if app.snapshots.is_empty() && app.is_fetching {
+        vec![Span::styled(
+            format!(" {} Loading cluster data...", spinner),
+            Style::default().fg(theme::BRIGHT_YELLOW),
+        )]
+    } else if app.snapshots.is_empty() {
+        vec![Span::styled(
+            " Waiting for cluster data...",
             Style::default().fg(theme::BRIGHT_YELLOW),
         )]
     } else {
@@ -766,13 +809,21 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    // Self overhead
+    // Self overhead + fetch indicator
     let rss_str = app
         .self_rss_mb
         .map(|mb| format!("{:.0}MB", mb))
         .unwrap_or_else(|| "N/A".into());
+    let fetch_indicator = if app.is_fetching {
+        format!(" {} ", spinner)
+    } else {
+        String::new()
+    };
     usage_spans.push(Span::styled(
-        format!("| self: {} | latency: {}ms", rss_str, app.api_latency_ms),
+        format!(
+            "| self: {} | latency: {}ms{}",
+            rss_str, app.api_latency_ms, fetch_indicator
+        ),
         Style::default().fg(theme::BRIGHT_AQUA),
     ));
 

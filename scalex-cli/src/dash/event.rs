@@ -58,6 +58,7 @@ fn map_key_event(key: KeyEvent) -> AppEvent {
         KeyCode::Left | KeyCode::Char('h') => AppEvent::Left,
         KeyCode::Right | KeyCode::Char('l') => AppEvent::Right,
         KeyCode::Enter => AppEvent::Enter,
+        KeyCode::Backspace => AppEvent::Left,
 
         // Panel cycling
         KeyCode::Tab if shift => AppEvent::PrevPanel,

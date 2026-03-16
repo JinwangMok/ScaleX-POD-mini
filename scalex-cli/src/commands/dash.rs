@@ -25,7 +25,7 @@ pub struct DashArgs {
     pub resource: Option<String>,
 
     /// Data refresh interval in seconds
-    #[arg(long, default_value = "5")]
+    #[arg(long, default_value = "1")]
     pub refresh: u64,
 }
 
