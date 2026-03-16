@@ -117,14 +117,10 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let value_style = Style::default().fg(theme::FG);
     let accent_style = Style::default().fg(theme::BRIGHT_AQUA);
 
-    // Tab spans (shared between both modes)
-    let tab_spans = build_tab_spans(app);
-
     if is_full {
         render_header_full(
             f,
             area,
-            &tab_spans,
             cluster_name,
             endpoint_str,
             k8s_ver,
@@ -140,7 +136,6 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         render_header_compact(
             f,
             area,
-            &tab_spans,
             cluster_name,
             endpoint_str,
             k8s_ver,
@@ -154,33 +149,10 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn build_tab_spans(app: &App) -> Vec<Span<'static>> {
-    app.tabs
-        .iter()
-        .enumerate()
-        .flat_map(|(i, tab)| {
-            let style = if i == app.active_tab {
-                Style::default()
-                    .fg(theme::BG_HARD)
-                    .bg(theme::BRIGHT_YELLOW)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme::FG4).bg(theme::BG1)
-            };
-            vec![
-                Span::styled(format!(" [{}] ", i + 1), style),
-                Span::styled(tab.name.clone(), style),
-                Span::styled(" ", Style::default().bg(theme::BG_HARD)),
-            ]
-        })
-        .collect()
-}
-
 #[allow(clippy::too_many_arguments)]
 fn render_header_full(
     f: &mut Frame,
     area: Rect,
-    tab_spans: &[Span<'static>],
     cluster_name: &str,
     endpoint_str: &str,
     k8s_ver: &str,
@@ -199,14 +171,14 @@ fn render_header_full(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Split: left info | right logo
+    // Split: left logo | right info (k9s style)
     let logo_width: u16 = 52; // widest LOGO line
     let show_logo = inner.width > logo_width + 30;
 
     let cols = if show_logo {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(30), Constraint::Length(logo_width + 1)])
+            .constraints([Constraint::Length(logo_width + 2), Constraint::Min(30)])
             .split(inner)
     } else {
         Layout::default()
@@ -215,31 +187,41 @@ fn render_header_full(
             .split(inner)
     };
 
-    // Left: info lines
+    // Left: ASCII art logo
+    if show_logo && cols.len() > 1 {
+        let logo_lines: Vec<Line> = LOGO
+            .iter()
+            .map(|line| {
+                Line::from(Span::styled(
+                    format!(" {}", line),
+                    Style::default()
+                        .fg(theme::BRIGHT_ORANGE)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            })
+            .collect();
+        let logo_para = Paragraph::new(logo_lines).style(Style::default().bg(theme::BG_HARD));
+        f.render_widget(logo_para, cols[0]);
+    }
+
+    // Right (or full width): info lines
+    let info_area = if show_logo && cols.len() > 1 {
+        cols[1]
+    } else {
+        cols[0]
+    };
+
     let info_lines = vec![
         Line::from(vec![
-            Span::styled(" Context:  ", label_style),
+            Span::styled(" Context:   ", label_style),
             Span::styled(cluster_name.to_string(), accent_style),
         ]),
         Line::from(vec![
-            Span::styled(" Cluster:  ", label_style),
+            Span::styled(" Cluster:   ", label_style),
             Span::styled(endpoint_str.to_string(), value_style),
         ]),
         Line::from(vec![
-            Span::styled(" ScaleX:   ", label_style),
-            Span::styled(
-                format!("v{}", scalex_ver),
-                Style::default()
-                    .fg(theme::BRIGHT_ORANGE)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("    Clusters: {}/{}", connected_clusters, total_clusters),
-                Style::default().fg(theme::FG3),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" K8s Rev:  ", label_style),
+            Span::styled(" K8s Rev:   ", label_style),
             Span::styled(
                 k8s_ver.to_string(),
                 if k8s_ver == "N/A" {
@@ -250,43 +232,32 @@ fn render_header_full(
             ),
         ]),
         Line::from(vec![
-            Span::styled(" Config:   ", label_style),
+            Span::styled(" ScaleX:    ", label_style),
+            Span::styled(
+                format!("v{}", scalex_ver),
+                Style::default()
+                    .fg(theme::BRIGHT_ORANGE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("   Clusters: {}/{}", connected_clusters, total_clusters),
+                Style::default().fg(theme::FG3),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" Config:    ", label_style),
             Span::styled(config_path.to_string(), Style::default().fg(theme::FG3)),
         ]),
-        Line::from(
-            vec![Span::styled(" View:     ", label_style)]
-                .into_iter()
-                .chain(tab_spans.iter().cloned())
-                .collect::<Vec<_>>(),
-        ),
     ];
 
     let para = Paragraph::new(info_lines).style(Style::default().bg(theme::BG_HARD));
-    f.render_widget(para, cols[0]);
-
-    // Right: ASCII art logo
-    if show_logo && cols.len() > 1 {
-        let logo_lines: Vec<Line> = LOGO
-            .iter()
-            .map(|line| {
-                Line::from(Span::styled(
-                    *line,
-                    Style::default()
-                        .fg(theme::BRIGHT_ORANGE)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            })
-            .collect();
-        let logo_para = Paragraph::new(logo_lines).style(Style::default().bg(theme::BG_HARD));
-        f.render_widget(logo_para, cols[1]);
-    }
+    f.render_widget(para, info_area);
 }
 
 #[allow(clippy::too_many_arguments)]
 fn render_header_compact(
     f: &mut Frame,
     area: Rect,
-    tab_spans: &[Span<'static>],
     cluster_name: &str,
     endpoint_str: &str,
     k8s_ver: &str,
@@ -326,12 +297,10 @@ fn render_header_compact(
         ),
     ];
 
-    let mut line2_spans: Vec<Span> = vec![Span::styled(" ", label_style)];
-    line2_spans.extend(tab_spans.iter().cloned());
-    line2_spans.push(Span::styled(
-        format!("  {}", endpoint_str),
-        Style::default().fg(theme::FG4),
-    ));
+    let line2_spans = vec![
+        Span::styled(" Cluster: ", label_style),
+        Span::styled(endpoint_str.to_string(), Style::default().fg(theme::FG4)),
+    ];
 
     let lines = vec![Line::from(line1_spans), Line::from(line2_spans)];
     let para = Paragraph::new(lines).style(Style::default().bg(theme::BG_HARD));
@@ -690,12 +659,22 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
 
 /// Render connection error or empty/loading state for a tab.
 /// Returns `Some(snapshot)` if data is available, `None` if a placeholder was rendered.
+///
+/// Priority: cached snapshot data > connection failure > loading/discovery states.
+/// When cached data exists, it is always returned even if the cluster connection
+/// has since failed — the caller renders data with a separate error banner.
 fn render_tab_preamble<'a>(
     f: &mut Frame,
     app: &'a App,
     area: Rect,
 ) -> Option<&'a data::ClusterSnapshot> {
-    // Check for connection failure
+    // Cached data takes priority — return it even if connection is now failed.
+    // The caller will render a separate error banner via render_connection_error_banner().
+    if let Some(s) = app.current_snapshot() {
+        return Some(s);
+    }
+
+    // No cached data — check for connection failure (full-area error)
     if let Some(cluster_name) = &app.selected_cluster {
         if let Some(ConnectionStatus::Failed(err_msg)) =
             app.cluster_connection_status.get(cluster_name)
@@ -723,10 +702,6 @@ fn render_tab_preamble<'a>(
         }
     }
 
-    if let Some(s) = app.current_snapshot() {
-        return Some(s);
-    }
-
     let spinner_chars = ['|', '/', '-', '\\'];
     let spinner = spinner_chars[(app.tick_count as usize) % 4];
     let msg = if !app.discover_complete {
@@ -750,18 +725,76 @@ fn render_tab_preamble<'a>(
     None
 }
 
+/// Render a 1-line connection error banner if the selected cluster has failed.
+/// Returns the remaining area below the banner (or full area if no error).
+fn render_connection_error_banner(f: &mut Frame, app: &App, area: Rect) -> Rect {
+    if let Some(cluster_name) = &app.selected_cluster {
+        if let Some(ConnectionStatus::Failed(err_msg)) =
+            app.cluster_connection_status.get(cluster_name)
+        {
+            let banner_height = 1;
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(banner_height),
+                    Constraint::Min(0),
+                ])
+                .split(area);
+
+            let banner = Line::from(vec![
+                Span::styled(" [!!] ", Style::default().fg(theme::BRIGHT_RED)),
+                Span::styled(
+                    format!("{} — press 'r' to retry", err_msg),
+                    Style::default().fg(theme::BRIGHT_RED),
+                ),
+            ]);
+            let paragraph =
+                Paragraph::new(banner).style(Style::default().bg(theme::BG));
+            f.render_widget(paragraph, chunks[0]);
+            return chunks[1];
+        }
+    }
+    area
+}
+
 fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
     let snapshot = match render_tab_preamble(f, app, area) {
         Some(s) => s,
         None => return,
     };
 
+    // Show error banner if cluster connection failed (but cached data exists)
+    let content_area = render_connection_error_banner(f, app, area);
+
+    // Check if the current resource type has been fetched yet.
+    // If not, show a loading indicator instead of an empty table.
+    let active = app.resource_view.to_active_resource();
+    let is_empty = match app.resource_view {
+        ResourceView::Pods => snapshot.pods.is_empty(),
+        ResourceView::Deployments => snapshot.deployments.is_empty(),
+        ResourceView::Services => snapshot.services.is_empty(),
+        ResourceView::ConfigMaps => snapshot.configmaps.is_empty(),
+        ResourceView::Nodes => snapshot.nodes.is_empty(),
+    };
+    if is_empty && !app.fetched_resources.contains(&active) {
+        let spinner_chars = ['|', '/', '-', '\\'];
+        let spinner = spinner_chars[(app.tick_count as usize) % 4];
+        let msg = format!("  {} Loading {}...", spinner, app.resource_view.label());
+        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+        f.render_widget(paragraph, content_area);
+        return;
+    }
+
     match app.resource_view {
-        ResourceView::Pods => render_pods_table(f, app, &snapshot.pods, area),
-        ResourceView::Deployments => render_deployments_table(f, app, &snapshot.deployments, area),
-        ResourceView::Services => render_services_table(f, app, &snapshot.services, area),
-        ResourceView::Nodes => render_nodes_table(f, app, &snapshot.nodes, area),
-        ResourceView::ConfigMaps => render_configmaps_table(f, app, &snapshot.configmaps, area),
+        ResourceView::Pods => render_pods_table(f, app, &snapshot.pods, content_area),
+        ResourceView::Deployments => {
+            render_deployments_table(f, app, &snapshot.deployments, content_area)
+        }
+        ResourceView::Services => render_services_table(f, app, &snapshot.services, content_area),
+        ResourceView::Nodes => render_nodes_table(f, app, &snapshot.nodes, content_area),
+        ResourceView::ConfigMaps => {
+            render_configmaps_table(f, app, &snapshot.configmaps, content_area)
+        }
     }
 }
 
@@ -1136,6 +1169,10 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         Some(s) => s,
         None => return,
     };
+
+    // Show error banner if cluster connection failed (but cached data exists)
+    let content_area = render_connection_error_banner(f, app, area);
+    let area = content_area;
 
     // Filter nodes by search query (US-303)
     let filtered_nodes: Vec<&data::NodeInfo> = snapshot
