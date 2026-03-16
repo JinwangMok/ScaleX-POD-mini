@@ -701,6 +701,16 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
                 }
                 _ => theme::FG3,
             };
+            // Color-code restart count
+            let restart_style = if is_selected {
+                base
+            } else if pod.restarts > 10 {
+                Style::default().fg(theme::BRIGHT_RED)
+            } else if pod.restarts > 0 {
+                Style::default().fg(theme::BRIGHT_YELLOW)
+            } else {
+                base
+            };
             Row::new(vec![
                 Cell::from(pod.name.as_str()).style(base),
                 Cell::from(pod.namespace.as_str()).style(base),
@@ -710,7 +720,7 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
                     Style::default().fg(status_color)
                 }),
                 Cell::from(pod.ready.as_str()).style(base),
-                Cell::from(pod.restarts.to_string()).style(base),
+                Cell::from(pod.restarts.to_string()).style(restart_style),
                 Cell::from(pod.age.as_str()).style(base),
                 Cell::from(pod.node.as_str()).style(base),
             ])
@@ -742,10 +752,33 @@ fn render_deployments_table(
         |dep| &dep.name,
         |_i, dep, is_selected| {
             let base = row_base_style(is_selected);
+            // Color-code READY column based on readiness ratio
+            let ready_style = if is_selected {
+                base
+            } else {
+                // Parse "ready/desired" from dep.ready (e.g., "1/3")
+                let parts: Vec<&str> = dep.ready.split('/').collect();
+                let (ready, desired) = if parts.len() == 2 {
+                    (
+                        parts[0].trim().parse::<i32>().unwrap_or(0),
+                        parts[1].trim().parse::<i32>().unwrap_or(0),
+                    )
+                } else {
+                    (0, 0)
+                };
+                let color = if desired == 0 || ready >= desired {
+                    theme::BRIGHT_GREEN
+                } else if ready > 0 {
+                    theme::BRIGHT_YELLOW
+                } else {
+                    theme::BRIGHT_RED
+                };
+                Style::default().fg(color)
+            };
             Row::new(vec![
                 Cell::from(dep.name.as_str()).style(base),
                 Cell::from(dep.namespace.as_str()).style(base),
-                Cell::from(dep.ready.as_str()).style(base),
+                Cell::from(dep.ready.as_str()).style(ready_style),
                 Cell::from(dep.up_to_date.to_string()).style(base),
                 Cell::from(dep.available.to_string()).style(base),
                 Cell::from(dep.age.as_str()).style(base),
@@ -871,6 +904,34 @@ fn render_configmaps_table(
 }
 
 fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
+    // Check for connection failure (mirrors render_resources_tab error handling)
+    if let Some(cluster_name) = &app.selected_cluster {
+        if let Some(ConnectionStatus::Failed(err_msg)) =
+            app.cluster_connection_status.get(cluster_name)
+        {
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("  [!!] ", Style::default().fg(theme::BRIGHT_RED)),
+                    Span::styled(
+                        format!("Cannot connect to {}", cluster_name),
+                        Style::default().fg(theme::BRIGHT_RED),
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    format!("       {}", err_msg),
+                    Style::default().fg(theme::FG4),
+                )),
+                Line::from(Span::styled(
+                    "       Press 'r' to retry",
+                    Style::default().fg(theme::FG4),
+                )),
+            ];
+            let paragraph = Paragraph::new(lines).style(Style::default().bg(theme::BG));
+            f.render_widget(paragraph, area);
+            return;
+        }
+    }
+
     let snapshot = match app.current_snapshot() {
         Some(s) => s,
         None => {
@@ -878,6 +939,12 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
             let spinner = spinner_chars[(app.tick_count as usize) % 4];
             let msg = if !app.discover_complete {
                 format!("  {} Discovering clusters...", spinner)
+            } else if app.snapshots.is_empty() && app.is_fetching {
+                format!("  {} Loading cluster data...", spinner)
+            } else if app.all_clusters_failed() {
+                "  All clusters failed to connect. Check sidebar for details. Press 'r' to retry.".to_string()
+            } else if app.snapshots.is_empty() && app.clusters.is_empty() {
+                "  No clusters found. Run 'scalex cluster init' first.".to_string()
             } else if app.is_fetching {
                 format!("  {} Loading...", spinner)
             } else {

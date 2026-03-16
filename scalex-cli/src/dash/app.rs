@@ -744,10 +744,21 @@ impl App {
             return;
         }
         let idx = visible[self.tree_cursor];
+        let node_type = self.tree[idx].node_type.clone();
+
+        // Leaf nodes can't collapse — navigate to parent instead
+        if matches!(node_type, NodeType::Namespace { .. } | NodeType::InfraItem(_)) {
+            self.navigate_to_parent(&visible, idx);
+            return;
+        }
+
         if self.tree[idx].expanded {
             self.tree[idx].expanded = false;
             self.tree[idx].children_loaded = false;
             self.remove_children(idx);
+        } else {
+            // Already collapsed — navigate to parent
+            self.navigate_to_parent(&visible, idx);
         }
     }
 
@@ -760,12 +771,39 @@ impl App {
             return;
         }
         let idx = visible[self.tree_cursor];
+
+        // Leaf nodes can't expand — no-op
+        if matches!(
+            self.tree[idx].node_type,
+            NodeType::Namespace { .. } | NodeType::InfraItem(_)
+        ) {
+            return;
+        }
+
         if !self.tree[idx].expanded {
             self.tree[idx].expanded = true;
             // Populate children from cached snapshots (cluster nodes)
             // No selection change — expand only. Use Enter to select.
             self.sync_tree_from_snapshots();
             self.sync_infra_tree();
+        }
+    }
+
+    /// Navigate cursor to the parent of the node at `tree_idx`.
+    /// Parent is the nearest preceding node with a smaller depth.
+    fn navigate_to_parent(&mut self, visible: &[usize], tree_idx: usize) {
+        let target_depth = self.tree[tree_idx].depth;
+        if target_depth == 0 {
+            return; // Root nodes have no parent
+        }
+        // Walk backwards through visible indices to find parent
+        let cursor_vi = visible.iter().position(|&i| i == tree_idx).unwrap_or(0);
+        for vi in (0..cursor_vi).rev() {
+            if self.tree[visible[vi]].depth < target_depth {
+                self.tree_cursor = vi;
+                self.adjust_sidebar_scroll();
+                return;
+            }
         }
     }
 
@@ -828,10 +866,22 @@ impl App {
         count
     }
 
-    /// Load infrastructure data from SDI directory
+    /// Load infrastructure data from SDI directory.
+    /// If infra header is already expanded, removes stale children and re-populates.
     pub fn load_infra(&mut self) {
         let sdi_dir = std::path::Path::new("_generated/sdi");
         self.infra = infra::load_sdi_state(sdi_dir);
+        // Force re-sync: reset children_loaded so sync_infra_tree re-populates
+        if let Some(idx) = self
+            .tree
+            .iter()
+            .position(|n| matches!(&n.node_type, NodeType::InfraHeader))
+        {
+            if self.tree[idx].children_loaded {
+                self.remove_children(idx);
+                self.tree[idx].children_loaded = false;
+            }
+        }
         self.sync_infra_tree();
     }
 
@@ -2279,6 +2329,160 @@ mod tests {
         app.cluster_connection_status
             .insert("tower".into(), ConnectionStatus::Discovering);
         assert!(!app.all_clusters_failed());
+    }
+
+    // --- US-080: Infra tree refresh on load_infra ---
+
+    #[test]
+    fn load_infra_refreshes_expanded_children() {
+        let mut app = test_app();
+        // Expand infra header and populate with initial data
+        let infra_idx = app
+            .tree
+            .iter()
+            .position(|n| matches!(&n.node_type, NodeType::InfraHeader))
+            .unwrap();
+        app.tree[infra_idx].expanded = true;
+
+        // First load — adds children
+        app.infra = InfraSnapshot {
+            sdi_pools: vec![infra::SdiPoolInfo {
+                pool_name: "pool-A".into(),
+                purpose: "test".into(),
+                nodes: vec![],
+            }],
+            total_vms: 0,
+            running_vms: 0,
+        };
+        app.sync_infra_tree();
+        assert!(app.tree[infra_idx].children_loaded);
+        let child_count_before = app.tree[(infra_idx + 1)..]
+            .iter()
+            .take_while(|n| n.depth > app.tree[infra_idx].depth)
+            .count();
+        assert_eq!(child_count_before, 1);
+
+        // Second load via load_infra — should update children even though already loaded
+        app.infra = InfraSnapshot {
+            sdi_pools: vec![
+                infra::SdiPoolInfo {
+                    pool_name: "pool-B".into(),
+                    purpose: "new".into(),
+                    nodes: vec![],
+                },
+                infra::SdiPoolInfo {
+                    pool_name: "pool-C".into(),
+                    purpose: "other".into(),
+                    nodes: vec![],
+                },
+            ],
+            total_vms: 0,
+            running_vms: 0,
+        };
+        // Simulate load_infra logic (without filesystem)
+        if app.tree[infra_idx].children_loaded {
+            app.remove_children(infra_idx);
+            app.tree[infra_idx].children_loaded = false;
+        }
+        app.sync_infra_tree();
+
+        let child_count_after = app.tree[(infra_idx + 1)..]
+            .iter()
+            .take_while(|n| n.depth > app.tree[infra_idx].depth)
+            .count();
+        assert_eq!(child_count_after, 2); // Updated from 1 to 2
+        assert!(app.tree[infra_idx + 1].label.contains("pool-B"));
+        assert!(app.tree[infra_idx + 2].label.contains("pool-C"));
+    }
+
+    // --- US-081: Left key navigates to parent ---
+
+    #[test]
+    fn left_on_namespace_goes_to_parent_cluster() {
+        let mut app = test_app();
+        // Expand tower with namespace children
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        app.tree.insert(
+            2,
+            TreeNode {
+                label: "All Namespaces".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "All Namespaces".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        app.tree.insert(
+            3,
+            TreeNode {
+                label: "kube-system".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "kube-system".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        // Cursor on kube-system (visible index 3)
+        app.tree_cursor = 3;
+        app.handle_event(AppEvent::Left);
+        // Should navigate to tower (visible index 1)
+        assert_eq!(app.tree_cursor, 1);
+    }
+
+    #[test]
+    fn left_on_collapsed_cluster_goes_to_root() {
+        let mut app = test_app();
+        // tower is collapsed, cursor on tower (visible index 1)
+        app.tree_cursor = 1;
+        assert!(!app.tree[1].expanded);
+        app.handle_event(AppEvent::Left);
+        // Should navigate to Root (visible index 0)
+        assert_eq!(app.tree_cursor, 0);
+    }
+
+    #[test]
+    fn left_on_root_is_noop() {
+        let mut app = test_app();
+        app.tree_cursor = 0; // on Root
+        app.handle_event(AppEvent::Left);
+        // Root has depth 0, no parent — stays at 0
+        assert_eq!(app.tree_cursor, 0);
+    }
+
+    // --- US-082: Expand/collapse no-op on leaf nodes ---
+
+    #[test]
+    fn expand_noop_on_leaf_nodes() {
+        let mut app = test_app();
+        // Expand tower with namespace children
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        app.tree.insert(
+            2,
+            TreeNode {
+                label: "default".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "default".into(),
+                },
+                children_loaded: false,
+            },
+        );
+        app.tree_cursor = 2; // on namespace
+        let tree_len_before = app.tree.len();
+        app.handle_event(AppEvent::Right); // expand on leaf
+        // expanded should NOT be set to true for namespace
+        assert!(!app.tree[2].expanded);
+        assert_eq!(app.tree.len(), tree_len_before); // no children added
     }
 }
 
