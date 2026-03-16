@@ -953,8 +953,12 @@ impl App {
 
         if self.tree[idx].expanded {
             self.tree[idx].expanded = false;
-            self.tree[idx].children_loaded = false;
-            self.remove_children(idx);
+            // Root node: just hide children via visible_tree_indices — don't remove them.
+            // Cluster/InfraHeader: remove children so they get re-synced on next expand.
+            if !matches!(self.tree[idx].node_type, NodeType::Root) {
+                self.tree[idx].children_loaded = false;
+                self.remove_children(idx);
+            }
         } else {
             // Already collapsed — navigate to parent
             self.navigate_to_parent(&visible, idx);
