@@ -1692,6 +1692,24 @@ mod tests {
     }
 
     #[test]
+    fn search_arrow_keys_are_noop() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("abc".to_string());
+        app.table_cursor = 3;
+        for evt in [
+            AppEvent::ArrowUp,
+            AppEvent::ArrowDown,
+            AppEvent::ArrowLeft,
+            AppEvent::ArrowRight,
+        ] {
+            app.handle_event(evt);
+            assert_eq!(app.search_query, Some("abc".to_string()));
+            assert_eq!(app.table_cursor, 3);
+        }
+    }
+
+    #[test]
     fn search_backspace_deletes_char() {
         let mut app = test_app();
         app.search_active = true;
