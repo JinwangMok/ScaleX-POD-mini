@@ -3219,6 +3219,34 @@ mod tests {
 
     // --- US-1003: Auto-select first cluster moves tree_cursor ---
     // (Verified in run_tui: tree_cursor set to cluster index on auto-select)
+
+    #[test]
+    fn root_collapse_expand_preserves_children() {
+        let mut app = test_app();
+        // Root is at tree[0], expanded=true. Children: tower(1), sandbox(2), Infra(3)
+        assert!(app.tree[0].expanded);
+        assert_eq!(app.tree.len(), 4);
+        let visible_before = app.visible_tree_indices();
+        // All 4 nodes visible: Root, tower, sandbox, Infrastructure
+        assert_eq!(visible_before.len(), 4);
+
+        // Collapse root via h/Left
+        app.tree_cursor = 0;
+        app.handle_event(AppEvent::Left);
+        assert!(!app.tree[0].expanded);
+        // Children still in tree vec
+        assert_eq!(app.tree.len(), 4, "collapse should NOT remove children for Root");
+        // But only Root + Infrastructure visible (Infra is depth 0, sibling not child)
+        let visible_collapsed = app.visible_tree_indices();
+        assert_eq!(visible_collapsed.len(), 2); // Root + Infrastructure
+
+        // Expand root via l/Right
+        app.handle_event(AppEvent::Right);
+        assert!(app.tree[0].expanded);
+        assert_eq!(app.tree.len(), 4);
+        let visible_after = app.visible_tree_indices();
+        assert_eq!(visible_after.len(), 4, "expand should restore all children visibility");
+    }
 }
 
 // ---------------------------------------------------------------------------
