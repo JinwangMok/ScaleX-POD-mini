@@ -758,6 +758,7 @@ mod tests {
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         }
     }
 
@@ -1526,6 +1527,7 @@ spec:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
 
         let ini = crate::core::kubespray::generate_inventory_baremetal(&cluster).unwrap();
@@ -1592,6 +1594,7 @@ spec:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
 
         let result = crate::core::kubespray::generate_inventory_baremetal(&cluster);
@@ -3149,6 +3152,7 @@ spec:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: Some("ops".to_string()),
+            api_endpoint: None,
         };
 
         // Pipeline step 1: Generate inventory
@@ -3641,6 +3645,7 @@ spec:
                         oidc: None,
                         kubespray_extra_vars: None,
                         ssh_user: None,
+                        api_endpoint: None,
                     },
                     ClusterDef {
                         cluster_name: "sandbox".to_string(),
@@ -3677,6 +3682,7 @@ spec:
                         oidc: None,
                         kubespray_extra_vars: None,
                         ssh_user: None,
+                        api_endpoint: None,
                     },
                 ],
                 argocd: None,
@@ -3928,6 +3934,7 @@ spec:
                         oidc: None,
                         kubespray_extra_vars: None,
                         ssh_user: None,
+                        api_endpoint: None,
                     },
                     ClusterDef {
                         cluster_name: "sandbox".to_string(),
@@ -3948,6 +3955,7 @@ spec:
                         oidc: None,
                         kubespray_extra_vars: None,
                         ssh_user: None,
+                        api_endpoint: None,
                     },
                 ],
                 argocd: None,
@@ -4269,6 +4277,7 @@ spec:
                 oidc: None,
                 kubespray_extra_vars: None,
                 ssh_user: None,
+                api_endpoint: None,
             },
             ClusterDef {
                 cluster_name: "sandbox".to_string(),
@@ -4300,6 +4309,7 @@ spec:
                 oidc: None,
                 kubespray_extra_vars: None,
                 ssh_user: None,
+                api_endpoint: None,
             },
             // 3rd cluster: datax (storage workload cluster)
             ClusterDef {
@@ -4337,6 +4347,7 @@ spec:
                 oidc: None,
                 kubespray_extra_vars: None,
                 ssh_user: None,
+                api_endpoint: None,
             },
         ];
 
@@ -6890,6 +6901,7 @@ config:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         }
     }
 
@@ -7825,6 +7837,7 @@ config:
                     oidc: None,
                     kubespray_extra_vars: None,
                     ssh_user: None,
+                    api_endpoint: None,
                 }],
                 argocd: None,
                 domains: None,

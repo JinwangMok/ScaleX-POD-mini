@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use kube::Client;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct ClusterClient {
@@ -42,8 +44,57 @@ pub fn scan_kubeconfig_names(dir: &Path) -> Vec<String> {
     names
 }
 
+/// Timeout for connection probes during cluster discovery.
+const DISCOVER_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Load api_endpoint mapping from k8s-clusters.yaml.
+/// Returns empty map if the file doesn't exist or can't be parsed.
+fn load_api_endpoints(repo_root: &Path) -> HashMap<String, String> {
+    let config_path = repo_root.join("config/k8s-clusters.yaml");
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    let config: crate::models::cluster::K8sClustersConfig = match serde_yaml::from_str(&content) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    config
+        .config
+        .clusters
+        .into_iter()
+        .filter_map(|c| c.api_endpoint.map(|ep| (c.cluster_name, ep)))
+        .collect()
+}
+
+/// Build a kube Client with a replaced server URL (for api_endpoint override).
+async fn build_client_with_endpoint(kubeconfig_path: &Path, endpoint: &str) -> Result<Client> {
+    let content = std::fs::read_to_string(kubeconfig_path)
+        .context("Reading kubeconfig for endpoint override")?;
+    let (original_url, _, _) =
+        extract_server_url(kubeconfig_path).context("Cannot parse server URL")?;
+    let modified = content.replace(&original_url, endpoint);
+    build_client_from_content(&modified).await
+}
+
+/// Probe cluster connectivity: build client + list 1 namespace, with timeout.
+async fn probe_client(client: &Client) -> bool {
+    tokio::time::timeout(
+        DISCOVER_TIMEOUT,
+        kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
+            .list(&kube::api::ListParams::default().limit(1)),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false)
+}
+
 /// Discover clusters and stream results via mpsc channel (one event per cluster).
-/// Respects cancellation via Arc<AtomicBool>.
+/// Clusters are discovered in parallel via tokio::spawn.
+/// Connection strategy per cluster:
+///   1. api_endpoint (domain URL from k8s-clusters.yaml) → 3s timeout
+///   2. kubeconfig original IP → 3s timeout
+///   3. SSH tunnel fallback → 500ms wait
 pub async fn discover_clusters_streaming(
     dir: PathBuf,
     tx: tokio::sync::mpsc::Sender<DiscoverEvent>,
@@ -63,94 +114,123 @@ pub async fn discover_clusters_streaming(
         .and_then(|p| p.parent())
         .unwrap_or(Path::new("."));
     let bastion = resolve_bastion(repo_root);
-    let mut next_local_port: u16 = 16443;
+    let api_endpoints = load_api_endpoints(repo_root);
 
     let mut dirs: Vec<_> = entries.filter_map(|e| e.ok()).collect();
     dirs.sort_by_key(|e| e.file_name());
 
-    for entry in dirs {
-        if cancelled.load(Ordering::Relaxed) {
-            break;
-        }
+    // Collect cluster info for parallel discovery
+    let mut cluster_infos = Vec::new();
+    let mut next_local_port: u16 = 16443;
 
+    for entry in dirs {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
-
         let kubeconfig_path = path.join("kubeconfig.yaml");
         if !kubeconfig_path.exists() {
             continue;
         }
-
         let cluster_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
 
-        // Try direct connection first
-        if let Ok(client) = build_client(&kubeconfig_path).await {
-            if kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
-                .list(&kube::api::ListParams::default().limit(1))
-                .await
-                .is_ok()
-            {
-                let _ = tx
-                    .send(DiscoverEvent::Connected(ClusterClient {
-                        name: cluster_name,
-                        kubeconfig_path,
-                        client,
-                        tunnel_pid: None,
-                    }))
-                    .await;
-                continue;
-            }
-        }
+        let endpoint = api_endpoints.get(&cluster_name).cloned();
+        let local_port = next_local_port;
+        next_local_port += 1;
 
-        // Auto-tunnel fallback
-        if let Some(ref bastion_host) = bastion {
-            match setup_auto_tunnel(
-                &kubeconfig_path,
-                &cluster_name,
-                bastion_host,
-                next_local_port,
-            )
-            .await
-            {
-                Ok((client, pid)) => {
-                    eprintln!(
-                        "Auto-tunnel: {} → localhost:{} via {}",
-                        cluster_name, next_local_port, bastion_host
-                    );
+        cluster_infos.push((cluster_name, kubeconfig_path, endpoint, local_port));
+    }
+
+    // Spawn parallel discovery tasks
+    let mut handles = Vec::new();
+    for (cluster_name, kubeconfig_path, endpoint, local_port) in cluster_infos {
+        let tx = tx.clone();
+        let cancelled = cancelled.clone();
+        let bastion = bastion.clone();
+
+        handles.push(tokio::spawn(async move {
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
+
+            // Strategy 1: api_endpoint (domain URL)
+            if let Some(ref ep) = endpoint {
+                if let Ok(client) = build_client_with_endpoint(&kubeconfig_path, ep).await {
+                    if probe_client(&client).await {
+                        let _ = tx
+                            .send(DiscoverEvent::Connected(ClusterClient {
+                                name: cluster_name,
+                                kubeconfig_path,
+                                client,
+                                tunnel_pid: None,
+                            }))
+                            .await;
+                        return;
+                    }
+                }
+            }
+
+            // Strategy 2: direct connection via kubeconfig IP (with timeout)
+            if let Ok(client) = build_client(&kubeconfig_path).await {
+                if probe_client(&client).await {
                     let _ = tx
                         .send(DiscoverEvent::Connected(ClusterClient {
                             name: cluster_name,
                             kubeconfig_path,
                             client,
-                            tunnel_pid: Some(pid),
+                            tunnel_pid: None,
                         }))
                         .await;
-                    next_local_port += 1;
-                    continue;
-                }
-                Err(e) => {
-                    let _ = tx
-                        .send(DiscoverEvent::Failed {
-                            name: cluster_name,
-                            error: format!("{}", e),
-                        })
-                        .await;
+                    return;
                 }
             }
-        } else {
-            let _ = tx
-                .send(DiscoverEvent::Failed {
-                    name: cluster_name,
-                    error: "No bastion available for auto-tunnel".into(),
-                })
-                .await;
-        }
+
+            // Strategy 3: SSH tunnel fallback
+            if let Some(ref bastion_host) = bastion {
+                match setup_auto_tunnel(&kubeconfig_path, &cluster_name, bastion_host, local_port)
+                    .await
+                {
+                    Ok((client, pid)) => {
+                        eprintln!(
+                            "Auto-tunnel: {} → localhost:{} via {}",
+                            cluster_name, local_port, bastion_host
+                        );
+                        let _ = tx
+                            .send(DiscoverEvent::Connected(ClusterClient {
+                                name: cluster_name,
+                                kubeconfig_path,
+                                client,
+                                tunnel_pid: Some(pid),
+                            }))
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(DiscoverEvent::Failed {
+                                name: cluster_name,
+                                error: format!("{}", e),
+                            })
+                            .await;
+                    }
+                }
+            } else {
+                let _ = tx
+                    .send(DiscoverEvent::Failed {
+                        name: cluster_name,
+                        error: "No bastion available for auto-tunnel".into(),
+                    })
+                    .await;
+            }
+        }));
+    }
+
+    // Wait for all parallel tasks to complete
+    for handle in handles {
+        let _ = handle.await;
     }
 
     let _ = tx.send(DiscoverEvent::Complete).await;
@@ -376,7 +456,7 @@ async fn setup_auto_tunnel(
     let pid = child.id();
 
     // Wait for tunnel to establish
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify tunnel process is alive
     if !is_process_alive(pid) {

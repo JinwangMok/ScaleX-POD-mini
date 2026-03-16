@@ -116,6 +116,8 @@ pub struct FetchResult {
     pub latency_ms: u64,
     /// Which resource was selectively fetched (None = full fetch)
     pub active_resource: Option<ActiveResource>,
+    /// Generation counter to detect stale results
+    pub generation: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +188,10 @@ pub struct App {
 
     /// Which resource was last fetched (for staleness indicator in UI)
     pub last_fetched_resource: Option<ActiveResource>,
+
+    /// Monotonic generation counter — incremented on every navigation/view change.
+    /// Fetch results with a stale generation are discarded.
+    pub fetch_generation: u64,
 }
 
 impl App {
@@ -258,6 +264,7 @@ impl App {
             fetch_started_at: None,
             tick_count: 0,
             last_fetched_resource: None,
+            fetch_generation: 0,
         }
     }
 
@@ -332,6 +339,7 @@ impl App {
             fetch_started_at: None,
             tick_count: 0,
             last_fetched_resource: None,
+            fetch_generation: 0,
         }
     }
 
@@ -419,6 +427,8 @@ impl App {
                             self.resource_view = rv;
                             self.table_cursor = 0;
                             self.needs_refresh = true;
+                            self.fetch_generation += 1;
+                            self.is_fetching = false;
                         }
                     }
                 }
@@ -498,6 +508,8 @@ impl App {
                     self.selected_cluster = Some(name.clone());
                     self.selected_namespace = None;
                     self.needs_refresh = true;
+                    self.fetch_generation += 1;
+                    self.is_fetching = false;
                     // Immediately populate tree from cached snapshots
                     self.sync_tree_from_snapshots();
                 }
@@ -511,6 +523,8 @@ impl App {
                 };
                 self.table_cursor = 0;
                 self.needs_refresh = true;
+                self.fetch_generation += 1;
+                self.is_fetching = false;
             }
             NodeType::InfraHeader => {
                 self.tree[idx].expanded = !self.tree[idx].expanded;
@@ -777,6 +791,7 @@ mod tests {
             fetch_started_at: None,
             tick_count: 0,
             last_fetched_resource: None,
+            fetch_generation: 0,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -981,6 +996,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         .insert(client.name.clone(), ConnectionStatus::Connected);
                     app.clusters.push(client);
                     app.needs_refresh = true;
+                    app.fetch_generation += 1;
+                    app.is_fetching = false;
                 }
                 kube_client::DiscoverEvent::Failed { name, error } => {
                     app.cluster_connection_status
@@ -994,6 +1011,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
 
         // --- Process fetch results (non-blocking) ---
         while let Ok(result) = fetch_rx.try_recv() {
+            // Discard stale results from a previous generation
+            if result.generation != app.fetch_generation {
+                app.is_fetching = false;
+                app.fetch_started_at = None;
+                continue;
+            }
             match result.active_resource {
                 None => {
                     // Full fetch — replace everything
@@ -1081,6 +1104,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             let ns = app.selected_namespace.clone();
             let cancel = cancelled.clone();
             let active_res = Some(app.resource_view.to_active_resource());
+            let generation = app.fetch_generation;
 
             tokio::spawn(async move {
                 let start = Instant::now();
@@ -1129,6 +1153,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         snapshots,
                         latency_ms,
                         active_resource: active_res,
+                        generation,
                     })
                     .await;
             });

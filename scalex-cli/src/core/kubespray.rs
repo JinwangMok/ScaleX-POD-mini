@@ -488,6 +488,7 @@ mod tests {
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         }
     }
 
@@ -596,6 +597,7 @@ mod tests {
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
         let ini = generate_inventory_baremetal(&cluster).unwrap();
         assert!(ini.contains("bm-cp-0 ansible_host=10.0.0.1"));
@@ -622,6 +624,7 @@ mod tests {
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
         let result = generate_inventory_baremetal(&cluster);
         assert!(result.is_err());
@@ -950,6 +953,7 @@ mod tests {
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
         let ini = generate_inventory_baremetal(&cluster).unwrap();
 
@@ -1584,6 +1588,7 @@ supplementary_addresses_in_ssl_keys:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
         let ini = generate_inventory_baremetal(&cluster).unwrap();
 
@@ -1625,6 +1630,7 @@ supplementary_addresses_in_ssl_keys:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
         let result = generate_inventory_baremetal(&cluster);
         assert!(result.is_err());
@@ -1694,6 +1700,7 @@ supplementary_addresses_in_ssl_keys:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
 
         let ini = generate_inventory(&cluster, &sdi_spec).unwrap();
@@ -1786,6 +1793,7 @@ supplementary_addresses_in_ssl_keys:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
 
         let ini = generate_inventory(&cluster, &sdi_spec).unwrap();
@@ -1854,6 +1862,7 @@ supplementary_addresses_in_ssl_keys:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
 
         let result = generate_inventory(&cluster, &sdi_spec);
@@ -1901,6 +1910,7 @@ supplementary_addresses_in_ssl_keys:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
 
         let result = generate_inventory(&cluster, &sdi_spec);
@@ -2004,6 +2014,7 @@ supplementary_addresses_in_ssl_keys:
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         };
 
         // 3. Generate inventory
