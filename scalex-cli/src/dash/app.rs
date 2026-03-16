@@ -558,6 +558,18 @@ impl App {
         }
     }
 
+    /// Check if a resource matches search by name OR namespace (case-insensitive)
+    pub fn matches_search_with_ns(&self, name: &str, namespace: &str) -> bool {
+        match &self.search_query {
+            Some(q) if !q.is_empty() => {
+                let q_lower = q.to_lowercase();
+                name.to_lowercase().contains(&q_lower)
+                    || namespace.to_lowercase().contains(&q_lower)
+            }
+            _ => true,
+        }
+    }
+
     /// Clamp table_cursor so it never exceeds the last valid index.
     /// Called from UI renderers before checking is_selected, and from move_down.
     pub fn clamp_table_cursor(&mut self, row_count: usize) {
@@ -1030,22 +1042,22 @@ impl App {
                 ResourceView::Pods => snap
                     .pods
                     .iter()
-                    .filter(|p| self.matches_search(&p.name))
+                    .filter(|p| self.matches_search_with_ns(&p.name, &p.namespace))
                     .count(),
                 ResourceView::Deployments => snap
                     .deployments
                     .iter()
-                    .filter(|d| self.matches_search(&d.name))
+                    .filter(|d| self.matches_search_with_ns(&d.name, &d.namespace))
                     .count(),
                 ResourceView::Services => snap
                     .services
                     .iter()
-                    .filter(|s| self.matches_search(&s.name))
+                    .filter(|s| self.matches_search_with_ns(&s.name, &s.namespace))
                     .count(),
                 ResourceView::ConfigMaps => snap
                     .configmaps
                     .iter()
-                    .filter(|c| self.matches_search(&c.name))
+                    .filter(|c| self.matches_search_with_ns(&c.name, &c.namespace))
                     .count(),
                 ResourceView::Nodes => snap
                     .nodes
@@ -2454,6 +2466,30 @@ mod tests {
         app.handle_event(AppEvent::Left);
         // Root has depth 0, no parent — stays at 0
         assert_eq!(app.tree_cursor, 0);
+    }
+
+    // --- US-082: Expand/collapse no-op on leaf nodes ---
+
+    // --- US-086: Search matches namespace ---
+
+    #[test]
+    fn search_matches_namespace() {
+        let mut app = test_app();
+        app.search_query = Some("kube-system".to_string());
+        assert!(app.matches_search_with_ns("coredns", "kube-system"));
+        assert!(!app.matches_search_with_ns("coredns", "default"));
+    }
+
+    #[test]
+    fn search_matches_name_or_namespace() {
+        let mut app = test_app();
+        app.search_query = Some("core".to_string());
+        // Matches name
+        assert!(app.matches_search_with_ns("coredns", "default"));
+        // Matches namespace
+        assert!(app.matches_search_with_ns("nginx", "core-system"));
+        // Matches neither
+        assert!(!app.matches_search_with_ns("nginx", "default"));
     }
 
     // --- US-082: Expand/collapse no-op on leaf nodes ---

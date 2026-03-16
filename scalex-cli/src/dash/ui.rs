@@ -590,9 +590,9 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Generic table renderer — handles filter, empty state, cursor clamping, viewport, selection highlight.
-/// `name_fn` extracts the searchable name from each item.
+/// `filter_fn` returns true if the item matches the current search query.
 /// `row_fn(index, item, is_selected)` builds a styled Row for each visible item.
-fn render_resource_table<'a, T, N, R>(
+fn render_resource_table<'a, T, F, R>(
     f: &mut Frame,
     app: &App,
     items: &'a [T],
@@ -600,16 +600,13 @@ fn render_resource_table<'a, T, N, R>(
     header: Row<'static>,
     widths: &[Constraint],
     empty_msg: &str,
-    name_fn: N,
+    filter_fn: F,
     row_fn: R,
 ) where
-    N: Fn(&'a T) -> &'a str,
+    F: Fn(&'a T) -> bool,
     R: Fn(usize, &'a T, bool) -> Row<'a>,
 {
-    let filtered: Vec<&T> = items
-        .iter()
-        .filter(|item| app.matches_search(name_fn(item)))
-        .collect();
+    let filtered: Vec<&T> = items.iter().filter(|item| filter_fn(item)).collect();
 
     if filtered.is_empty() {
         let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
@@ -680,7 +677,7 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
             Constraint::Percentage(20),
         ],
         "No pods in this namespace",
-        |pod| &pod.name,
+        |pod| app.matches_search_with_ns(&pod.name, &pod.namespace),
         |_i, pod, is_selected| {
             let base = row_base_style(is_selected);
             let status_color = match pod.status.as_str() {
@@ -749,7 +746,7 @@ fn render_deployments_table(
             Constraint::Percentage(10),
         ],
         "No deployments in this namespace",
-        |dep| &dep.name,
+        |dep| app.matches_search_with_ns(&dep.name, &dep.namespace),
         |_i, dep, is_selected| {
             let base = row_base_style(is_selected);
             // Color-code READY column based on readiness ratio
@@ -808,7 +805,7 @@ fn render_services_table(
             Constraint::Percentage(8),
         ],
         "No services in this namespace",
-        |svc| &svc.name,
+        |svc| app.matches_search_with_ns(&svc.name, &svc.namespace),
         |_i, svc, is_selected| {
             let base = row_base_style(is_selected);
             Row::new(vec![
@@ -838,14 +835,19 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
             Constraint::Percentage(25),
         ],
         "No nodes found",
-        |node| &node.name,
+        |node| app.matches_search(&node.name),
         |_i, node, is_selected| {
             let base = row_base_style(is_selected);
+            let roles_str = if node.roles.is_empty() {
+                "<none>".to_string()
+            } else {
+                node.roles.join(",")
+            };
             if is_selected {
                 Row::new(vec![
                     Cell::from(node.name.as_str()).style(base),
                     Cell::from(node.status.as_str()).style(base),
-                    Cell::from(node.roles.join(",")).style(base),
+                    Cell::from(roles_str).style(base),
                     Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
                         .style(base),
                     Cell::from(format!("{}/{}", node.mem_allocatable, node.mem_capacity))
@@ -860,7 +862,7 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                 Row::new(vec![
                     Cell::from(node.name.as_str()).style(Style::default().fg(theme::FG)),
                     Cell::from(node.status.as_str()).style(Style::default().fg(status_color)),
-                    Cell::from(node.roles.join(",")).style(Style::default().fg(theme::FG3)),
+                    Cell::from(roles_str).style(Style::default().fg(theme::FG3)),
                     Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
                         .style(Style::default().fg(theme::BRIGHT_AQUA)),
                     Cell::from(format!("{}/{}", node.mem_allocatable, node.mem_capacity))
@@ -890,7 +892,7 @@ fn render_configmaps_table(
             Constraint::Percentage(15),
         ],
         "No configmaps in this namespace",
-        |cm| &cm.name,
+        |cm| app.matches_search_with_ns(&cm.name, &cm.namespace),
         |_i, cm, is_selected| {
             let base = row_base_style(is_selected);
             Row::new(vec![
