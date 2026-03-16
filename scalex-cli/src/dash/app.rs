@@ -195,6 +195,12 @@ pub struct App {
     /// Monotonic generation counter — incremented on every navigation/view change.
     /// Fetch results with a stale generation are discarded.
     pub fetch_generation: u64,
+
+    /// True when a fetch timed out (30s) — triggers warning in status bar
+    pub fetch_timed_out: bool,
+
+    /// Cached viewport height for PageUp/PageDown (set from run_tui before each render)
+    pub page_size: usize,
 }
 
 impl App {
@@ -271,6 +277,8 @@ impl App {
             tick_count: 0,
             last_fetched_resource: None,
             fetch_generation: 0,
+            fetch_timed_out: false,
+            page_size: 0,
         }
     }
 
@@ -349,6 +357,8 @@ impl App {
             tick_count: 0,
             last_fetched_resource: None,
             fetch_generation: 0,
+            fetch_timed_out: false,
+            page_size: 0,
         }
     }
 
@@ -388,16 +398,19 @@ impl App {
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
                 }
-                // Arrow keys in search mode: no-op (don't type characters)
-                AppEvent::ArrowUp | AppEvent::ArrowDown | AppEvent::ArrowLeft | AppEvent::ArrowRight => {}
-                // Tab/Shift+Tab: exit search and switch panel
+                // Arrow keys and page keys in search mode: no-op (don't type characters)
+                AppEvent::ArrowUp | AppEvent::ArrowDown | AppEvent::ArrowLeft | AppEvent::ArrowRight
+                | AppEvent::PageUp | AppEvent::PageDown => {}
+                // Tab/Shift+Tab: cancel search (clear query) and switch panel
                 AppEvent::NextPanel | AppEvent::PrevPanel => {
                     self.search_active = false;
+                    self.search_query = None;
+                    self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                     self.active_panel = match self.active_panel {
                         ActivePanel::Sidebar => ActivePanel::Center,
                         ActivePanel::Center => ActivePanel::Sidebar,
                     };
-                    self.table_scroll_offset = 0;
                 }
                 // All character-producing events → literal text input
                 // Vim keys (q→Quit, h→Left, l→Right, ?→Help) are remapped to chars
@@ -468,7 +481,21 @@ impl App {
                     self.help_scroll_offset = self.help_scroll_offset.saturating_sub(1);
                 }
                 AppEvent::Down | AppEvent::ArrowDown => {
-                    self.help_scroll_offset += 1; // clamped in render
+                    // Cap at max help content lines (prevents unbounded growth)
+                    const HELP_MAX_LINES: u16 = 30;
+                    if self.help_scroll_offset < HELP_MAX_LINES {
+                        self.help_scroll_offset += 1;
+                    }
+                }
+                AppEvent::PageUp => {
+                    let jump = (self.page_size / 2).max(1) as u16;
+                    self.help_scroll_offset = self.help_scroll_offset.saturating_sub(jump);
+                }
+                AppEvent::PageDown => {
+                    const HELP_MAX_LINES: u16 = 30;
+                    let jump = (self.page_size / 2).max(1) as u16;
+                    self.help_scroll_offset =
+                        (self.help_scroll_offset + jump).min(HELP_MAX_LINES);
                 }
                 _ => {}
             }
@@ -479,6 +506,8 @@ impl App {
             AppEvent::Quit => self.running = false,
             AppEvent::Up | AppEvent::ArrowUp => self.move_up(),
             AppEvent::Down | AppEvent::ArrowDown => self.move_down(),
+            AppEvent::PageUp => self.page_up(),
+            AppEvent::PageDown => self.page_down(),
             AppEvent::Enter => self.handle_enter(),
             AppEvent::Left | AppEvent::ArrowLeft => self.collapse_node(),
             AppEvent::Right | AppEvent::ArrowRight => self.expand_node(),
@@ -546,7 +575,7 @@ impl App {
                 }
             }
             AppEvent::Tick | AppEvent::None | AppEvent::CharInput(_) => {}
-            AppEvent::ForceQuit => unreachable!("ForceQuit handled above"),
+            AppEvent::ForceQuit => {} // handled at top of handle_event
         }
     }
 
@@ -589,6 +618,11 @@ impl App {
                 self.adjust_sidebar_scroll();
             }
             ActivePanel::Center => {
+                if self.active_tab == 1 {
+                    // Top tab: line-by-line scroll (Paragraph, no row selection)
+                    self.table_scroll_offset = self.table_scroll_offset.saturating_sub(1);
+                    return;
+                }
                 if self.table_cursor > 0 {
                     self.table_cursor -= 1;
                 }
@@ -607,10 +641,60 @@ impl App {
                 self.adjust_sidebar_scroll();
             }
             ActivePanel::Center => {
+                if self.active_tab == 1 {
+                    // Top tab: line-by-line scroll (Paragraph, no row selection)
+                    let max = self.top_tab_line_count();
+                    if max > 0 && self.table_scroll_offset + 1 < max {
+                        self.table_scroll_offset += 1;
+                    }
+                    return;
+                }
                 // Clamp to current row count to prevent unbounded cursor growth
                 let max = self.current_row_count();
                 if max > 0 && self.table_cursor + 1 < max {
                     self.table_cursor += 1;
+                }
+                self.adjust_table_scroll();
+            }
+        }
+    }
+
+    fn page_up(&mut self) {
+        let jump = (self.page_size / 2).max(1);
+        match self.active_panel {
+            ActivePanel::Sidebar => {
+                self.tree_cursor = self.tree_cursor.saturating_sub(jump);
+                self.adjust_sidebar_scroll();
+            }
+            ActivePanel::Center => {
+                if self.active_tab == 1 {
+                    self.table_scroll_offset = self.table_scroll_offset.saturating_sub(jump);
+                    return;
+                }
+                self.table_cursor = self.table_cursor.saturating_sub(jump);
+                self.adjust_table_scroll();
+            }
+        }
+    }
+
+    fn page_down(&mut self) {
+        let jump = (self.page_size / 2).max(1);
+        match self.active_panel {
+            ActivePanel::Sidebar => {
+                let visible = self.visible_tree_len();
+                self.tree_cursor = (self.tree_cursor + jump).min(visible.saturating_sub(1));
+                self.adjust_sidebar_scroll();
+            }
+            ActivePanel::Center => {
+                if self.active_tab == 1 {
+                    let max = self.top_tab_line_count();
+                    self.table_scroll_offset =
+                        (self.table_scroll_offset + jump).min(max.saturating_sub(1));
+                    return;
+                }
+                let max = self.current_row_count();
+                if max > 0 {
+                    self.table_cursor = (self.table_cursor + jump).min(max - 1);
                 }
                 self.adjust_table_scroll();
             }
@@ -657,11 +741,25 @@ impl App {
 
     /// Ensure table cursor is visible within a given viewport height.
     /// Also clamps scroll offset so we never over-scroll past the end of content.
+    ///
+    /// **Top tab (active_tab==1)**: uses table_scroll_offset for Paragraph scroll
+    /// (no table_cursor), so we only clamp the offset against line count.
     pub fn ensure_table_scroll_visible(&mut self, viewport_height: usize) {
         if viewport_height == 0 {
             return;
         }
-        // Clamp scroll offset to valid range based on current data
+
+        // Top tab: Paragraph-based scroll, no table_cursor involvement
+        if self.active_tab == 1 {
+            let line_count = self.top_tab_line_count();
+            let max_offset = line_count.saturating_sub(viewport_height);
+            if self.table_scroll_offset > max_offset {
+                self.table_scroll_offset = max_offset;
+            }
+            return;
+        }
+
+        // Resources tab: table_cursor-based scroll
         let row_count = self.current_row_count();
         if row_count > 0 {
             let max_offset = row_count.saturating_sub(viewport_height);
@@ -935,10 +1033,9 @@ impl App {
                     });
                 }
 
+                // Insert children in one O(n) splice
                 let insert_at = idx + 1;
-                for (j, child) in children.into_iter().enumerate() {
-                    self.tree.insert(insert_at + j, child);
-                }
+                self.tree.splice(insert_at..insert_at, children);
                 self.tree[idx].children_loaded = true;
             }
         }
@@ -1015,11 +1112,9 @@ impl App {
                     });
                 }
 
-                // Insert children after cluster node
+                // Insert children after cluster node in one O(n) splice
                 let insert_at = idx + 1;
-                for (j, child) in children.into_iter().enumerate() {
-                    self.tree.insert(insert_at + j, child);
-                }
+                self.tree.splice(insert_at..insert_at, children);
 
                 self.tree[idx].children_loaded = true;
             }
@@ -1031,6 +1126,14 @@ impl App {
         match self.last_fetched_resource {
             None => false, // full fetch or no fetch yet — not stale
             Some(active) => active != view.to_active_resource(),
+        }
+    }
+
+    /// Number of content lines in the Top tab (for scroll clamping).
+    fn top_tab_line_count(&self) -> usize {
+        match self.current_snapshot() {
+            Some(snap) => 2 + snap.nodes.len().max(1), // header + blank + nodes (or "No data")
+            None => 1,
         }
     }
 
@@ -1167,6 +1270,8 @@ mod tests {
             tick_count: 0,
             last_fetched_resource: None,
             fetch_generation: 0,
+            fetch_timed_out: false,
+            page_size: 0,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -2520,6 +2625,211 @@ mod tests {
         assert!(!app.tree[2].expanded);
         assert_eq!(app.tree.len(), tree_len_before); // no children added
     }
+
+    #[test]
+    fn top_tab_scroll_down_increments_offset() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 1; // Top tab
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: vec![
+                crate::dash::data::NodeInfo {
+                    name: "node-0".into(),
+                    status: "Ready".into(),
+                    roles: vec![],
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "8Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "8Gi".into(),
+                },
+                crate::dash::data::NodeInfo {
+                    name: "node-1".into(),
+                    status: "Ready".into(),
+                    roles: vec![],
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "8Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "8Gi".into(),
+                },
+            ],
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+        app.table_scroll_offset = 0;
+
+        app.handle_event(AppEvent::Down);
+        assert_eq!(app.table_scroll_offset, 1, "j should scroll Top tab down");
+
+        app.handle_event(AppEvent::Up);
+        assert_eq!(app.table_scroll_offset, 0, "k should scroll Top tab up");
+    }
+
+    #[test]
+    fn top_tab_scroll_capped_at_line_count() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 1;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: vec![crate::dash::data::NodeInfo {
+                name: "node-0".into(),
+                status: "Ready".into(),
+                roles: vec![],
+                cpu_capacity: "4".into(),
+                mem_capacity: "8Gi".into(),
+                cpu_allocatable: "4".into(),
+                mem_allocatable: "8Gi".into(),
+            }],
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+        // top_tab_line_count = 2 + 1 = 3, max scroll = 2
+        for _ in 0..20 {
+            app.handle_event(AppEvent::Down);
+        }
+        assert!(
+            app.table_scroll_offset < 20,
+            "scroll offset should be capped, got {}",
+            app.table_scroll_offset
+        );
+    }
+
+    #[test]
+    fn help_scroll_offset_capped() {
+        let mut app = test_app();
+        app.show_help = true;
+        // Press Down 100 times — offset should not grow unboundedly
+        for _ in 0..100 {
+            app.handle_event(AppEvent::Down);
+        }
+        assert!(
+            app.help_scroll_offset <= 30,
+            "help_scroll_offset should be capped, got {}",
+            app.help_scroll_offset
+        );
+    }
+
+    // --- US-070: ensure_table_scroll_visible doesn't reset Top tab scroll ---
+
+    #[test]
+    fn ensure_table_scroll_top_tab_preserves_offset() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 1; // Top tab
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: (0..10)
+                .map(|i| crate::dash::data::NodeInfo {
+                    name: format!("node-{}", i),
+                    status: "Ready".into(),
+                    roles: vec![],
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "8Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "8Gi".into(),
+                })
+                .collect(),
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+
+        // Simulate scrolling down in Top tab
+        app.table_scroll_offset = 3;
+        // table_cursor stays 0 (unused in Top tab)
+
+        // Before fix: ensure_table_scroll_visible would reset offset to 0
+        // because table_cursor(0) < table_scroll_offset(3)
+        app.ensure_table_scroll_visible(5);
+
+        assert_eq!(
+            app.table_scroll_offset, 3,
+            "Top tab scroll offset should be preserved, not reset to table_cursor"
+        );
+    }
+
+    #[test]
+    fn ensure_table_scroll_top_tab_clamps_overscroll() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 1;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: vec![crate::dash::data::NodeInfo {
+                name: "node-0".into(),
+                status: "Ready".into(),
+                roles: vec![],
+                cpu_capacity: "4".into(),
+                mem_capacity: "8Gi".into(),
+                cpu_allocatable: "4".into(),
+                mem_allocatable: "8Gi".into(),
+            }],
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+        // top_tab_line_count = 2 + 1 = 3, viewport = 5, max_offset = 0
+        app.table_scroll_offset = 10;
+
+        app.ensure_table_scroll_visible(5);
+
+        assert_eq!(
+            app.table_scroll_offset, 0,
+            "Top tab scroll should clamp to max when content fits viewport"
+        );
+    }
+
+    // --- US-072: Tab exits search clears partial query ---
+
+    #[test]
+    fn tab_exits_search_clears_query() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("partial".into());
+        app.active_panel = ActivePanel::Center;
+
+        app.handle_event(AppEvent::NextPanel);
+
+        assert!(!app.search_active);
+        assert_eq!(app.search_query, None, "Tab should clear partial search query");
+        assert_eq!(app.active_panel, ActivePanel::Sidebar);
+    }
+
+    #[test]
+    fn shift_tab_exits_search_clears_query() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("partial".into());
+        app.active_panel = ActivePanel::Center;
+
+        app.handle_event(AppEvent::PrevPanel);
+
+        assert!(!app.search_active);
+        assert_eq!(app.search_query, None, "Shift+Tab should clear partial search query");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2600,6 +2910,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             let search_offset: u16 = if app.search_active { 1 } else { 0 };
             let table_viewport = body_height.saturating_sub(2 + 1 + search_offset) as usize;
             app.ensure_table_scroll_visible(table_viewport);
+            // Cache viewport height for PageUp/PageDown
+            app.page_size = table_viewport;
         }
 
         // Draw first — shows skeleton UI instantly on startup (US-004)
@@ -2625,10 +2937,10 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     app.clusters.push(client);
                     // Auto-select first connected cluster if none selected
                     if app.selected_cluster.is_none() {
-                        app.selected_cluster = Some(name);
+                        app.selected_cluster = Some(name.clone());
                         // Expand the cluster node in sidebar
                         if let Some(idx) = app.tree.iter().position(|n| {
-                            matches!(&n.node_type, NodeType::Cluster(c) if c == app.selected_cluster.as_ref().unwrap())
+                            matches!(&n.node_type, NodeType::Cluster(c) if c == &name)
                         }) {
                             app.tree[idx].expanded = true;
                         }
@@ -2698,6 +3010,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             app.self_rss_mb = read_self_rss_mb();
             app.is_fetching = false;
             app.fetch_started_at = None;
+            app.fetch_timed_out = false;
             // Clamp table cursor after data change (US-030, US-062: respects search filter)
             let row_count = app.current_row_count();
             app.clamp_table_cursor(row_count);
@@ -2709,6 +3022,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             if started.elapsed() > Duration::from_secs(30) {
                 app.is_fetching = false;
                 app.fetch_started_at = None;
+                app.fetch_timed_out = true;
             }
         }
 
@@ -2727,7 +3041,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             app.fetch_started_at = Some(Instant::now());
 
             let tx = fetch_tx.clone();
-            let clusters = app.clusters.clone();
+            // Clone only (name, client) pairs — avoid cloning kubeconfig_path, endpoint, etc.
+            let cluster_refs: Vec<(String, kube::Client)> = app
+                .clusters
+                .iter()
+                .map(|c| (c.name.clone(), c.client.clone()))
+                .collect();
             let selected_cluster = app.selected_cluster.clone();
             let ns = app.selected_namespace.clone();
             let cancel = cancelled.clone();
@@ -2737,9 +3056,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             tokio::spawn(async move {
                 let start = Instant::now();
                 let mut handles = Vec::new();
-                for cluster in &clusters {
-                    let client = cluster.client.clone();
-                    let name = cluster.name.clone();
+                for (name, client) in &cluster_refs {
+                    let client = client.clone();
+                    let name = name.clone();
                     // Only apply namespace filter to the selected cluster;
                     // other clusters fetch all namespaces for accurate status bar counts
                     let cluster_ns = if selected_cluster.as_ref() == Some(&name) {

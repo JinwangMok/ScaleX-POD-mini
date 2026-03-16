@@ -454,22 +454,63 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
         _ => "No cluster selected".to_string(),
     };
 
-    let mut title_spans = vec![Span::styled(
-        format!(" {} ", app.resource_view.label()),
-        Style::default().fg(theme::FG),
-    )];
+    // Resource shortcut indicator: p d s c n with active one highlighted
+    let resource_shortcuts = [
+        ('p', "Pods", ResourceView::Pods),
+        ('d', "Deploy", ResourceView::Deployments),
+        ('s', "Svc", ResourceView::Services),
+        ('c', "CM", ResourceView::ConfigMaps),
+        ('n', "Nodes", ResourceView::Nodes),
+    ];
+    let mut title_spans: Vec<Span> = vec![Span::styled(" ", Style::default().fg(theme::FG))];
+    if app.active_tab == 0 {
+        for (key, label, view) in &resource_shortcuts {
+            if *view == app.resource_view {
+                title_spans.push(Span::styled(
+                    format!("[{}]{} ", key, label),
+                    Style::default()
+                        .fg(theme::BG_HARD)
+                        .bg(theme::BRIGHT_AQUA)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                title_spans.push(Span::styled(
+                    format!("{}:{} ", key, label),
+                    Style::default().fg(theme::FG4),
+                ));
+            }
+        }
+    } else {
+        title_spans.push(Span::styled(
+            "Top ",
+            Style::default()
+                .fg(theme::BRIGHT_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if app.is_view_stale(app.resource_view) {
         title_spans.push(Span::styled(
             "[cached] ",
             Style::default().fg(theme::BRIGHT_ORANGE),
         ));
     }
+    // Row count indicator
+    if app.active_tab == 0 {
+        let row_count = app.current_row_count();
+        if row_count > 0 {
+            let pos = app.table_cursor.min(row_count.saturating_sub(1)) + 1;
+            title_spans.push(Span::styled(
+                format!("{}/{} ", pos, row_count),
+                Style::default().fg(theme::FG3),
+            ));
+        }
+    }
     // Show active search filter indicator (after search submitted with Enter)
     if !app.search_active {
         if let Some(q) = &app.search_query {
             if !q.is_empty() {
                 title_spans.push(Span::styled(
-                    format!("[filter: {}] ", q),
+                    format!("[/{}] ", q),
                     Style::default().fg(theme::BRIGHT_AQUA),
                 ));
             }
@@ -1005,7 +1046,9 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    let paragraph = Paragraph::new(lines).style(Style::default().bg(theme::BG));
+    let paragraph = Paragraph::new(lines)
+        .style(Style::default().bg(theme::BG))
+        .scroll((app.table_scroll_offset as u16, 0));
     f.render_widget(paragraph, area);
 }
 
@@ -1080,6 +1123,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         vec![Span::styled(" Clusters: ", Style::default().fg(theme::FG4))]
     };
 
+    let narrow = inner.width < 100;
     for snapshot in &app.snapshots {
         let (symbol, color) = match snapshot.health {
             HealthStatus::Green => ("●", theme::BRIGHT_GREEN),
@@ -1092,18 +1136,27 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             format!("{} ", symbol),
             Style::default().fg(color),
         ));
-        health_spans.push(Span::styled(
-            format!(
-                "{} pods:{}/{} nodes:{}/{}  ",
-                snapshot.name, ru.running_pods, ru.total_pods, ru.ready_nodes, ru.total_nodes
-            ),
-            Style::default().fg(theme::FG3),
-        ));
+        if narrow {
+            // Abbreviated: name + pod count only
+            health_spans.push(Span::styled(
+                format!("{} {}/{}  ", snapshot.name, ru.running_pods, ru.total_pods),
+                Style::default().fg(theme::FG3),
+            ));
+        } else {
+            health_spans.push(Span::styled(
+                format!(
+                    "{} pods:{}/{} nodes:{}/{}  ",
+                    snapshot.name, ru.running_pods, ru.total_pods, ru.ready_nodes, ru.total_nodes
+                ),
+                Style::default().fg(theme::FG3),
+            ));
+        }
     }
 
     // Line 2: CPU/Mem bars per cluster + self overhead + latency
     let mut usage_spans: Vec<Span> = vec![Span::styled(" ", Style::default().fg(theme::FG4))];
 
+    let bar_width = if narrow { 5 } else { 8 };
     for snapshot in &app.snapshots {
         let ru = &snapshot.resource_usage;
         usage_spans.push(Span::styled(
@@ -1113,13 +1166,13 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         usage_spans.extend(render_usage_bar(
             "CPU",
             ru.cpu_percent,
-            8,
+            bar_width,
             theme::BRIGHT_AQUA,
         ));
         usage_spans.extend(render_usage_bar(
             "MEM",
             ru.mem_percent,
-            8,
+            bar_width,
             theme::BRIGHT_PURPLE,
         ));
     }
@@ -1141,6 +1194,12 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         ),
         Style::default().fg(theme::BRIGHT_AQUA),
     ));
+    if app.fetch_timed_out {
+        usage_spans.push(Span::styled(
+            " [!] fetch timed out — press 'r' to retry",
+            Style::default().fg(theme::BRIGHT_RED),
+        ));
+    }
 
     let status_text = vec![Line::from(health_spans), Line::from(usage_spans)];
 
@@ -1207,6 +1266,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
                 lines.push(section("Sidebar Navigation"));
                 lines.push(Line::from(""));
                 lines.push(key("j/k", "Move cursor (no selection)"));
+                lines.push(key("PgUp/Dn", "Jump half page"));
                 lines.push(key("h/l", "Collapse/Expand; Left on leaf → parent"));
                 lines.push(key("Enter", "Select cluster/namespace"));
             }
@@ -1220,6 +1280,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
                     lines.push(section(&format!("Resources — {}", view)));
                     lines.push(Line::from(""));
                     lines.push(key("j/k", "Scroll table rows"));
+                    lines.push(key("PgUp/Dn", "Jump half page"));
                     lines.push(key("p d s c n", "Switch resource view"));
                     lines.push(Line::from(vec![
                         Span::styled("            ".to_string(), Style::default().fg(theme::FG4)),
