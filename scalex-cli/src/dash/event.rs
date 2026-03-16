@@ -49,6 +49,8 @@ pub enum AppEvent {
 
 /// Poll for input events with a timeout.
 /// Returns `AppEvent::Tick` if no input within timeout.
+/// Retained for headless/test compatibility; TUI uses EventStream + tokio::select! instead.
+#[allow(dead_code)]
 pub fn poll_event(tick_rate: Duration) -> Result<AppEvent> {
     if event::poll(tick_rate)? {
         match event::read()? {
@@ -63,7 +65,7 @@ pub fn poll_event(tick_rate: Duration) -> Result<AppEvent> {
     Ok(AppEvent::Tick)
 }
 
-fn map_key_event(key: KeyEvent) -> AppEvent {
+pub fn map_key_event(key: KeyEvent) -> AppEvent {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
