@@ -23,7 +23,7 @@ pub fn render(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height),
-            Constraint::Min(5), // body
+            Constraint::Min(5),    // body
             Constraint::Length(3), // status bar
         ])
         .split(size);
@@ -72,12 +72,8 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         .and_then(|name| app.clusters.iter().find(|c| &c.name == name))
         .or_else(|| app.clusters.first());
 
-    let cluster_name = selected
-        .map(|c| c.name.as_str())
-        .unwrap_or("--");
-    let endpoint_str = selected
-        .and_then(|c| c.endpoint.as_deref())
-        .unwrap_or("--");
+    let cluster_name = selected.map(|c| c.name.as_str()).unwrap_or("--");
+    let endpoint_str = selected.and_then(|c| c.endpoint.as_deref()).unwrap_or("--");
     let k8s_ver = selected
         .and_then(|c| c.server_version.as_deref())
         .unwrap_or("N/A");
@@ -103,15 +99,34 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 
     if is_full {
         render_header_full(
-            f, area, &tab_spans, cluster_name, endpoint_str, k8s_ver,
-            &config_path, scalex_ver, total_clusters, connected_clusters,
-            label_style, value_style, accent_style,
+            f,
+            area,
+            &tab_spans,
+            cluster_name,
+            endpoint_str,
+            k8s_ver,
+            &config_path,
+            scalex_ver,
+            total_clusters,
+            connected_clusters,
+            label_style,
+            value_style,
+            accent_style,
         );
     } else {
         render_header_compact(
-            f, area, &tab_spans, cluster_name, endpoint_str, k8s_ver,
-            scalex_ver, total_clusters, connected_clusters,
-            label_style, value_style, accent_style,
+            f,
+            area,
+            &tab_spans,
+            cluster_name,
+            endpoint_str,
+            k8s_ver,
+            scalex_ver,
+            total_clusters,
+            connected_clusters,
+            label_style,
+            value_style,
+            accent_style,
         );
     }
 }
@@ -168,10 +183,7 @@ fn render_header_full(
     let cols = if show_logo {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(30),
-                Constraint::Length(logo_width + 1),
-            ])
+            .constraints([Constraint::Min(30), Constraint::Length(logo_width + 1)])
             .split(inner)
     } else {
         Layout::default()
@@ -194,7 +206,9 @@ fn render_header_full(
             Span::styled(" ScaleX:   ", label_style),
             Span::styled(
                 format!("v{}", scalex_ver),
-                Style::default().fg(theme::BRIGHT_ORANGE).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::BRIGHT_ORANGE)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("    Clusters: {}/{}", connected_clusters, total_clusters),
@@ -205,16 +219,23 @@ fn render_header_full(
             Span::styled(" K8s Rev:  ", label_style),
             Span::styled(
                 k8s_ver.to_string(),
-                if k8s_ver == "N/A" { label_style } else { value_style },
+                if k8s_ver == "N/A" {
+                    label_style
+                } else {
+                    value_style
+                },
             ),
         ]),
         Line::from(vec![
             Span::styled(" Config:   ", label_style),
             Span::styled(config_path.to_string(), Style::default().fg(theme::FG3)),
         ]),
-        Line::from(vec![
-            Span::styled(" View:     ", label_style),
-        ].into_iter().chain(tab_spans.iter().cloned()).collect::<Vec<_>>()),
+        Line::from(
+            vec![Span::styled(" View:     ", label_style)]
+                .into_iter()
+                .chain(tab_spans.iter().cloned())
+                .collect::<Vec<_>>(),
+        ),
     ];
 
     let para = Paragraph::new(info_lines).style(Style::default().bg(theme::BG_HARD));
@@ -274,7 +295,10 @@ fn render_header_compact(
         ),
         Span::styled(cluster_name.to_string(), accent_style),
         Span::styled(
-            format!("  Clusters: {}/{}  K8s: {}", connected_clusters, total_clusters, k8s_ver),
+            format!(
+                "  Clusters: {}/{}  K8s: {}",
+                connected_clusters, total_clusters, k8s_ver
+            ),
             Style::default().fg(theme::FG3),
         ),
     ];
@@ -322,7 +346,9 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             // Check if this node is the actively selected context (US-005)
             let is_active_selection = match &node.node_type {
                 NodeType::Cluster(name) => {
-                    app.selected_cluster.as_ref() == Some(name) && app.selected_namespace.is_none()
+                    app.selected_cluster.as_ref() == Some(name)
+                        && app.selected_namespace.is_none()
+                        && !node.expanded // collapsed cluster = active; expanded = children handle it
                 }
                 NodeType::Namespace { cluster, namespace } => {
                     app.selected_cluster.as_ref() == Some(cluster)
@@ -347,11 +373,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             };
 
             // Selection marker: fixed-width 2 chars to maintain column alignment
-            let marker = if is_active_selection && !is_cursor {
-                "● "
-            } else {
-                "  "
-            };
+            let marker = if is_active_selection { "● " } else { "  " };
 
             let indent = "  ".repeat(node.depth);
             let label_color = match &node.node_type {
@@ -362,20 +384,25 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 NodeType::InfraItem(_) => theme::FG3,
             };
 
-            let style = if is_cursor {
-                // Cursor: yellow bg highlight
-                Style::default()
+            let (style, marker_style, suffix_bg) = if is_cursor {
+                // Cursor: full-width yellow bg highlight
+                let cursor_style = Style::default()
                     .fg(theme::BG_HARD)
                     .bg(theme::BRIGHT_YELLOW)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD);
+                (cursor_style, cursor_style, theme::BRIGHT_YELLOW)
             } else if is_active_selection {
                 // Active selection: bold with bright color, no bg change
-                Style::default()
+                let sel_style = Style::default()
                     .fg(theme::BRIGHT_AQUA)
                     .bg(theme::BG_HARD)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD);
+                let marker_s = Style::default().fg(theme::BRIGHT_AQUA).bg(theme::BG_HARD);
+                (sel_style, marker_s, theme::BG_HARD)
             } else {
-                Style::default().fg(label_color).bg(theme::BG_HARD)
+                let normal = Style::default().fg(label_color).bg(theme::BG_HARD);
+                let marker_s = Style::default().bg(theme::BG_HARD);
+                (normal, marker_s, theme::BG_HARD)
             };
 
             // Connection status suffix for cluster nodes
@@ -389,18 +416,15 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let mut spans = vec![
-                Span::styled(indent, Style::default().bg(theme::BG_HARD)),
-                Span::styled(
-                    marker,
-                    Style::default().fg(theme::BRIGHT_AQUA).bg(theme::BG_HARD),
-                ),
+                Span::styled(indent, style),
+                Span::styled(marker, marker_style),
                 Span::styled(icon, style),
                 Span::styled(&node.label, style),
             ];
             if let Some((suffix, color)) = conn_suffix {
                 spans.push(Span::styled(
                     suffix,
-                    Style::default().fg(color).bg(theme::BG_HARD),
+                    Style::default().fg(color).bg(suffix_bg),
                 ));
             }
 
@@ -408,7 +432,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines);
+    let paragraph = Paragraph::new(lines).scroll((app.sidebar_scroll_offset as u16, 0));
     f.render_widget(paragraph, inner);
 }
 
@@ -439,6 +463,17 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
             "[cached] ",
             Style::default().fg(theme::BRIGHT_ORANGE),
         ));
+    }
+    // Show active search filter indicator (after search submitted with Enter)
+    if !app.search_active {
+        if let Some(q) = &app.search_query {
+            if !q.is_empty() {
+                title_spans.push(Span::styled(
+                    format!("[filter: {}] ", q),
+                    Style::default().fg(theme::BRIGHT_AQUA),
+                ));
+            }
+        }
     }
     title_spans.push(Span::styled(
         format!("| {} ", ctx_label),
@@ -552,27 +587,26 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInfo], area: Rect) {
-    let header = Row::new(vec![
-        "NAME",
-        "NAMESPACE",
-        "STATUS",
-        "READY",
-        "RESTARTS",
-        "AGE",
-        "NODE",
-    ])
-    .style(
-        Style::default()
-            .fg(theme::BRIGHT_YELLOW)
-            .bg(theme::BG1)
-            .add_modifier(Modifier::BOLD),
-    )
-    .bottom_margin(0);
-
-    let filtered: Vec<&crate::dash::data::PodInfo> = pods
+/// Generic table renderer — handles filter, empty state, cursor clamping, viewport, selection highlight.
+/// `name_fn` extracts the searchable name from each item.
+/// `row_fn(index, item, is_selected)` builds a styled Row for each visible item.
+fn render_resource_table<'a, T, N, R>(
+    f: &mut Frame,
+    app: &App,
+    items: &'a [T],
+    area: Rect,
+    header: Row<'static>,
+    widths: &[Constraint],
+    empty_msg: &str,
+    name_fn: N,
+    row_fn: R,
+) where
+    N: Fn(&'a T) -> &'a str,
+    R: Fn(usize, &'a T, bool) -> Row<'a>,
+{
+    let filtered: Vec<&T> = items
         .iter()
-        .filter(|p| app.matches_search(&p.name))
+        .filter(|item| app.matches_search(name_fn(item)))
         .collect();
 
     if filtered.is_empty() {
@@ -582,17 +616,71 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
                 app.search_query.as_deref().unwrap_or("")
             )
         } else {
-            "  No pods in this namespace".to_string()
+            format!("  {}", empty_msg)
         };
         let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
         f.render_widget(paragraph, area);
         return;
     }
 
+    let clamped_cursor = app.table_cursor.min(filtered.len() - 1);
+    let viewport_rows = area.height.saturating_sub(1) as usize;
     let rows: Vec<Row> = filtered
         .iter()
         .enumerate()
-        .map(|(i, pod)| {
+        .skip(app.table_scroll_offset)
+        .take(viewport_rows)
+        .map(|(i, item)| {
+            let is_selected = i == clamped_cursor && app.active_panel == ActivePanel::Center;
+            row_fn(i, item, is_selected)
+        })
+        .collect();
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .style(Style::default().bg(theme::BG));
+    f.render_widget(table, area);
+}
+
+/// Standard base style for table rows (selected vs normal)
+fn row_base_style(is_selected: bool) -> Style {
+    if is_selected {
+        Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW)
+    } else {
+        Style::default().fg(theme::FG).bg(theme::BG)
+    }
+}
+
+/// Standard header style for resource tables
+fn resource_header(columns: Vec<&'static str>) -> Row<'static> {
+    Row::new(columns).style(
+        Style::default()
+            .fg(theme::BRIGHT_YELLOW)
+            .bg(theme::BG1)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInfo], area: Rect) {
+    render_resource_table(
+        f,
+        app,
+        pods,
+        area,
+        resource_header(vec!["NAME", "NAMESPACE", "STATUS", "READY", "RESTARTS", "AGE", "NODE"]),
+        &[
+            Constraint::Percentage(22),
+            Constraint::Percentage(14),
+            Constraint::Percentage(12),
+            Constraint::Percentage(8),
+            Constraint::Percentage(10),
+            Constraint::Percentage(8),
+            Constraint::Percentage(20),
+        ],
+        "No pods in this namespace",
+        |pod| &pod.name,
+        |_i, pod, is_selected| {
+            let base = row_base_style(is_selected);
             let status_color = match pod.status.as_str() {
                 "Running" => theme::BRIGHT_GREEN,
                 "Pending" => theme::BRIGHT_YELLOW,
@@ -600,19 +688,11 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
                 "Failed" | "CrashLoopBackOff" | "Error" => theme::BRIGHT_RED,
                 _ => theme::FG3,
             };
-
-            let is_selected = i == app.table_cursor && app.active_panel == ActivePanel::Center;
-            let base = if is_selected {
-                Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW)
-            } else {
-                Style::default().fg(theme::FG).bg(theme::BG)
-            };
-
             Row::new(vec![
                 Cell::from(pod.name.as_str()).style(base),
                 Cell::from(pod.namespace.as_str()).style(base),
                 Cell::from(pod.status.as_str()).style(if is_selected {
-                    Style::default().fg(status_color).bg(theme::BRIGHT_YELLOW)
+                    base
                 } else {
                     Style::default().fg(status_color)
                 }),
@@ -621,25 +701,8 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
                 Cell::from(pod.age.as_str()).style(base),
                 Cell::from(pod.node.as_str()).style(base),
             ])
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(22),
-            Constraint::Percentage(14),
-            Constraint::Percentage(12),
-            Constraint::Percentage(8),
-            Constraint::Percentage(10),
-            Constraint::Percentage(8),
-            Constraint::Percentage(20),
-        ],
-    )
-    .header(header)
-    .style(Style::default().bg(theme::BG));
-
-    f.render_widget(table, area);
+        },
+    );
 }
 
 fn render_deployments_table(
@@ -648,50 +711,24 @@ fn render_deployments_table(
     deployments: &[crate::dash::data::DeploymentInfo],
     area: Rect,
 ) {
-    let header = Row::new(vec![
-        "NAME",
-        "NAMESPACE",
-        "READY",
-        "UP-TO-DATE",
-        "AVAILABLE",
-        "AGE",
-    ])
-    .style(
-        Style::default()
-            .fg(theme::BRIGHT_YELLOW)
-            .bg(theme::BG1)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let filtered: Vec<&crate::dash::data::DeploymentInfo> = deployments
-        .iter()
-        .filter(|d| app.matches_search(&d.name))
-        .collect();
-
-    if filtered.is_empty() {
-        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
-            format!(
-                "  No results for \"{}\"",
-                app.search_query.as_deref().unwrap_or("")
-            )
-        } else {
-            "  No deployments in this namespace".to_string()
-        };
-        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
-        f.render_widget(paragraph, area);
-        return;
-    }
-
-    let rows: Vec<Row> = filtered
-        .iter()
-        .enumerate()
-        .map(|(i, dep)| {
-            let is_selected = i == app.table_cursor && app.active_panel == ActivePanel::Center;
-            let base = if is_selected {
-                Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW)
-            } else {
-                Style::default().fg(theme::FG).bg(theme::BG)
-            };
+    render_resource_table(
+        f,
+        app,
+        deployments,
+        area,
+        resource_header(vec!["NAME", "NAMESPACE", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"]),
+        &[
+            Constraint::Percentage(25),
+            Constraint::Percentage(15),
+            Constraint::Percentage(12),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
+            Constraint::Percentage(10),
+        ],
+        "No deployments in this namespace",
+        |dep| &dep.name,
+        |_i, dep, is_selected| {
+            let base = row_base_style(is_selected);
             Row::new(vec![
                 Cell::from(dep.name.as_str()).style(base),
                 Cell::from(dep.namespace.as_str()).style(base),
@@ -700,24 +737,8 @@ fn render_deployments_table(
                 Cell::from(dep.available.to_string()).style(base),
                 Cell::from(dep.age.as_str()).style(base),
             ])
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(25),
-            Constraint::Percentage(15),
-            Constraint::Percentage(12),
-            Constraint::Percentage(15),
-            Constraint::Percentage(15),
-            Constraint::Percentage(10),
-        ],
-    )
-    .header(header)
-    .style(Style::default().bg(theme::BG));
-
-    f.render_widget(table, area);
+        },
+    );
 }
 
 fn render_services_table(
@@ -726,50 +747,24 @@ fn render_services_table(
     services: &[crate::dash::data::ServiceInfo],
     area: Rect,
 ) {
-    let header = Row::new(vec![
-        "NAME",
-        "NAMESPACE",
-        "TYPE",
-        "CLUSTER-IP",
-        "PORTS",
-        "AGE",
-    ])
-    .style(
-        Style::default()
-            .fg(theme::BRIGHT_YELLOW)
-            .bg(theme::BG1)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let filtered: Vec<&crate::dash::data::ServiceInfo> = services
-        .iter()
-        .filter(|s| app.matches_search(&s.name))
-        .collect();
-
-    if filtered.is_empty() {
-        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
-            format!(
-                "  No results for \"{}\"",
-                app.search_query.as_deref().unwrap_or("")
-            )
-        } else {
-            "  No services in this namespace".to_string()
-        };
-        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
-        f.render_widget(paragraph, area);
-        return;
-    }
-
-    let rows: Vec<Row> = filtered
-        .iter()
-        .enumerate()
-        .map(|(i, svc)| {
-            let is_selected = i == app.table_cursor && app.active_panel == ActivePanel::Center;
-            let base = if is_selected {
-                Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW)
-            } else {
-                Style::default().fg(theme::FG).bg(theme::BG)
-            };
+    render_resource_table(
+        f,
+        app,
+        services,
+        area,
+        resource_header(vec!["NAME", "NAMESPACE", "TYPE", "CLUSTER-IP", "PORTS", "AGE"]),
+        &[
+            Constraint::Percentage(22),
+            Constraint::Percentage(14),
+            Constraint::Percentage(12),
+            Constraint::Percentage(18),
+            Constraint::Percentage(20),
+            Constraint::Percentage(8),
+        ],
+        "No services in this namespace",
+        |svc| &svc.name,
+        |_i, svc, is_selected| {
+            let base = row_base_style(is_selected);
             Row::new(vec![
                 Cell::from(svc.name.as_str()).style(base),
                 Cell::from(svc.namespace.as_str()).style(base),
@@ -778,70 +773,32 @@ fn render_services_table(
                 Cell::from(svc.ports.as_str()).style(base),
                 Cell::from(svc.age.as_str()).style(base),
             ])
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(22),
-            Constraint::Percentage(14),
-            Constraint::Percentage(12),
-            Constraint::Percentage(18),
-            Constraint::Percentage(20),
-            Constraint::Percentage(8),
-        ],
-    )
-    .header(header)
-    .style(Style::default().bg(theme::BG));
-
-    f.render_widget(table, area);
+        },
+    );
 }
 
 fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::NodeInfo], area: Rect) {
-    let header = Row::new(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY"]).style(
-        Style::default()
-            .fg(theme::BRIGHT_YELLOW)
-            .bg(theme::BG1)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let filtered: Vec<&crate::dash::data::NodeInfo> = nodes
-        .iter()
-        .filter(|n| app.matches_search(&n.name))
-        .collect();
-
-    if filtered.is_empty() {
-        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
-            format!(
-                "  No results for \"{}\"",
-                app.search_query.as_deref().unwrap_or("")
-            )
-        } else {
-            "  No nodes in this namespace".to_string()
-        };
-        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
-        f.render_widget(paragraph, area);
-        return;
-    }
-
-    let rows: Vec<Row> = filtered
-        .iter()
-        .enumerate()
-        .map(|(i, node)| {
-            let is_selected = i == app.table_cursor && app.active_panel == ActivePanel::Center;
-            let status_color = if node.status == "Ready" {
-                theme::BRIGHT_GREEN
-            } else {
-                theme::BRIGHT_RED
-            };
-
+    render_resource_table(
+        f,
+        app,
+        nodes,
+        area,
+        resource_header(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY"]),
+        &[
+            Constraint::Percentage(25),
+            Constraint::Percentage(12),
+            Constraint::Percentage(18),
+            Constraint::Percentage(20),
+            Constraint::Percentage(25),
+        ],
+        "No nodes found",
+        |node| &node.name,
+        |_i, node, is_selected| {
+            let base = row_base_style(is_selected);
             if is_selected {
-                let base = Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW);
                 Row::new(vec![
                     Cell::from(node.name.as_str()).style(base),
-                    Cell::from(node.status.as_str())
-                        .style(Style::default().fg(status_color).bg(theme::BRIGHT_YELLOW)),
+                    Cell::from(node.status.as_str()).style(base),
                     Cell::from(node.roles.join(",")).style(base),
                     Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
                         .style(base),
@@ -849,6 +806,11 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                         .style(base),
                 ])
             } else {
+                let status_color = if node.status == "Ready" {
+                    theme::BRIGHT_GREEN
+                } else {
+                    theme::BRIGHT_RED
+                };
                 Row::new(vec![
                     Cell::from(node.name.as_str()).style(Style::default().fg(theme::FG)),
                     Cell::from(node.status.as_str()).style(Style::default().fg(status_color)),
@@ -859,23 +821,8 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                         .style(Style::default().fg(theme::BRIGHT_PURPLE)),
                 ])
             }
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(25),
-            Constraint::Percentage(12),
-            Constraint::Percentage(18),
-            Constraint::Percentage(20),
-            Constraint::Percentage(25),
-        ],
-    )
-    .header(header)
-    .style(Style::default().bg(theme::BG));
-
-    f.render_widget(table, area);
+        },
+    );
 }
 
 fn render_configmaps_table(
@@ -884,65 +831,30 @@ fn render_configmaps_table(
     configmaps: &[crate::dash::data::ConfigMapInfo],
     area: Rect,
 ) {
-    let header = Row::new(vec!["NAME", "NAMESPACE", "KEYS", "AGE"]).style(
-        Style::default()
-            .fg(theme::BRIGHT_YELLOW)
-            .bg(theme::BG1)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let filtered: Vec<&crate::dash::data::ConfigMapInfo> = configmaps
-        .iter()
-        .filter(|cm| app.matches_search(&cm.name))
-        .collect();
-
-    if filtered.is_empty() {
-        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
-            format!(
-                "  No results for \"{}\"",
-                app.search_query.as_deref().unwrap_or("")
-            )
-        } else {
-            "  No configmaps in this namespace".to_string()
-        };
-        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
-        f.render_widget(paragraph, area);
-        return;
-    }
-
-    let rows: Vec<Row> = filtered
-        .iter()
-        .enumerate()
-        .map(|(i, cm)| {
-            let is_selected = i == app.table_cursor && app.active_panel == ActivePanel::Center;
-            let base = if is_selected {
-                Style::default().fg(theme::BG_HARD).bg(theme::BRIGHT_YELLOW)
-            } else {
-                Style::default().fg(theme::FG).bg(theme::BG)
-            };
-
+    render_resource_table(
+        f,
+        app,
+        configmaps,
+        area,
+        resource_header(vec!["NAME", "NAMESPACE", "KEYS", "AGE"]),
+        &[
+            Constraint::Percentage(35),
+            Constraint::Percentage(25),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
+        ],
+        "No configmaps in this namespace",
+        |cm| &cm.name,
+        |_i, cm, is_selected| {
+            let base = row_base_style(is_selected);
             Row::new(vec![
                 Cell::from(cm.name.as_str()).style(base),
                 Cell::from(cm.namespace.as_str()).style(base),
                 Cell::from(cm.data_keys_count.to_string()).style(base),
                 Cell::from(cm.age.as_str()).style(base),
             ])
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(35),
-            Constraint::Percentage(25),
-            Constraint::Percentage(15),
-            Constraint::Percentage(15),
-        ],
-    )
-    .header(header)
-    .style(Style::default().bg(theme::BG));
-
-    f.render_widget(table, area);
+        },
+    );
 }
 
 fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
@@ -1223,10 +1135,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
                     lines.push(key("j/k", "Scroll table rows"));
                     lines.push(key("p d s c n", "Switch resource view"));
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            "            ".to_string(),
-                            Style::default().fg(theme::FG4),
-                        ),
+                        Span::styled("            ".to_string(), Style::default().fg(theme::FG4)),
                         Span::styled(
                             "p=Pods d=Deploy s=Svc c=CM n=Nodes".to_string(),
                             Style::default().fg(theme::FG4),
@@ -1241,17 +1150,24 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(section("Global"));
     lines.push(Line::from(""));
-    lines.push(key("q", "Quit"));
+    lines.push(key("q/Ctrl+C", "Quit"));
     lines.push(key("Tab", "Switch panel (Sidebar ↔ Center)"));
+    lines.push(key("Shift+Tab", "Switch panel (reverse)"));
     lines.push(key("Ctrl+N", "Switch to tab N"));
     lines.push(key("/", "Search (filter by name)"));
+    lines.push(key("ESC", "Clear active filter / close overlay"));
     lines.push(key("r", "Force refresh"));
     lines.push(key("?", "Toggle this help"));
 
     // Footer
     lines.push(Line::from(""));
+    let footer_text = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) && !app.search_active {
+        "  Press ESC to clear filter, ? to close"
+    } else {
+        "  Press ESC or ? to close"
+    };
     lines.push(Line::from(Span::styled(
-        "  Press ESC or ? to close".to_string(),
+        footer_text.to_string(),
         Style::default().fg(theme::FG4),
     )));
 
