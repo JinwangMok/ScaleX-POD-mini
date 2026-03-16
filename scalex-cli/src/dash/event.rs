@@ -36,6 +36,9 @@ pub enum AppEvent {
     // Page navigation (half-viewport jumps)
     PageUp,
     PageDown,
+    // Jump to first/last item
+    Home,
+    End,
     // Character input (unmapped printable chars — used by search mode)
     CharInput(char),
     // Tick (periodic refresh)
@@ -82,6 +85,8 @@ fn map_key_event(key: KeyEvent) -> AppEvent {
         // Page navigation
         KeyCode::PageUp => AppEvent::PageUp,
         KeyCode::PageDown => AppEvent::PageDown,
+        KeyCode::Home => AppEvent::Home,
+        KeyCode::End => AppEvent::End,
         // Navigation — vim keys (typed as chars in search mode)
         KeyCode::Char('k') if !ctrl => AppEvent::Up,
         KeyCode::Char('j') if !ctrl => AppEvent::Down,

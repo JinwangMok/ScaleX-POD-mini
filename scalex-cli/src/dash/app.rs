@@ -402,9 +402,9 @@ impl App {
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
                 }
-                // Arrow keys and page keys in search mode: no-op (don't type characters)
+                // Arrow keys, page keys, Home/End in search mode: no-op (don't type characters)
                 AppEvent::ArrowUp | AppEvent::ArrowDown | AppEvent::ArrowLeft | AppEvent::ArrowRight
-                | AppEvent::PageUp | AppEvent::PageDown => {}
+                | AppEvent::PageUp | AppEvent::PageDown | AppEvent::Home | AppEvent::End => {}
                 // Tab/Shift+Tab: cancel search (clear query) and switch panel
                 AppEvent::NextPanel | AppEvent::PrevPanel => {
                     self.search_active = false;
@@ -500,6 +500,12 @@ impl App {
                     self.help_scroll_offset =
                         (self.help_scroll_offset + jump).min(max);
                 }
+                AppEvent::Home => {
+                    self.help_scroll_offset = 0;
+                }
+                AppEvent::End => {
+                    self.help_scroll_offset = self.help_content_line_count();
+                }
                 _ => {}
             }
             return;
@@ -511,6 +517,8 @@ impl App {
             AppEvent::Down | AppEvent::ArrowDown => self.move_down(),
             AppEvent::PageUp => self.page_up(),
             AppEvent::PageDown => self.page_down(),
+            AppEvent::Home => self.jump_home(),
+            AppEvent::End => self.jump_end(),
             AppEvent::Enter => self.handle_enter(),
             AppEvent::Left | AppEvent::ArrowLeft => self.collapse_node(),
             AppEvent::Right | AppEvent::ArrowRight => self.expand_node(),
@@ -702,6 +710,43 @@ impl App {
                     self.table_cursor = (self.table_cursor + jump).min(max - 1);
                 }
                 self.adjust_table_scroll();
+            }
+        }
+    }
+
+    fn jump_home(&mut self) {
+        match self.active_panel {
+            ActivePanel::Sidebar => {
+                self.tree_cursor = 0;
+                self.adjust_sidebar_scroll();
+            }
+            ActivePanel::Center => {
+                if self.active_tab == 1 {
+                    self.table_scroll_offset = 0;
+                } else {
+                    self.table_cursor = 0;
+                    self.adjust_table_scroll();
+                }
+            }
+        }
+    }
+
+    fn jump_end(&mut self) {
+        match self.active_panel {
+            ActivePanel::Sidebar => {
+                let visible = self.visible_tree_len();
+                self.tree_cursor = visible.saturating_sub(1);
+                self.adjust_sidebar_scroll();
+            }
+            ActivePanel::Center => {
+                if self.active_tab == 1 {
+                    let max = self.top_tab_line_count();
+                    self.table_scroll_offset = max.saturating_sub(1);
+                } else {
+                    let max = self.current_row_count();
+                    self.table_cursor = max.saturating_sub(1);
+                    self.adjust_table_scroll();
+                }
             }
         }
     }
@@ -1150,12 +1195,12 @@ impl App {
             5 // section + blank + 3 keys
         } else {
             match self.active_panel {
-                ActivePanel::Sidebar => 6, // section + blank + 4 keys
+                ActivePanel::Sidebar => 7, // section + blank + 5 keys (j/k, PgUp/Dn, Home/End, h/l, Enter)
                 ActivePanel::Center => {
                     if self.active_tab == 1 {
                         4 // section + blank + 2 keys
                     } else {
-                        6 // section + blank + 3 keys + desc line
+                        8 // section + blank + 5 keys (j/k, PgUp/Dn, Home/End, pdscn, desc) + desc line
                     }
                 }
             }
