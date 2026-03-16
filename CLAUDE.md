@@ -96,11 +96,11 @@ The TUI header is k9s-style and responsive:
 |-----|--------|
 | `j`/`k` or arrows | Move cursor (does **not** change selected cluster/namespace) |
 | `Enter` | Select cluster or namespace (sets active context for center panel) |
-| `h`/`l` or arrows | Collapse / Expand sidebar tree node |
+| `h`/`l` or arrows | Collapse / Expand node; Left on leaf/collapsed navigates to parent |
 | `Tab`/`Shift+Tab` | Cycle between Sidebar and Center panel |
 | `Ctrl+N` | Switch to tab N (1=Resources, 2=Top) |
 | `p` `d` `s` `c` `n` | Switch resource view (center panel only) |
-| `/` | Enter search mode (filter by name) |
+| `/` | Enter search mode (filter by name and namespace) |
 | `r` | Force data refresh |
 | `?` | Toggle help overlay (context-sensitive: shows keys for current panel/view) |
 | `ESC` | Close help overlay / Cancel search |
@@ -112,8 +112,11 @@ The TUI header is k9s-style and responsive:
 - **Active selection indicator**: selected node shown with `●` marker + bold aqua, distinct from yellow cursor highlight.
 - **View switch triggers refresh**: `p`/`d`/`s`/`c`/`n` sets `needs_refresh=true` for immediate re-fetch.
 - **Stale data indicator**: when a selective fetch completes for resource X, views showing other resource types display `[cached]` in their panel title (orange text). `App::is_view_stale()` compares `last_fetched_resource` against the current `ResourceView`.
-- **Connection failure display**: if `cluster_connection_status` maps a cluster to `ConnectionStatus::Failed`, the center panel renders an error message with retry hint instead of the resource table. Sidebar shows `[!!]` suffix in red.
+- **Connection failure display**: if `cluster_connection_status` maps a cluster to `ConnectionStatus::Failed`, the center panel (both Resources and Top tabs) renders an error message with retry hint instead of the resource table. Sidebar shows `[!!]` suffix in red.
 - **Stale fetch discard**: `App::fetch_generation` (u64 counter) is incremented on every navigation/view change. Each spawned fetch task captures the generation at launch; results are dropped if `result.generation != app.fetch_generation` on arrival, preventing stale overwrites.
+- **Left navigates to parent**: `h`/Left on a leaf node (namespace, infra item) or already-collapsed node navigates cursor to its parent. Leaf nodes cannot expand/collapse.
+- **Search matches name + namespace**: `/` search filters center table rows by both resource name and namespace (case-insensitive). Nodes view filters by name only.
+- **Status color coding**: Pod RESTARTS column: yellow (1-10), red (>10). Deployment READY column: green (ready≥desired), yellow (0<ready<desired), red (ready=0). Node roles show `<none>` when empty.
 
 ## Key Patterns
 
