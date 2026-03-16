@@ -1206,9 +1206,10 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(theme::BRIGHT_YELLOW))
         .style(Style::default().bg(theme::BG_HARD));
 
-    // Scroll if content exceeds inner area (popup_height - 2 for borders)
+    // Clamp user scroll offset to valid range
     let inner_height = popup_height.saturating_sub(2);
-    let scroll_offset = content_height.saturating_sub(inner_height);
+    let max_scroll = content_height.saturating_sub(inner_height);
+    let scroll_offset = app.help_scroll_offset.min(max_scroll);
 
     let paragraph = Paragraph::new(lines)
         .block(block)
