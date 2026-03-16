@@ -503,7 +503,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             ];
             let mut used_cols = prefix_cols + label_cols;
             if let Some((suffix, color)) = conn_suffix {
-                used_cols += suffix.len(); // suffix is ASCII
+                used_cols += suffix.chars().count();
                 spans.push(Span::styled(
                     suffix,
                     Style::default().fg(color).bg(suffix_bg),
