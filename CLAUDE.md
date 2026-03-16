@@ -97,6 +97,8 @@ The TUI header is k9s-style and responsive:
 | `j`/`k` or arrows | Move cursor (does **not** change selected cluster/namespace) |
 | `Enter` | Select cluster or namespace (sets active context for center panel) |
 | `h`/`l` or arrows | Collapse / Expand node; Left on leaf/collapsed navigates to parent |
+| `PgUp`/`PgDn` | Jump half viewport up/down |
+| `Home`/`End` | Jump to first/last item |
 | `Tab`/`Shift+Tab` | Cycle between Sidebar and Center panel |
 | `Ctrl+N` | Switch to tab N (1=Resources, 2=Top) |
 | `p` `d` `s` `c` `n` | Switch resource view (center panel only) |

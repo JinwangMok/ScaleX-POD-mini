@@ -1267,6 +1267,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(""));
                 lines.push(key("j/k", "Move cursor (no selection)"));
                 lines.push(key("PgUp/Dn", "Jump half page"));
+                lines.push(key("Home/End", "Jump to first/last"));
                 lines.push(key("h/l", "Collapse/Expand; Left on leaf → parent"));
                 lines.push(key("Enter", "Select cluster/namespace"));
             }
@@ -1281,6 +1282,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
                     lines.push(Line::from(""));
                     lines.push(key("j/k", "Scroll table rows"));
                     lines.push(key("PgUp/Dn", "Jump half page"));
+                    lines.push(key("Home/End", "Jump to first/last"));
                     lines.push(key("p d s c n", "Switch resource view"));
                     lines.push(Line::from(vec![
                         Span::styled("            ".to_string(), Style::default().fg(theme::FG4)),
