@@ -967,10 +967,12 @@ impl App {
 
         if !self.tree[idx].expanded {
             self.tree[idx].expanded = true;
-            // Populate children from cached snapshots (cluster nodes)
-            // No selection change — expand only. Use Enter to select.
-            self.sync_tree_from_snapshots();
-            self.sync_infra_tree();
+            // US-603: dispatch sync based on node type
+            match &self.tree[idx].node_type {
+                NodeType::Cluster(_) => self.sync_tree_from_snapshots(),
+                NodeType::InfraHeader => self.sync_infra_tree(),
+                _ => {} // Root: no children to sync
+            }
         }
     }
 
@@ -3308,6 +3310,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         ) {
                             app.tree[idx].expanded = true;
                         }
+                        // US-600: populate namespace children from cached snapshots
+                        app.sync_tree_from_snapshots();
                     }
                     app.needs_refresh = true;
                     app.fetch_generation += 1;
@@ -3329,6 +3333,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             if result.generation != app.fetch_generation {
                 app.is_fetching = false;
                 app.fetch_started_at = None;
+                app.fetch_timed_out = false; // US-602: clear stale timeout banner
                 continue;
             }
             match result.active_resource {

@@ -130,6 +130,8 @@ The TUI header is k9s-style and responsive:
 - **Node AGE column**: Nodes table shows AGE computed from node `creation_timestamp`, consistent with all other resource views.
 - **Service nodePort display**: Service PORTS column shows `port:nodePort/proto` for NodePort/LoadBalancer services, `port/proto` for ClusterIP.
 - **Status bar narrow terminal**: per-cluster CPU/MEM usage bars hidden when terminal width < 60 cols; self/latency info always shown.
+- **Health computation**: `compute_health` counts `OOMKilled`, `ImagePullBackOff`, `ErrImagePull` as failed pods (previously only `Failed`, `CrashLoopBackOff`, `Error`).
+- **expand_node dispatch**: `l`/Right on Cluster calls only `sync_tree_from_snapshots`; on InfraHeader calls only `sync_infra_tree`; Root calls neither.
 
 ## Key Patterns
 

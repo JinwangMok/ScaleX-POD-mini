@@ -538,7 +538,17 @@ pub fn compute_health(nodes: &[NodeInfo], pods: &[PodInfo]) -> HealthStatus {
     let not_ready_nodes = nodes.iter().filter(|n| n.status != "Ready").count();
     let failed_pods = pods
         .iter()
-        .filter(|p| matches!(p.status.as_str(), "Failed" | "CrashLoopBackOff" | "Error"))
+        .filter(|p| {
+            matches!(
+                p.status.as_str(),
+                "Failed"
+                    | "CrashLoopBackOff"
+                    | "Error"
+                    | "OOMKilled"
+                    | "ImagePullBackOff"
+                    | "ErrImagePull"
+            )
+        })
         .count();
 
     if not_ready_nodes > 0 || failed_pods > 5 {
@@ -631,7 +641,17 @@ pub fn compute_resource_usage(
     let running_pods = pods.iter().filter(|p| p.status == "Running").count();
     let failed_pods = pods
         .iter()
-        .filter(|p| matches!(p.status.as_str(), "Failed" | "CrashLoopBackOff" | "Error"))
+        .filter(|p| {
+            matches!(
+                p.status.as_str(),
+                "Failed"
+                    | "CrashLoopBackOff"
+                    | "Error"
+                    | "OOMKilled"
+                    | "ImagePullBackOff"
+                    | "ErrImagePull"
+            )
+        })
         .count();
 
     // Compute CPU/Mem percentages from metrics-server data if available
@@ -789,6 +809,54 @@ mod tests {
             ready: "0/1".into(),
             restarts: 0,
             age: "1h".into(),
+            node: "n1".into(),
+        }];
+        assert_eq!(compute_health(&nodes, &pods), HealthStatus::Yellow);
+    }
+
+    #[test]
+    fn health_yellow_when_oomkilled_pod() {
+        let nodes = vec![NodeInfo {
+            name: "n1".into(),
+            status: "Ready".into(),
+            roles: vec![],
+            cpu_capacity: "4".into(),
+            mem_capacity: "8Gi".into(),
+            cpu_allocatable: "4".into(),
+            mem_allocatable: "8Gi".into(),
+            age: "1d".into(),
+        }];
+        let pods = vec![PodInfo {
+            name: "p1".into(),
+            namespace: "default".into(),
+            status: "OOMKilled".into(),
+            ready: "0/1".into(),
+            restarts: 1,
+            age: "1h".into(),
+            node: "n1".into(),
+        }];
+        assert_eq!(compute_health(&nodes, &pods), HealthStatus::Yellow);
+    }
+
+    #[test]
+    fn health_yellow_when_imagepullbackoff_pod() {
+        let nodes = vec![NodeInfo {
+            name: "n1".into(),
+            status: "Ready".into(),
+            roles: vec![],
+            cpu_capacity: "4".into(),
+            mem_capacity: "8Gi".into(),
+            cpu_allocatable: "4".into(),
+            mem_allocatable: "8Gi".into(),
+            age: "1d".into(),
+        }];
+        let pods = vec![PodInfo {
+            name: "p1".into(),
+            namespace: "default".into(),
+            status: "ImagePullBackOff".into(),
+            ready: "0/1".into(),
+            restarts: 0,
+            age: "5m".into(),
             node: "n1".into(),
         }];
         assert_eq!(compute_health(&nodes, &pods), HealthStatus::Yellow);
