@@ -148,6 +148,10 @@ pub struct ClusterDef {
     /// SSH user for kubeconfig collection (defaults to cloud-init user or "root")
     #[serde(default)]
     pub ssh_user: Option<String>,
+    /// External API endpoint URL for dash connectivity (e.g., "https://api.tower.jinwang.dev")
+    /// When set, dash uses this URL instead of kubeconfig's internal IP.
+    #[serde(default)]
+    pub api_endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

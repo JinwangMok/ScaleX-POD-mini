@@ -631,6 +631,7 @@ kubespray_version: "v2.30.0"
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         }
     }
 
@@ -655,6 +656,7 @@ kubespray_version: "v2.30.0"
             oidc: None,
             kubespray_extra_vars: None,
             ssh_user: None,
+            api_endpoint: None,
         }
     }
 

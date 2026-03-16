@@ -19,7 +19,7 @@ pub enum ActiveResource {
 }
 
 /// Per-API-call timeout to prevent slow calls from blocking the entire fetch.
-const API_CALL_TIMEOUT: Duration = Duration::from_secs(3);
+const API_CALL_TIMEOUT: Duration = Duration::from_secs(2);
 
 // ---------------------------------------------------------------------------
 // Data models
