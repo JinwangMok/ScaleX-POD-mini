@@ -3186,6 +3186,12 @@ mod tests {
             "Enter on namespace should NOT retry failed clusters"
         );
     }
+
+    // --- US-1002: Stale fetch result should not clear is_fetching for active generation ---
+    // (Verified via code review: stale results in run_tui now skip is_fetching/fetch_started_at reset)
+
+    // --- US-1003: Auto-select first cluster moves tree_cursor ---
+    // (Verified in run_tui: tree_cursor set to cluster index on auto-select)
 }
 
 // ---------------------------------------------------------------------------
@@ -3305,11 +3311,16 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     // Auto-select first connected cluster if none selected
                     if app.selected_cluster.is_none() {
                         app.selected_cluster = Some(name.clone());
-                        // Expand the cluster node in sidebar
+                        // Expand the cluster node in sidebar and move cursor to it (US-1003)
+                        let visible = app.visible_tree_indices();
                         if let Some(idx) = app.tree.iter().position(
                             |n| matches!(&n.node_type, NodeType::Cluster(c) if c == &name),
                         ) {
                             app.tree[idx].expanded = true;
+                            // Move tree_cursor to this cluster in visible indices
+                            if let Some(vi) = visible.iter().position(|&i| i == idx) {
+                                app.tree_cursor = vi;
+                            }
                         }
                         // US-600: populate namespace children from cached snapshots
                         app.sync_tree_from_snapshots();
@@ -3330,11 +3341,11 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
 
         // --- Process fetch results (non-blocking) ---
         while let Ok(result) = fetch_rx.try_recv() {
-            // Discard stale results from a previous generation
+            // Discard stale results from a previous generation.
+            // Do NOT clear is_fetching here — a newer generation's fetch may be in-flight.
+            // Only clear fetch_timed_out to avoid stale timeout banners (US-602).
             if result.generation != app.fetch_generation {
-                app.is_fetching = false;
-                app.fetch_started_at = None;
-                app.fetch_timed_out = false; // US-602: clear stale timeout banner
+                app.fetch_timed_out = false;
                 continue;
             }
             match result.active_resource {
