@@ -58,7 +58,7 @@ scalex get config-files                  # Config file validation
 ## Testing
 
 ```bash
-# Rust CLI tests (653 tests)
+# Rust CLI tests (777 tests)
 cd scalex-cli && cargo test
 cargo clippy                             # Lint
 cargo fmt --check                        # Format check
@@ -84,6 +84,10 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Full prefetch for selected cluster**: Selected cluster always fetches ALL resource types (pods, deployments, services, configmaps, nodes, namespaces) in parallel on every fetch cycle. This makes view switching (p/d/s/c/n) instant — no network fetch needed since all data is cached. Non-selected clusters only fetch namespaces + nodes (for health dots + status bar). Each API call has a 2s `tokio::time::timeout` (`API_CALL_TIMEOUT` in `data.rs`). Headless mode (`--headless`) fetches all clusters in parallel with full resources.
 - **Selected-cluster-only fetch on navigation**: View switch (p/d/s/c/n), cluster select, and namespace select set `refresh_selected_only=true`, which skips non-selected clusters entirely. Timer refresh and manual refresh (`r` key) fetch all clusters. View switch skips fetch entirely if the target resource is already in `fetched_resources`.
 - **Incremental snapshot merge**: fetch results are merged per-cluster into existing `ClusterSnapshot` — selected cluster gets all resource fields updated; non-selected clusters only get namespaces + nodes updated (preserving cached pods/deployments/etc). Health/resource_usage are recomputed on every merge using the freshest available pods + nodes.
+- **Event-driven input loop**: TUI uses `tokio::select!` with crossterm `EventStream` instead of 100ms polling. Keyboard input has near-zero latency. Tick interval (100ms) drives spinner animation and periodic refresh checks. Biased select prioritizes keyboard over ticks.
+- **O(1) snapshot lookup**: `snapshot_index: HashMap<String, usize>` maps cluster name → position in `snapshots` vec. Updated inline during fetch merge. `current_snapshot()` uses index with name-guard + linear scan fallback.
+- **Pre-lowercased search**: `search_query_lower: Option<String>` synced once per event cycle via `sync_search_lower()`. Eliminates per-item `to_lowercase()` on query string during search filtering.
+- **Viewport-only sidebar rendering**: `render_sidebar` only builds `Line` objects for visible viewport rows (`scroll_offset..scroll_offset+height`), not all tree nodes. Combined with single snapshot lookup per cluster node (health dot + namespace count reuse same lookup).
 
 ### Header Layout
 
