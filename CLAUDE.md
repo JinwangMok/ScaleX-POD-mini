@@ -130,8 +130,15 @@ The TUI header is k9s-style and responsive:
 - **Node AGE column**: Nodes table shows AGE computed from node `creation_timestamp`, consistent with all other resource views.
 - **Service nodePort display**: Service PORTS column shows `port:nodePort/proto` for NodePort/LoadBalancer services, `port/proto` for ClusterIP.
 - **Status bar narrow terminal**: per-cluster CPU/MEM usage bars hidden when terminal width < 60 cols; self/latency info always shown.
-- **Health computation**: `compute_health` counts `OOMKilled`, `ImagePullBackOff`, `ErrImagePull` as failed pods (previously only `Failed`, `CrashLoopBackOff`, `Error`).
+- **Health computation**: `compute_health` counts `OOMKilled`, `ImagePullBackOff`, `ErrImagePull`, `Evicted` as failed pods. Uses `starts_with("Ready")` for nodes so `Ready,SchedulingDisabled` (cordoned) still counts as ready.
 - **expand_node dispatch**: `l`/Right on Cluster calls only `sync_tree_from_snapshots`; on InfraHeader calls only `sync_infra_tree`; Root calls neither.
+- **Stale fetch race safety**: stale fetch results (wrong generation) do NOT clear `is_fetching`/`fetch_started_at` — only the matching generation's result resets fetch state. Prevents duplicate API calls.
+- **Init container status**: `derive_effective_status` checks init containers first — shows `Init:N/M` when init containers are not yet complete, or `Init:CrashLoopBackOff (name)` on init error.
+- **Pod-level reason override**: `derive_effective_status` checks `status.reason` for `Evicted`, `NodeLost`, `Shutdown` before container-level checks.
+- **Cordoned node display**: nodes with `spec.unschedulable=true` show `Ready,SchedulingDisabled` status, colored yellow (not green). Top tab shows filled dot (●) for cordoned-but-ready nodes.
+- **Auto-select cursor alignment**: when first cluster auto-connects, `tree_cursor` moves to that cluster's tree index so visual cursor matches the selected context.
+- **Human-readable memory**: `format_k8s_memory()` converts raw K8s quantities (e.g., `7816040Ki` → `7.5Gi`) in nodes table and Top tab. CPU values pass through unchanged.
+- **No-metrics sentinel**: `compute_resource_usage` returns `-1.0` for CPU/MEM when no metrics-server data. `render_usage_bar` shows `N/A` for negative values. Top tab title shows `(no metrics)` suffix.
 
 ## Key Patterns
 
