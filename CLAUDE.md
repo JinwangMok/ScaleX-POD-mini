@@ -75,11 +75,12 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 ```
 
 - Displays clusters, node health, pod status, and resource capacity across all kubeconfigs in `_generated/`
-- **Auto-SSH-tunnel**: if K8s API (192.168.88.x:6443) is unreachable, tunnels through bastion node transparently
+- **3-tier cluster discovery**: `discover_clusters_streaming()` in `kube_client.rs` tries per cluster in parallel via `tokio::spawn`: (1) `api_endpoint` domain URL from `k8s-clusters.yaml` → (2) kubeconfig original IP → (3) SSH tunnel via bastion (500ms settle wait). Each probe has a 3s timeout.
+- **`api_endpoint` field**: Optional field on `ClusterDef` (`models/cluster.rs`). Set in `config/k8s-clusters.yaml` to provide a stable external URL (e.g., Cloudflare Tunnel domain) for dash connectivity without relying on LAN IPs or SSH tunnels.
 - After `install.sh`, `scalex dash` works without manual tunnel setup
 - `metrics_server_enabled` is hardcoded `false` in `kubespray.rs` — metrics utilization bars show N/A until enabled
 - **Skeleton startup**: TUI draws immediately on launch before first data fetch
-- **Selective fetch**: `ActiveResource` enum drives per-view fetching — only namespaces + nodes + the active resource type are fetched (3 API calls vs 7). Each API call has a 3s `tokio::time::timeout`. Headless mode (`--headless`) always does full fetch (all resources in parallel).
+- **Selective fetch**: `ActiveResource` enum drives per-view fetching — only namespaces + nodes + the active resource type are fetched (3 API calls vs 7). Each API call has a 2s `tokio::time::timeout` (`API_CALL_TIMEOUT` in `data.rs`). Headless mode (`--headless`) always does full fetch (all resources in parallel).
 - **Incremental snapshot merge**: selective fetch results are merged into existing `ClusterSnapshot` — only the fetched resource field is replaced; other fields retain their last known values. Health/resource_usage are recomputed on every merge using the freshest available pods + nodes.
 
 ### Keybindings
@@ -104,6 +105,7 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **View switch triggers refresh**: `p`/`d`/`s`/`c`/`n` sets `needs_refresh=true` for immediate re-fetch.
 - **Stale data indicator**: when a selective fetch completes for resource X, views showing other resource types display `[cached]` in their panel title (orange text). `App::is_view_stale()` compares `last_fetched_resource` against the current `ResourceView`.
 - **Connection failure display**: if `cluster_connection_status` maps a cluster to `ConnectionStatus::Failed`, the center panel renders an error message with retry hint instead of the resource table. Sidebar shows `[!!]` suffix in red.
+- **Stale fetch discard**: `App::fetch_generation` (u64 counter) is incremented on every navigation/view change. Each spawned fetch task captures the generation at launch; results are dropped if `result.generation != app.fetch_generation` on arrival, preventing stale overwrites.
 
 ## Key Patterns
 
