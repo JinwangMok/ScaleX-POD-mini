@@ -2809,11 +2809,11 @@ mod tests {
     }
 
     #[test]
-    fn help_scroll_offset_capped() {
+    fn help_scroll_offset_capped_no_viewport() {
         let mut app = test_app();
         app.show_help = true;
+        // With help_viewport_height=0, max_scroll = content_lines - 0 = content_lines
         let expected_max = app.help_content_line_count();
-        // Press Down 100 times — offset should be capped to content line count
         for _ in 0..100 {
             app.handle_event(AppEvent::Down);
         }
@@ -2821,6 +2821,31 @@ mod tests {
             app.help_scroll_offset, expected_max,
             "help_scroll_offset should be capped at content lines ({}), got {}",
             expected_max, app.help_scroll_offset
+        );
+    }
+
+    #[test]
+    fn help_scroll_offset_capped_with_viewport() {
+        let mut app = test_app();
+        app.show_help = true;
+        app.help_viewport_height = 10; // Simulates a 10-line popup inner height
+        let content = app.help_content_line_count();
+        let expected_max = content.saturating_sub(10);
+        // Press Down 100 times — offset should be capped to content - viewport
+        for _ in 0..100 {
+            app.handle_event(AppEvent::Down);
+        }
+        assert_eq!(
+            app.help_scroll_offset, expected_max,
+            "help_scroll_offset should be capped at content-viewport ({}), got {}",
+            expected_max, app.help_scroll_offset
+        );
+        // Press Up once — should immediately scroll back
+        app.handle_event(AppEvent::Up);
+        assert_eq!(
+            app.help_scroll_offset,
+            expected_max.saturating_sub(1),
+            "Up after reaching max should scroll back immediately"
         );
     }
 
@@ -3012,8 +3037,10 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             let body_height = term_size
                 .height
                 .saturating_sub(header_height + status_bar_height);
-            // Sidebar viewport = body height (right border only, no top/bottom border)
-            let sidebar_viewport = body_height as usize;
+            // Sidebar viewport = body height, minus 1 row for scroll indicator when content overflows (US-206)
+            let sidebar_overflows = app.visible_tree_len() > body_height as usize;
+            let sidebar_viewport =
+                (body_height as usize).saturating_sub(if sidebar_overflows { 1 } else { 0 });
             app.ensure_sidebar_scroll_visible(sidebar_viewport);
             // Table viewport = body height minus block borders (2) minus header row (1, Resources only) minus optional search bar (1)
             let search_offset: u16 = if app.search_active { 1 } else { 0 };
