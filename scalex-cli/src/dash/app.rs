@@ -3446,11 +3446,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             }
             _ = tick_interval.tick() => AppEvent::Tick,
         };
-        let is_tick = matches!(evt, AppEvent::Tick);
         app.handle_event(evt);
-        if is_tick {
-            app.tick_count += 1;
-        }
+        app.tick_count += 1;
 
         if !app.running {
             break Ok(());
