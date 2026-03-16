@@ -435,10 +435,9 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                             })
                         }
                     };
-                    // US-205: namespace count for expanded clusters
+                    // US-205: namespace count for expanded clusters (pre-computed in sync_tree_from_snapshots)
                     let label = if node.expanded {
-                        snap.map(|s| format!("{} ({}ns)", node.label, s.namespaces.len()))
-                            .unwrap_or_else(|| node.label.clone())
+                        node.ns_count_label.as_ref().cloned().unwrap_or_else(|| node.label.clone())
                     } else {
                         node.label.clone()
                     };
