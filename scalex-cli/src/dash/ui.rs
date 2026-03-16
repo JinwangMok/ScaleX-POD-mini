@@ -1197,7 +1197,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
     if app.search_active {
         lines.push(section("Search Mode"));
         lines.push(Line::from(""));
-        lines.push(key("<type>", "Filter by name"));
+        lines.push(key("<type>", "Filter by name/namespace"));
         lines.push(key("Enter", "Confirm search"));
         lines.push(key("ESC", "Cancel search"));
         lines.push(key("Backspace", "Delete character"));
@@ -1207,7 +1207,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
                 lines.push(section("Sidebar Navigation"));
                 lines.push(Line::from(""));
                 lines.push(key("j/k", "Move cursor (no selection)"));
-                lines.push(key("h/l", "Collapse / Expand node"));
+                lines.push(key("h/l", "Collapse/Expand; Left on leaf → parent"));
                 lines.push(key("Enter", "Select cluster/namespace"));
             }
             ActivePanel::Center => {
@@ -1241,7 +1241,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
     lines.push(key("Tab", "Switch panel (Sidebar ↔ Center)"));
     lines.push(key("Shift+Tab", "Switch panel (reverse)"));
     lines.push(key("Ctrl+N", "Switch to tab N"));
-    lines.push(key("/", "Search (filter by name)"));
+    lines.push(key("/", "Search (filter by name/namespace)"));
     lines.push(key("ESC", "Clear active filter / close overlay"));
     lines.push(key("r", "Force refresh"));
     lines.push(key("?", "Toggle this help"));
