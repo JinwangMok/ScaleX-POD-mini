@@ -134,8 +134,6 @@ pub async fn discover_clusters_streaming(
 
     // Collect cluster info for parallel discovery
     let mut cluster_infos = Vec::new();
-    let mut next_local_port: u16 = 16443;
-
     for entry in dirs {
         let path = entry.path();
         if !path.is_dir() {
@@ -152,8 +150,7 @@ pub async fn discover_clusters_streaming(
             .to_string();
 
         let endpoint = api_endpoints.get(&cluster_name).cloned();
-        let local_port = next_local_port;
-        next_local_port += 1;
+        let local_port = NEXT_TUNNEL_PORT.fetch_add(1, Ordering::Relaxed);
 
         cluster_infos.push((cluster_name, kubeconfig_path, endpoint, local_port));
     }
@@ -259,6 +256,10 @@ pub async fn discover_clusters_streaming(
     let _ = tx.send(DiscoverEvent::Complete).await;
 }
 
+/// Global atomic port counter for SSH tunnel allocation (US-212).
+/// Starts at 16443 and increments across initial discovery and retries to avoid conflicts.
+static NEXT_TUNNEL_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(16443);
+
 /// Re-discover only specific clusters by name (for retrying failed connections).
 /// Same 3-tier strategy as discover_clusters_streaming but filtered to only the given names.
 pub async fn discover_clusters_streaming_filtered(
@@ -275,7 +276,6 @@ pub async fn discover_clusters_streaming_filtered(
     let api_endpoints = load_api_endpoints(repo_root);
 
     let mut handles = Vec::new();
-    let mut next_local_port: u16 = 16543; // offset from initial discovery ports
 
     for name in names {
         let kubeconfig_path = dir.join(name).join("kubeconfig.yaml");
@@ -290,8 +290,7 @@ pub async fn discover_clusters_streaming_filtered(
         }
 
         let endpoint = api_endpoints.get(name).cloned();
-        let local_port = next_local_port;
-        next_local_port += 1;
+        let local_port = NEXT_TUNNEL_PORT.fetch_add(1, Ordering::Relaxed);
         let cluster_name = name.clone();
         let tx = tx.clone();
         let cancelled = cancelled.clone();
