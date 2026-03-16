@@ -1388,7 +1388,15 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    let status_text = vec![Line::from(health_spans), Line::from(usage_spans)];
+    let mut status_text = vec![Line::from(health_spans), Line::from(usage_spans)];
+
+    // Line 3: discovery log message (auto-fading)
+    if let Some(log_msg) = app.latest_discovery_log() {
+        status_text.push(Line::from(Span::styled(
+            format!(" {}", log_msg),
+            Style::default().fg(theme::FG4),
+        )));
+    }
 
     let paragraph = Paragraph::new(status_text).style(Style::default().bg(theme::BG_HARD));
     f.render_widget(paragraph, inner);
@@ -1509,6 +1517,13 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(Span::styled(
         footer_text.to_string(),
         Style::default().fg(theme::FG4),
+    )));
+
+    // k9s attribution
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Inspired by k9s (github.com/derailed/k9s)".to_string(),
+        Style::default().fg(Color::DarkGray),
     )));
 
     // -- Layout: auto-size height, centered --

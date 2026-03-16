@@ -139,6 +139,9 @@ The TUI header is k9s-style and responsive:
 - **Auto-select cursor alignment**: when first cluster auto-connects, `tree_cursor` moves to that cluster's tree index so visual cursor matches the selected context.
 - **Human-readable memory**: `format_k8s_memory()` converts raw K8s quantities (e.g., `7816040Ki` → `7.5Gi`) in nodes table and Top tab. CPU values pass through unchanged.
 - **No-metrics sentinel**: `compute_resource_usage` returns `-1.0` for CPU/MEM when no metrics-server data. `render_usage_bar` shows `N/A` for negative values. Top tab title shows `(no metrics)` suffix.
+- **Discovery log channel**: `DiscoverEvent::Log { message }` replaces all `eprintln!` in streaming discovery paths to avoid TUI corruption. Messages stored in `app.discovery_logs` (capped at 10) and displayed in status bar with ~10s auto-fade. Headless mode (`discover_clusters()`) retains `eprintln!` since no TUI is active.
+- **Domain-first kubeconfig**: `install.sh` `cleanup_api_tunnels()` rewrites kubeconfigs with `api_endpoint` domain URLs after CF Tunnel is healthy. Original VM IP kubeconfigs saved as `kubeconfig.yaml.original` for fallback. `scalex dash` Strategy 2b tries `.original` file when primary kubeconfig has a domain URL that is unreachable.
+- **k9s attribution**: help overlay (`?` key) footer shows "Inspired by k9s (github.com/derailed/k9s)" in DarkGray.
 
 ## Key Patterns
 
