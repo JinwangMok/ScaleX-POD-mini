@@ -25,6 +25,31 @@ subjects:
     name: scalex-dash
     namespace: scalex-system
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: scalex-dash-extra
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scalex-dash-extra
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: scalex-dash-extra
+subjects:
+  - kind: ServiceAccount
+    name: scalex-dash
+    namespace: scalex-system
+---
 apiVersion: v1
 kind: Secret
 metadata:

@@ -27,6 +27,8 @@ pub struct CloudflareSecrets {
     #[serde(default)]
     pub credentials_file: String,
     #[serde(default)]
+    pub tunnel_token: String,
+    #[serde(default)]
     pub cert_file: String,
 }
 
@@ -98,14 +100,14 @@ pub fn secrets_for_cluster(cluster_role: &str, secrets: &SecretsConfig) -> Vec<K
                     ],
                 },
             ];
-            // Cloudflare tunnel credentials (only if credentials_file is set)
-            if !secrets.cloudflare.credentials_file.is_empty() {
+            // Cloudflare tunnel token (token-based auth)
+            if !secrets.cloudflare.tunnel_token.is_empty() {
                 specs.push(K8sSecretSpec {
-                    name: "cloudflared-tunnel-credentials".to_string(),
+                    name: "cloudflared-tunnel-token".to_string(),
                     namespace: "kube-tunnel".to_string(),
                     data: vec![(
-                        "credentials.json".to_string(),
-                        secrets.cloudflare.credentials_file.clone(),
+                        "token".to_string(),
+                        secrets.cloudflare.tunnel_token.clone(),
                     )],
                 });
             }
@@ -150,9 +152,8 @@ mod tests {
                 repo_pat: "ghp_xxx".to_string(),
             },
             cloudflare: CloudflareSecrets {
-                credentials_file:
-                    "{\"AccountTag\":\"abc\",\"TunnelSecret\":\"xyz\",\"TunnelID\":\"123\"}"
-                        .to_string(),
+                credentials_file: String::new(),
+                tunnel_token: "cf-tunnel-token-abc123".to_string(),
                 cert_file: String::new(),
             },
         }
@@ -248,8 +249,8 @@ keycloak:
         assert_eq!(specs[1].name, "keycloak-db");
         assert_eq!(specs[1].namespace, "keycloak");
 
-        // cloudflared-tunnel-credentials
-        assert_eq!(specs[2].name, "cloudflared-tunnel-credentials");
+        // cloudflared-tunnel-token
+        assert_eq!(specs[2].name, "cloudflared-tunnel-token");
         assert_eq!(specs[2].namespace, "kube-tunnel");
     }
 
@@ -277,7 +278,7 @@ keycloak:
         assert_eq!(specs.len(), 2, "without cloudflare, only 2 secrets needed");
         assert!(specs
             .iter()
-            .all(|s| s.name != "cloudflared-tunnel-credentials"));
+            .all(|s| s.name != "cloudflared-tunnel-token"));
     }
 
     #[test]
@@ -470,7 +471,7 @@ keycloak:
   admin_password: "admin"
   db_password: "db"
 cloudflare:
-  credentials_file: '{"AccountTag":"x","TunnelSecret":"y","TunnelID":"z"}'
+  tunnel_token: "my-cf-tunnel-token"
 "#;
         let result = generate_all_secrets_manifests(yaml, "management").unwrap();
         let docs: Vec<&str> = result
@@ -478,7 +479,7 @@ cloudflare:
             .filter(|s| !s.trim().is_empty())
             .collect();
         assert_eq!(docs.len(), 3, "management + cloudflare = 3 secrets");
-        assert!(result.contains("cloudflared-tunnel-credentials"));
+        assert!(result.contains("cloudflared-tunnel-token"));
     }
 
     #[test]
@@ -502,6 +503,7 @@ keycloak:
 argocd:
   repo_pat: ""
 cloudflare:
+  tunnel_token: ""
   credentials_file: "credentials/cloudflare-tunnel.json"
   cert_file: ""
 "#;
@@ -511,5 +513,6 @@ cloudflare:
             config.cloudflare.credentials_file,
             "credentials/cloudflare-tunnel.json"
         );
+        assert!(config.cloudflare.tunnel_token.is_empty());
     }
 }
