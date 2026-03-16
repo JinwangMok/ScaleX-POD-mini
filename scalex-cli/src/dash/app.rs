@@ -3512,8 +3512,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
         let is_timer_refresh = last_refresh.elapsed() >= refresh_interval;
         let wants_refresh = app.needs_refresh || is_timer_refresh;
         if !app.is_fetching && !app.clusters.is_empty() && wants_refresh {
-            // Reload infra data on explicit refresh triggers (view switch, cluster select, r key)
-            if app.needs_refresh {
+            // Reload infra data only on manual refresh (r key) or timer, not view/namespace switch
+            if !app.refresh_selected_only || is_timer_refresh {
                 app.load_infra();
             }
             let selected_only = app.refresh_selected_only && !is_timer_refresh;

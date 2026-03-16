@@ -590,11 +590,9 @@ pub async fn discover_clusters_streaming_filtered(
 /// (from credentials/.baremetal-init.yaml) so the bastion can access
 /// remote cluster APIs without manual tunnel setup.
 pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
-    let mut clusters = Vec::new();
-
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(clusters),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e).context(format!("Reading kubeconfig dir: {}", dir.display())),
     };
 
@@ -605,138 +603,172 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
         .unwrap_or(Path::new("."));
     let bastion = resolve_bastion(repo_root);
     let api_endpoints = load_api_endpoints(repo_root);
-    let mut next_local_port: u16 = 16443;
 
-    for entry in entries {
-        let entry = entry?;
+    // Collect cluster info for parallel discovery
+    let mut cluster_infos = Vec::new();
+    let mut dirs: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    dirs.sort_by_key(|e| e.file_name());
+
+    for entry in dirs {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
-
         let kubeconfig_path = path.join("kubeconfig.yaml");
         if !kubeconfig_path.exists() {
             continue;
         }
-
         let cluster_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
+        let endpoint = api_endpoints.get(&cluster_name).cloned();
+        let local_port = NEXT_TUNNEL_PORT.fetch_add(1, Ordering::Relaxed);
+        cluster_infos.push((cluster_name, kubeconfig_path, endpoint, local_port));
+    }
 
-        // Strategy 1: api_endpoint (domain URL via CF Tunnel + SA token)
-        if let Some(ep) = api_endpoints.get(&cluster_name) {
-            // Resolve or auto-provision SA token
-            let mut token = super::sa_provisioner::read_cached_token(&kubeconfig_path);
-            if token.is_none() {
-                if let Some(ref bh) = bastion {
-                    eprintln!("{}: provisioning dash SA...", cluster_name);
-                    match super::sa_provisioner::provision_dash_sa(
-                        &kubeconfig_path, &cluster_name, bh,
-                    ).await {
-                        Ok(t) => {
-                            let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &t);
-                            token = Some(t);
+    // Spawn parallel discovery tasks (one per cluster)
+    let mut handles = Vec::new();
+    for (cluster_name, kubeconfig_path, endpoint, local_port) in cluster_infos {
+        let bastion = bastion.clone();
+        handles.push(tokio::spawn(async move {
+            // Strategy 1: api_endpoint (domain URL via CF Tunnel + SA token)
+            if let Some(ref ep) = endpoint {
+                let mut token = super::sa_provisioner::read_cached_token(&kubeconfig_path);
+                if token.is_none() {
+                    if let Some(ref bh) = bastion {
+                        eprintln!("{}: provisioning dash SA...", cluster_name);
+                        match super::sa_provisioner::provision_dash_sa(
+                            &kubeconfig_path, &cluster_name, bh,
+                        ).await {
+                            Ok(t) => {
+                                let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &t);
+                                token = Some(t);
+                            }
+                            Err(e) => {
+                                eprintln!("{}: SA provision failed: {}", cluster_name, e);
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("{}: SA provision failed: {}", cluster_name, e);
+                    }
+                }
+
+                match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
+                    Ok(client) => {
+                        if probe_client(&client).await {
+                            eprintln!("{}: connected via domain ({})", cluster_name, ep);
+                            let ver = fetch_server_version(&client).await;
+                            return Some(ClusterClient {
+                                name: cluster_name,
+                                kubeconfig_path,
+                                client,
+                                tunnel_pid: None,
+                                server_version: ver,
+                                endpoint: Some(ep.clone()),
+                            });
+                        } else {
+                            eprintln!("{}: domain probe failed ({})", cluster_name, ep);
                         }
+                    }
+                    Err(e) => {
+                        eprintln!("{}: domain client build failed ({}): {}", cluster_name, ep, e);
                     }
                 }
             }
 
-            match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
+            // Strategy 2: direct connection via kubeconfig IP
+            match build_client(&kubeconfig_path).await {
                 Ok(client) => {
-                    if probe_client(&client).await {
-                        eprintln!("{}: connected via domain ({})", cluster_name, ep);
+                    if kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
+                        .list(&kube::api::ListParams::default().limit(1))
+                        .await
+                        .is_ok()
+                    {
                         let ver = fetch_server_version(&client).await;
-                        clusters.push(ClusterClient {
+                        let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
+                        return Some(ClusterClient {
                             name: cluster_name,
                             kubeconfig_path,
                             client,
                             tunnel_pid: None,
                             server_version: ver,
-                            endpoint: Some(ep.clone()),
+                            endpoint: ep,
                         });
-                        continue;
-                    } else {
-                        eprintln!("{}: domain probe failed ({})", cluster_name, ep);
                     }
                 }
-                Err(e) => {
-                    eprintln!("{}: domain client build failed ({}): {}", cluster_name, ep, e);
+                Err(_) => {}
+            }
+
+            // Strategy 2b: .original kubeconfig fallback
+            let original_path = kubeconfig_path.with_extension("yaml.original");
+            if original_path.exists() {
+                if let Ok(client) = build_client(&original_path).await {
+                    if kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
+                        .list(&kube::api::ListParams::default().limit(1))
+                        .await
+                        .is_ok()
+                    {
+                        let ver = fetch_server_version(&client).await;
+                        let ep = extract_server_url(&original_path).map(|(url, _, _)| url);
+                        return Some(ClusterClient {
+                            name: cluster_name,
+                            kubeconfig_path,
+                            client,
+                            tunnel_pid: None,
+                            server_version: ver,
+                            endpoint: ep,
+                        });
+                    }
                 }
             }
-        }
 
-        // Strategy 2: direct connection via kubeconfig IP
-        match build_client(&kubeconfig_path).await {
-            Ok(client) => {
-                // Verify connectivity with a quick API call
-                if kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
-                    .list(&kube::api::ListParams::default().limit(1))
-                    .await
-                    .is_ok()
+            // Strategy 3: Auto-tunnel via bastion
+            if let Some(ref bastion_host) = bastion {
+                match setup_auto_tunnel(
+                    &kubeconfig_path,
+                    &cluster_name,
+                    bastion_host,
+                    local_port,
+                )
+                .await
                 {
-                    let ver = fetch_server_version(&client).await;
-                    let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
-                    clusters.push(ClusterClient {
-                        name: cluster_name,
-                        kubeconfig_path,
-                        client,
-                        tunnel_pid: None,
-                        server_version: ver,
-                        endpoint: ep,
-                    });
-                    continue;
+                    Ok((client, pid)) => {
+                        eprintln!(
+                            "Auto-tunnel: {} → localhost:{} via {}",
+                            cluster_name, local_port, bastion_host
+                        );
+                        let ver = fetch_server_version(&client).await;
+                        return Some(ClusterClient {
+                            name: cluster_name,
+                            kubeconfig_path,
+                            client,
+                            tunnel_pid: Some(pid),
+                            server_version: ver,
+                            endpoint: Some(format!("localhost:{} (tunnel)", local_port)),
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Auto-tunnel failed for {}: {}", cluster_name, e);
+                    }
                 }
-                // Direct connection built but API unreachable — fall through to tunnel
+            } else {
+                eprintln!(
+                    "Warning: Cannot reach {} and no bastion available for auto-tunnel",
+                    cluster_name
+                );
             }
-            Err(_) => {
-                // Kubeconfig load/client build failed — fall through to tunnel
-            }
-        }
 
-        // Auto-tunnel: set up SSH port forward through bastion
-        if let Some(ref bastion_host) = bastion {
-            match setup_auto_tunnel(
-                &kubeconfig_path,
-                &cluster_name,
-                bastion_host,
-                next_local_port,
-            )
-            .await
-            {
-                Ok((client, pid)) => {
-                    eprintln!(
-                        "Auto-tunnel: {} → localhost:{} via {}",
-                        cluster_name, next_local_port, bastion_host
-                    );
-                    let ver = fetch_server_version(&client).await;
-                    clusters.push(ClusterClient {
-                        name: cluster_name,
-                        kubeconfig_path,
-                        client,
-                        tunnel_pid: Some(pid),
-                        server_version: ver,
-                        endpoint: Some(format!("localhost:{} (tunnel)", next_local_port)),
-                    });
-                    next_local_port += 1;
-                    continue;
-                }
-                Err(e) => {
-                    eprintln!("Warning: Auto-tunnel failed for {}: {}", cluster_name, e);
-                }
-            }
-        } else {
-            eprintln!(
-                "Warning: Cannot reach {} and no bastion available for auto-tunnel",
-                cluster_name
-            );
-        }
+            None
+        }));
     }
 
+    // Collect results
+    let mut clusters = Vec::new();
+    for handle in handles {
+        if let Ok(Some(client)) = handle.await {
+            clusters.push(client);
+        }
+    }
     clusters.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(clusters)
 }
