@@ -328,10 +328,30 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     let visible = app.visible_tree_indices();
-    let lines: Vec<Line> = visible
+    let visible_len = visible.len();
+
+    // Reserve 1 row for scroll indicator when content overflows viewport (US-202)
+    let overflows = visible_len > inner.height as usize;
+    let (para_area, indicator_area) = if overflows {
+        let para_h = inner.height.saturating_sub(1);
+        (
+            Rect::new(inner.x, inner.y, inner.width, para_h),
+            Some(Rect::new(inner.x, inner.y + para_h, inner.width, 1)),
+        )
+    } else {
+        (inner, None)
+    };
+
+    // Viewport-only rendering: only build Line objects for visible rows
+    let viewport_height = para_area.height as usize;
+    let scroll_start = app.sidebar_scroll_offset;
+    let scroll_end = (scroll_start + viewport_height).min(visible_len);
+
+    let lines: Vec<Line> = visible[scroll_start..scroll_end]
         .iter()
         .enumerate()
-        .map(|(vi, &idx)| {
+        .map(|(row_in_viewport, &idx)| {
+            let vi = scroll_start + row_in_viewport; // absolute visible index
             let node = &app.tree[idx];
             let is_cursor = vi == app.tree_cursor && is_active;
 
@@ -340,7 +360,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 NodeType::Cluster(name) => {
                     app.selected_cluster.as_ref() == Some(name)
                         && app.selected_namespace.is_none()
-                        && !node.expanded // collapsed cluster = active; expanded = children handle it
+                        && !node.expanded
                 }
                 NodeType::Namespace { cluster, namespace } => {
                     app.selected_cluster.as_ref() == Some(cluster)
@@ -364,7 +384,6 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 (NodeType::InfraItem(_), _) => "  ",
             };
 
-            // Selection marker: fixed-width 2 chars to maintain column alignment
             let marker = if is_active_selection { "● " } else { "  " };
 
             let indent = "  ".repeat(node.depth);
@@ -377,14 +396,12 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let (style, marker_style, suffix_bg) = if is_cursor {
-                // Cursor: full-width yellow bg highlight
                 let cursor_style = Style::default()
                     .fg(theme::BG_HARD)
                     .bg(theme::BRIGHT_YELLOW)
                     .add_modifier(Modifier::BOLD);
                 (cursor_style, cursor_style, theme::BRIGHT_YELLOW)
             } else if is_active_selection {
-                // Active selection: bold with bright color, no bg change
                 let sel_style = Style::default()
                     .fg(theme::BRIGHT_AQUA)
                     .bg(theme::BG_HARD)
@@ -397,72 +414,63 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 (normal, marker_s, theme::BG_HARD)
             };
 
-            // Connection status suffix for cluster nodes (includes health dot for connected)
-            let conn_suffix = match &node.node_type {
-                NodeType::Cluster(name) => match app.cluster_connection_status.get(name) {
-                    Some(ConnectionStatus::Discovering) => Some((" [..]", theme::FG4)),
-                    Some(ConnectionStatus::Failed(_)) => Some((" [!!]", theme::BRIGHT_RED)),
-                    Some(ConnectionStatus::Connected) | None => {
-                        // Show health dot for connected clusters with snapshot data
-                        app.snapshots
-                            .iter()
-                            .find(|s| &s.name == name)
-                            .map(|s| match s.health {
+            // Connection status suffix + health dot (single snapshot lookup for both)
+            let (conn_suffix, label_with_ns) = match &node.node_type {
+                NodeType::Cluster(name) => {
+                    // Single snapshot lookup reused for both health dot and namespace count
+                    let snap = app.snapshot_index
+                        .get(name)
+                        .and_then(|&i| app.snapshots.get(i))
+                        .or_else(|| app.snapshots.iter().find(|s| &s.name == name));
+
+                    let suffix = match app.cluster_connection_status.get(name) {
+                        Some(ConnectionStatus::Discovering) => Some((" [..]", theme::FG4)),
+                        Some(ConnectionStatus::Failed(_)) => Some((" [!!]", theme::BRIGHT_RED)),
+                        Some(ConnectionStatus::Connected) | None => {
+                            snap.map(|s| match s.health {
                                 data::HealthStatus::Green => (" ●", theme::BRIGHT_GREEN),
                                 data::HealthStatus::Yellow => (" ●", theme::BRIGHT_YELLOW),
                                 data::HealthStatus::Red => (" ●", theme::BRIGHT_RED),
                                 data::HealthStatus::Unknown => (" ○", theme::FG4),
                             })
-                    }
-                },
-                _ => None,
+                        }
+                    };
+                    // US-205: namespace count for expanded clusters
+                    let label = if node.expanded {
+                        snap.map(|s| format!("{} ({}ns)", node.label, s.namespaces.len()))
+                            .unwrap_or_else(|| node.label.clone())
+                    } else {
+                        node.label.clone()
+                    };
+                    (suffix, label)
+                }
+                _ => (None, node.label.clone()),
             };
 
-            // US-205: Append namespace count for expanded clusters
-            let label_with_ns = match &node.node_type {
-                NodeType::Cluster(name) if node.expanded => app
-                    .snapshots
-                    .iter()
-                    .find(|s| &s.name == name)
-                    .map(|s| format!("{} ({}ns)", node.label, s.namespaces.len()))
-                    .unwrap_or_else(|| node.label.clone()),
-                _ => node.label.clone(),
-            };
-
-            // Truncate label to fit sidebar width.
-            // Use display-column widths, not byte lengths — Unicode markers (●, ▼, ▶)
-            // are 3 bytes each but 1 display column.
-            let indent_cols = 2 * node.depth; // "  ".repeat(depth) — pure ASCII
-            let marker_cols: usize = 2; // "● " or "  " — always 2 display columns
-            let icon_cols: usize = 2; // "▼ " / "▶ " / "  " — always 2 display columns
+            // Truncate label to fit sidebar width
+            let indent_cols = 2 * node.depth;
+            let marker_cols: usize = 2;
+            let icon_cols: usize = 2;
             let prefix_cols = indent_cols + marker_cols + icon_cols;
             let suffix_cols = conn_suffix
                 .as_ref()
                 .map(|(s, _)| s.chars().count())
                 .unwrap_or(0);
             let available = (inner.width as usize).saturating_sub(prefix_cols + suffix_cols);
-            // Labels are k8s names (ASCII), so chars().count() == display columns
             let label_char_count = label_with_ns.chars().count();
             let display_label: String = if label_char_count > available {
                 if available > 1 {
                     let truncated: String = label_with_ns.chars().take(available - 1).collect();
                     format!("{}…", truncated)
+                } else if available == 1 {
+                    "…".to_string()
                 } else {
-                    if available == 1 {
-                        "…".to_string()
-                    } else {
-                        String::new()
-                    }
+                    String::new()
                 }
             } else {
                 label_with_ns
             };
-            // Display columns for the label
-            let label_cols = if label_char_count > available {
-                available
-            } else {
-                label_char_count
-            };
+            let label_cols = label_char_count.min(available);
 
             let mut spans = vec![
                 Span::styled(indent, style),
@@ -493,21 +501,8 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    // Reserve 1 row for scroll indicator when content overflows viewport (US-202)
-    let visible_len = app.visible_tree_len();
-    let overflows = visible_len > inner.height as usize;
-    let (para_area, indicator_area) = if overflows {
-        let para_h = inner.height.saturating_sub(1);
-        (
-            Rect::new(inner.x, inner.y, inner.width, para_h),
-            Some(Rect::new(inner.x, inner.y + para_h, inner.width, 1)),
-        )
-    } else {
-        (inner, None)
-    };
-
-    let paragraph =
-        Paragraph::new(lines).scroll((app.sidebar_scroll_offset.min(u16::MAX as usize) as u16, 0));
+    // No scroll offset — we already built only viewport-visible lines
+    let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, para_area);
 
     // Scroll indicator on dedicated line (never overlaps tree content)
