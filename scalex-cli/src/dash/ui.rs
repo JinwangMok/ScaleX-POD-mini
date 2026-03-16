@@ -882,7 +882,10 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
                 | "ImagePullBackOff"
                 | "ErrImagePull"
                 | "CreateContainerConfigError"
-                | "InvalidImageName" => theme::BRIGHT_RED,
+                | "InvalidImageName"
+                | "Evicted"
+                | "NodeLost"
+                | "Shutdown" => theme::BRIGHT_RED,
                 s if s.starts_with("Init:") => {
                     if s.contains("Error") || s.contains("CrashLoopBackOff") {
                         theme::BRIGHT_RED
@@ -1072,6 +1075,8 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
             } else {
                 let status_color = if node.status == "Ready" {
                     theme::BRIGHT_GREEN
+                } else if node.status.contains("SchedulingDisabled") {
+                    theme::BRIGHT_YELLOW
                 } else {
                     theme::BRIGHT_RED
                 };
@@ -1158,9 +1163,11 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     for node in &filtered_nodes {
-        let status_icon = if node.status == "Ready" { "●" } else { "○" };
+        let status_icon = if node.status.starts_with("Ready") { "●" } else { "○" };
         let status_color = if node.status == "Ready" {
             theme::BRIGHT_GREEN
+        } else if node.status.contains("SchedulingDisabled") {
+            theme::BRIGHT_YELLOW
         } else {
             theme::BRIGHT_RED
         };

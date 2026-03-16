@@ -151,6 +151,9 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
                 .and_then(|s| s.phase.clone())
                 .unwrap_or_else(|| "Unknown".into());
 
+            let init_container_statuses = status
+                .map(|s| s.init_container_statuses.clone().unwrap_or_default())
+                .unwrap_or_default();
             let container_statuses = status
                 .map(|s| s.container_statuses.clone().unwrap_or_default())
                 .unwrap_or_default();
@@ -161,7 +164,12 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
             let effective_status = if has_deletion_timestamp {
                 "Terminating".to_string()
             } else {
-                derive_effective_status(&phase, &container_statuses)
+                derive_effective_status(
+                    &phase,
+                    &container_statuses,
+                    &init_container_statuses,
+                    status.and_then(|s| s.reason.as_deref()),
+                )
             };
 
             let ready_count = container_statuses.iter().filter(|c| c.ready).count();
@@ -205,7 +213,7 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
             let conditions = status
                 .map(|s| s.conditions.clone().unwrap_or_default())
                 .unwrap_or_default();
-            let node_status = conditions
+            let ready_str = conditions
                 .iter()
                 .find(|c| c.type_ == "Ready")
                 .map(|c| {
@@ -215,8 +223,13 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
                         "NotReady"
                     }
                 })
-                .unwrap_or("Unknown")
-                .to_string();
+                .unwrap_or("Unknown");
+            // Append SchedulingDisabled for cordoned nodes (spec.unschedulable=true)
+            let node_status = if spec.and_then(|s| s.unschedulable).unwrap_or(false) {
+                format!("{},SchedulingDisabled", ready_str)
+            } else {
+                ready_str.to_string()
+            };
 
             let labels = meta.labels.as_ref();
             let roles: Vec<String> = labels
@@ -230,8 +243,6 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
 
             let capacity = status.and_then(|s| s.capacity.as_ref());
             let allocatable = status.and_then(|s| s.allocatable.as_ref());
-
-            let _ = spec; // suppress unused warning
 
             let age = meta
                 .creation_timestamp
@@ -536,7 +547,7 @@ pub fn filter_snapshot_by_resource(
 // ---------------------------------------------------------------------------
 
 pub fn compute_health(nodes: &[NodeInfo], pods: &[PodInfo]) -> HealthStatus {
-    let not_ready_nodes = nodes.iter().filter(|n| n.status != "Ready").count();
+    let not_ready_nodes = nodes.iter().filter(|n| !n.status.starts_with("Ready")).count();
     let failed_pods = pods
         .iter()
         .filter(|p| {
@@ -548,6 +559,7 @@ pub fn compute_health(nodes: &[NodeInfo], pods: &[PodInfo]) -> HealthStatus {
                     | "OOMKilled"
                     | "ImagePullBackOff"
                     | "ErrImagePull"
+                    | "Evicted"
             )
         })
         .count();
@@ -637,7 +649,7 @@ pub fn compute_resource_usage(
     node_metrics: Option<&[NodeMetrics]>,
 ) -> ResourceUsage {
     let total_nodes = nodes.len();
-    let ready_nodes = nodes.iter().filter(|n| n.status == "Ready").count();
+    let ready_nodes = nodes.iter().filter(|n| n.status.starts_with("Ready")).count();
     let total_pods = pods.len();
     let running_pods = pods.iter().filter(|p| p.status == "Running").count();
     let succeeded_pods = pods
@@ -655,6 +667,7 @@ pub fn compute_resource_usage(
                     | "OOMKilled"
                     | "ImagePullBackOff"
                     | "ErrImagePull"
+                    | "Evicted"
             )
         })
         .count();
@@ -701,10 +714,53 @@ pub fn compute_resource_usage(
 
 /// Derive effective pod status by checking container waiting reasons.
 /// K8s reports phase=Running even when containers are in CrashLoopBackOff.
+/// Also handles init containers (Init:N/M) and pod-level reasons (Evicted).
 fn derive_effective_status(
     phase: &str,
     container_statuses: &[k8s_openapi::api::core::v1::ContainerStatus],
+    init_container_statuses: &[k8s_openapi::api::core::v1::ContainerStatus],
+    pod_reason: Option<&str>,
 ) -> String {
+    // Pod-level reason overrides phase (e.g., Evicted)
+    if let Some(reason) = pod_reason {
+        if reason == "Evicted" || reason == "NodeLost" || reason == "Shutdown" {
+            return reason.to_string();
+        }
+    }
+
+    // Check init containers first: if any init container is not completed,
+    // show Init:completed/total (mirrors kubectl behavior)
+    if !init_container_statuses.is_empty() {
+        let total = init_container_statuses.len();
+        let completed = init_container_statuses
+            .iter()
+            .filter(|cs| {
+                cs.state
+                    .as_ref()
+                    .and_then(|s| s.terminated.as_ref())
+                    .is_some_and(|t| t.exit_code == 0)
+            })
+            .count();
+        if completed < total {
+            // Check for error in init containers
+            for cs in init_container_statuses {
+                if let Some(state) = &cs.state {
+                    if let Some(waiting) = &state.waiting {
+                        if let Some(reason) = &waiting.reason {
+                            match reason.as_str() {
+                                "CrashLoopBackOff" | "ImagePullBackOff" | "ErrImagePull" => {
+                                    return format!("Init:{} ({})", reason, cs.name);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            return format!("Init:{}/{}", completed, total);
+        }
+    }
+
     // Check for waiting containers with error reasons
     for cs in container_statuses {
         if let Some(state) = &cs.state {
@@ -976,7 +1032,7 @@ mod tests {
     #[test]
     fn derive_status_returns_phase_when_no_waiting() {
         let statuses = vec![];
-        assert_eq!(derive_effective_status("Running", &statuses), "Running");
+        assert_eq!(derive_effective_status("Running", &statuses, &[], None), "Running");
     }
 
     #[test]
@@ -1000,7 +1056,7 @@ mod tests {
             ..Default::default()
         }];
         assert_eq!(
-            derive_effective_status("Running", &statuses),
+            derive_effective_status("Running", &statuses, &[], None),
             "CrashLoopBackOff"
         );
     }
@@ -1157,6 +1213,130 @@ mod tests {
             }),
             ..Default::default()
         }];
-        assert_eq!(derive_effective_status("Running", &statuses), "OOMKilled");
+        assert_eq!(derive_effective_status("Running", &statuses, &[], None), "OOMKilled");
+    }
+
+    #[test]
+    fn derive_status_evicted_pod() {
+        assert_eq!(
+            derive_effective_status("Failed", &[], &[], Some("Evicted")),
+            "Evicted"
+        );
+    }
+
+    #[test]
+    fn derive_status_init_containers_pending() {
+        use k8s_openapi::api::core::v1::{
+            ContainerState, ContainerStateWaiting, ContainerStatus,
+        };
+
+        let init_statuses = vec![
+            ContainerStatus {
+                name: "init-1".into(),
+                ready: false,
+                restart_count: 0,
+                image: "busybox:latest".into(),
+                image_id: "".into(),
+                state: Some(ContainerState {
+                    waiting: Some(ContainerStateWaiting {
+                        reason: Some("PodInitializing".into()),
+                        message: None,
+                    }),
+                    running: None,
+                    terminated: None,
+                }),
+                ..Default::default()
+            },
+            ContainerStatus {
+                name: "init-2".into(),
+                ready: false,
+                restart_count: 0,
+                image: "busybox:latest".into(),
+                image_id: "".into(),
+                state: Some(ContainerState {
+                    waiting: Some(ContainerStateWaiting {
+                        reason: Some("PodInitializing".into()),
+                        message: None,
+                    }),
+                    running: None,
+                    terminated: None,
+                }),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            derive_effective_status("Pending", &[], &init_statuses, None),
+            "Init:0/2"
+        );
+    }
+
+    #[test]
+    fn derive_status_init_containers_partial() {
+        use k8s_openapi::api::core::v1::{
+            ContainerState, ContainerStateTerminated, ContainerStateWaiting, ContainerStatus,
+        };
+
+        let init_statuses = vec![
+            ContainerStatus {
+                name: "init-1".into(),
+                ready: false,
+                restart_count: 0,
+                image: "busybox:latest".into(),
+                image_id: "".into(),
+                state: Some(ContainerState {
+                    waiting: None,
+                    running: None,
+                    terminated: Some(ContainerStateTerminated {
+                        exit_code: 0,
+                        ..Default::default()
+                    }),
+                }),
+                ..Default::default()
+            },
+            ContainerStatus {
+                name: "init-2".into(),
+                ready: false,
+                restart_count: 0,
+                image: "busybox:latest".into(),
+                image_id: "".into(),
+                state: Some(ContainerState {
+                    waiting: Some(ContainerStateWaiting {
+                        reason: Some("PodInitializing".into()),
+                        message: None,
+                    }),
+                    running: None,
+                    terminated: None,
+                }),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            derive_effective_status("Pending", &[], &init_statuses, None),
+            "Init:1/2"
+        );
+    }
+
+    #[test]
+    fn health_counts_evicted_as_failed() {
+        let nodes = vec![NodeInfo {
+            name: "n1".into(),
+            status: "Ready".into(),
+            roles: vec![],
+            cpu_capacity: "4".into(),
+            mem_capacity: "8Gi".into(),
+            cpu_allocatable: "4".into(),
+            mem_allocatable: "8Gi".into(),
+            age: "1d".into(),
+        }];
+        let pods = vec![PodInfo {
+            name: "evicted-pod".into(),
+            namespace: "default".into(),
+            status: "Evicted".into(),
+            ready: "0/1".into(),
+            restarts: 0,
+            age: "1h".into(),
+            node: "n1".into(),
+        }];
+        assert_eq!(compute_health(&nodes, &pods), HealthStatus::Yellow);
     }
 }
