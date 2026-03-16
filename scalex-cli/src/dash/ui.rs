@@ -1,5 +1,5 @@
 use crate::dash::app::{ActivePanel, App, ConnectionStatus, NodeType, ResourceView};
-use crate::dash::data::HealthStatus;
+use crate::dash::data::{self, HealthStatus};
 use crate::dash::theme;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -30,12 +30,19 @@ pub fn render(f: &mut Frame, app: &App) {
 
     render_header(f, app, vertical[0]);
 
-    // Body: sidebar | center
+    // Body: sidebar | center (responsive sidebar width)
+    let sidebar_width = if size.width < 60 {
+        20
+    } else if size.width < 80 {
+        24
+    } else {
+        28
+    };
     let horizontal = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(28), // sidebar
-            Constraint::Min(20),    // center
+            Constraint::Length(sidebar_width),
+            Constraint::Min(20), // center
         ])
         .split(vertical[1]);
 
@@ -415,17 +422,41 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 _ => None,
             };
 
+            // Truncate label to fit sidebar width
+            let prefix_width = indent.len() + marker.len() + icon.len();
+            let suffix_width = conn_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
+            let available = (inner.width as usize).saturating_sub(prefix_width + suffix_width);
+            let display_label: String = if node.label.len() > available && available > 1 {
+                let truncated: String = node.label.chars().take(available - 1).collect();
+                format!("{}…", truncated)
+            } else {
+                node.label.clone()
+            };
+
+            let label_len = display_label.len();
             let mut spans = vec![
                 Span::styled(indent, style),
                 Span::styled(marker, marker_style),
                 Span::styled(icon, style),
-                Span::styled(&node.label, style),
+                Span::styled(display_label, style),
             ];
+            let mut used_width = prefix_width + label_len;
             if let Some((suffix, color)) = conn_suffix {
+                used_width += suffix.len();
                 spans.push(Span::styled(
                     suffix,
                     Style::default().fg(color).bg(suffix_bg),
                 ));
+            }
+            // Pad to full sidebar width so cursor/selection highlight fills the row
+            let pad = (inner.width as usize).saturating_sub(used_width);
+            if pad > 0 {
+                let pad_style = if is_cursor {
+                    style
+                } else {
+                    Style::default().bg(theme::BG_HARD)
+                };
+                spans.push(Span::styled(" ".repeat(pad), pad_style));
             }
 
             Line::from(spans)
@@ -434,6 +465,26 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(lines).scroll((app.sidebar_scroll_offset as u16, 0));
     f.render_widget(paragraph, inner);
+
+    // Scroll indicator when content overflows viewport
+    let visible_len = app.visible_tree_len();
+    if visible_len > inner.height as usize {
+        let indicator = format!(
+            " {}/{} ",
+            (app.tree_cursor + 1).min(visible_len),
+            visible_len,
+        );
+        let x = inner.x;
+        let y = inner.y + inner.height.saturating_sub(1);
+        if y < inner.y + inner.height {
+            let indicator_area = Rect::new(x, y, indicator.len().min(inner.width as usize) as u16, 1);
+            let indicator_widget = Paragraph::new(Span::styled(
+                indicator,
+                Style::default().fg(theme::FG4).bg(theme::BG_HARD),
+            ));
+            f.render_widget(indicator_widget, indicator_area);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -568,8 +619,10 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
-    // Check for connection failure before attempting snapshot lookup
+/// Render connection error or empty/loading state for a tab.
+/// Returns `Some(snapshot)` if data is available, `None` if a placeholder was rendered.
+fn render_tab_preamble<'a>(f: &mut Frame, app: &'a App, area: Rect) -> Option<&'a data::ClusterSnapshot> {
+    // Check for connection failure
     if let Some(cluster_name) = &app.selected_cluster {
         if let Some(ConnectionStatus::Failed(err_msg)) =
             app.cluster_connection_status.get(cluster_name)
@@ -593,32 +646,38 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
             ];
             let paragraph = Paragraph::new(lines).style(Style::default().bg(theme::BG));
             f.render_widget(paragraph, area);
-            return;
+            return None;
         }
     }
 
-    let snapshot = match app.current_snapshot() {
+    if let Some(s) = app.current_snapshot() {
+        return Some(s);
+    }
+
+    let spinner_chars = ['|', '/', '-', '\\'];
+    let spinner = spinner_chars[(app.tick_count as usize) % 4];
+    let msg = if !app.discover_complete {
+        format!("  {} Discovering clusters...", spinner)
+    } else if app.snapshots.is_empty() && app.is_fetching {
+        format!("  {} Loading cluster data...", spinner)
+    } else if app.all_clusters_failed() {
+        "  All clusters failed to connect. Check sidebar for details. Press 'r' to retry.".to_string()
+    } else if app.snapshots.is_empty() && app.clusters.is_empty() {
+        "  No clusters found. Run 'scalex cluster init' first.".to_string()
+    } else if app.is_fetching {
+        format!("  {} Loading...", spinner)
+    } else {
+        "  Select a cluster and press Enter".to_string()
+    };
+    let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+    f.render_widget(paragraph, area);
+    None
+}
+
+fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
+    let snapshot = match render_tab_preamble(f, app, area) {
         Some(s) => s,
-        None => {
-            let spinner_chars = ['|', '/', '-', '\\'];
-            let spinner = spinner_chars[(app.tick_count as usize) % 4];
-            let msg = if !app.discover_complete {
-                format!("  {} Discovering clusters...", spinner)
-            } else if app.snapshots.is_empty() && app.is_fetching {
-                format!("  {} Loading cluster data...", spinner)
-            } else if app.all_clusters_failed() {
-                "  All clusters failed to connect. Check sidebar for details. Press 'r' to retry.".to_string()
-            } else if app.snapshots.is_empty() && app.clusters.is_empty() {
-                "  No clusters found. Run 'scalex cluster init' first.".to_string()
-            } else if app.selected_cluster.is_some() && app.is_fetching {
-                format!("  {} Loading...", spinner)
-            } else {
-                "  Select a cluster and press Enter".to_string()
-            };
-            let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
-            f.render_widget(paragraph, area);
-            return;
-        }
+        None => return,
     };
 
     match app.resource_view {
@@ -633,6 +692,7 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
 /// Generic table renderer — handles filter, empty state, cursor clamping, viewport, selection highlight.
 /// `filter_fn` returns true if the item matches the current search query.
 /// `row_fn(index, item, is_selected)` builds a styled Row for each visible item.
+#[allow(clippy::too_many_arguments)]
 fn render_resource_table<'a, T, F, R>(
     f: &mut Frame,
     app: &App,
@@ -709,13 +769,13 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
         area,
         resource_header(vec!["NAME", "NAMESPACE", "STATUS", "READY", "RESTARTS", "AGE", "NODE"]),
         &[
-            Constraint::Percentage(22),
-            Constraint::Percentage(14),
-            Constraint::Percentage(12),
-            Constraint::Percentage(8),
-            Constraint::Percentage(10),
-            Constraint::Percentage(8),
-            Constraint::Percentage(20),
+            Constraint::Min(16),
+            Constraint::Min(10),
+            Constraint::Min(10),
+            Constraint::Length(7),
+            Constraint::Length(10),
+            Constraint::Length(6),
+            Constraint::Min(12),
         ],
         "No pods in this namespace",
         |pod| app.matches_search_with_ns(&pod.name, &pod.namespace),
@@ -779,12 +839,12 @@ fn render_deployments_table(
         area,
         resource_header(vec!["NAME", "NAMESPACE", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"]),
         &[
-            Constraint::Percentage(25),
-            Constraint::Percentage(15),
-            Constraint::Percentage(12),
-            Constraint::Percentage(15),
-            Constraint::Percentage(15),
-            Constraint::Percentage(10),
+            Constraint::Min(16),
+            Constraint::Min(10),
+            Constraint::Length(8),
+            Constraint::Length(12),
+            Constraint::Length(11),
+            Constraint::Length(6),
         ],
         "No deployments in this namespace",
         |dep| app.matches_search_with_ns(&dep.name, &dep.namespace),
@@ -838,12 +898,12 @@ fn render_services_table(
         area,
         resource_header(vec!["NAME", "NAMESPACE", "TYPE", "CLUSTER-IP", "PORTS", "AGE"]),
         &[
-            Constraint::Percentage(22),
-            Constraint::Percentage(14),
-            Constraint::Percentage(12),
-            Constraint::Percentage(18),
-            Constraint::Percentage(20),
-            Constraint::Percentage(8),
+            Constraint::Min(16),
+            Constraint::Min(10),
+            Constraint::Length(12),
+            Constraint::Length(16),
+            Constraint::Min(12),
+            Constraint::Length(6),
         ],
         "No services in this namespace",
         |svc| app.matches_search_with_ns(&svc.name, &svc.namespace),
@@ -869,11 +929,11 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
         area,
         resource_header(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY"]),
         &[
-            Constraint::Percentage(25),
-            Constraint::Percentage(12),
-            Constraint::Percentage(18),
-            Constraint::Percentage(20),
-            Constraint::Percentage(25),
+            Constraint::Min(16),
+            Constraint::Length(10),
+            Constraint::Min(12),
+            Constraint::Min(10),
+            Constraint::Min(14),
         ],
         "No nodes found",
         |node| app.matches_search(&node.name),
@@ -927,10 +987,10 @@ fn render_configmaps_table(
         area,
         resource_header(vec!["NAME", "NAMESPACE", "KEYS", "AGE"]),
         &[
-            Constraint::Percentage(35),
-            Constraint::Percentage(25),
-            Constraint::Percentage(15),
-            Constraint::Percentage(15),
+            Constraint::Min(20),
+            Constraint::Min(14),
+            Constraint::Length(8),
+            Constraint::Length(6),
         ],
         "No configmaps in this namespace",
         |cm| app.matches_search_with_ns(&cm.name, &cm.namespace),
@@ -947,56 +1007,9 @@ fn render_configmaps_table(
 }
 
 fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
-    // Check for connection failure (mirrors render_resources_tab error handling)
-    if let Some(cluster_name) = &app.selected_cluster {
-        if let Some(ConnectionStatus::Failed(err_msg)) =
-            app.cluster_connection_status.get(cluster_name)
-        {
-            let lines = vec![
-                Line::from(vec![
-                    Span::styled("  [!!] ", Style::default().fg(theme::BRIGHT_RED)),
-                    Span::styled(
-                        format!("Cannot connect to {}", cluster_name),
-                        Style::default().fg(theme::BRIGHT_RED),
-                    ),
-                ]),
-                Line::from(Span::styled(
-                    format!("       {}", err_msg),
-                    Style::default().fg(theme::FG4),
-                )),
-                Line::from(Span::styled(
-                    "       Press 'r' to retry",
-                    Style::default().fg(theme::FG4),
-                )),
-            ];
-            let paragraph = Paragraph::new(lines).style(Style::default().bg(theme::BG));
-            f.render_widget(paragraph, area);
-            return;
-        }
-    }
-
-    let snapshot = match app.current_snapshot() {
+    let snapshot = match render_tab_preamble(f, app, area) {
         Some(s) => s,
-        None => {
-            let spinner_chars = ['|', '/', '-', '\\'];
-            let spinner = spinner_chars[(app.tick_count as usize) % 4];
-            let msg = if !app.discover_complete {
-                format!("  {} Discovering clusters...", spinner)
-            } else if app.snapshots.is_empty() && app.is_fetching {
-                format!("  {} Loading cluster data...", spinner)
-            } else if app.all_clusters_failed() {
-                "  All clusters failed to connect. Check sidebar for details. Press 'r' to retry.".to_string()
-            } else if app.snapshots.is_empty() && app.clusters.is_empty() {
-                "  No clusters found. Run 'scalex cluster init' first.".to_string()
-            } else if app.is_fetching {
-                format!("  {} Loading...", spinner)
-            } else {
-                "  Select a cluster and press Enter".to_string()
-            };
-            let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
-            f.render_widget(paragraph, area);
-            return;
-        }
+        None => return,
     };
 
     let mut lines = vec![
@@ -1276,6 +1289,8 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
                     lines.push(section("Top — Node Resources"));
                     lines.push(Line::from(""));
                     lines.push(key("j/k", "Scroll nodes"));
+                    lines.push(key("PgUp/Dn", "Jump half page"));
+                    lines.push(key("Home/End", "Jump to first/last"));
                 } else {
                     let view = app.resource_view.label();
                     lines.push(section(&format!("Resources — {}", view)));
