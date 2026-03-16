@@ -11,8 +11,24 @@ use ratatui::Frame;
 // Main render
 // ---------------------------------------------------------------------------
 
+/// Minimum terminal dimensions for the TUI to render properly.
+const MIN_WIDTH: u16 = 40;
+const MIN_HEIGHT: u16 = 12;
+
 pub fn render(f: &mut Frame, app: &App) {
     let size = f.area();
+
+    // Guard: terminal too small to render meaningful UI
+    if size.width < MIN_WIDTH || size.height < MIN_HEIGHT {
+        let msg = format!(
+            "Terminal too small ({}x{}). Need {}x{} minimum.",
+            size.width, size.height, MIN_WIDTH, MIN_HEIGHT
+        );
+        let paragraph = Paragraph::new(msg)
+            .style(Style::default().fg(theme::BRIGHT_YELLOW).bg(theme::BG));
+        f.render_widget(paragraph, size);
+        return;
+    }
 
     // Background
     f.render_widget(Block::default().style(Style::default().bg(theme::BG)), size);
