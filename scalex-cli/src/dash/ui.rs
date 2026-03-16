@@ -1061,8 +1061,12 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                     Cell::from(roles_str).style(base),
                     Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
                         .style(base),
-                    Cell::from(format!("{}/{}", node.mem_allocatable, node.mem_capacity))
-                        .style(base),
+                    Cell::from(format!(
+                        "{}/{}",
+                        data::format_k8s_memory(&node.mem_allocatable),
+                        data::format_k8s_memory(&node.mem_capacity)
+                    ))
+                    .style(base),
                     Cell::from(node.age.as_str()).style(base),
                 ])
             } else {
@@ -1077,8 +1081,12 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                     Cell::from(roles_str).style(Style::default().fg(theme::FG3)),
                     Cell::from(format!("{}/{}", node.cpu_allocatable, node.cpu_capacity))
                         .style(Style::default().fg(theme::BRIGHT_AQUA)),
-                    Cell::from(format!("{}/{}", node.mem_allocatable, node.mem_capacity))
-                        .style(Style::default().fg(theme::BRIGHT_PURPLE)),
+                    Cell::from(format!(
+                        "{}/{}",
+                        data::format_k8s_memory(&node.mem_allocatable),
+                        data::format_k8s_memory(&node.mem_capacity)
+                    ))
+                    .style(Style::default().fg(theme::BRIGHT_PURPLE)),
                     Cell::from(node.age.as_str()).style(Style::default().fg(theme::FG3)),
                 ])
             }
@@ -1131,9 +1139,17 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         .filter(|n| app.matches_search(&n.name))
         .collect();
 
+    // US-902: Show "Utilization" only when metrics data available, else "Resources"
+    let has_metrics = snapshot.resource_usage.cpu_percent >= 0.0;
+    let top_title = if has_metrics {
+        " Node Resource Utilization "
+    } else {
+        " Node Resources (no metrics) "
+    };
+
     let mut lines = vec![
         Line::from(vec![Span::styled(
-            " Node Resource Utilization ",
+            top_title,
             Style::default()
                 .fg(theme::BRIGHT_YELLOW)
                 .add_modifier(Modifier::BOLD),
@@ -1163,8 +1179,8 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
                     "  CPU: {}/{}  MEM: {}/{}",
                     node.cpu_allocatable,
                     node.cpu_capacity,
-                    node.mem_allocatable,
-                    node.mem_capacity
+                    data::format_k8s_memory(&node.mem_allocatable),
+                    data::format_k8s_memory(&node.mem_capacity)
                 ),
                 Style::default().fg(theme::FG3),
             ),

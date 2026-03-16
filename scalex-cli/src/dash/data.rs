@@ -685,7 +685,7 @@ pub fn compute_resource_usage(
             };
             (cpu_pct, mem_pct)
         })
-        .unwrap_or((0.0, 0.0));
+        .unwrap_or((-1.0, -1.0)); // sentinel: no metrics data → render_usage_bar shows N/A
 
     ResourceUsage {
         cpu_percent,
@@ -733,6 +733,69 @@ fn derive_effective_status(
         }
     }
     phase.to_string()
+}
+
+/// Format a K8s resource quantity string to human-readable form.
+/// Memory: "7816040Ki" → "7.5Gi", "512Mi" → "512Mi", "1073741824" → "1.0Gi"
+/// CPU: "4" → "4", "500m" → "500m" (already readable, returned as-is)
+pub fn format_k8s_memory(s: &str) -> String {
+    let s = s.trim();
+    if s.is_empty() {
+        return "N/A".to_string();
+    }
+    // Parse to bytes first, then pick best unit
+    let bytes = match parse_k8s_quantity(s) {
+        Some(b) => b,
+        None => return s.to_string(), // unparseable, return raw
+    };
+    // If the original string has memory suffixes (Ki/Mi/Gi/Ti) or is a plain number >= 1024,
+    // format as human-readable. CPU values (m, n, plain small numbers) pass through.
+    let is_memory = s.ends_with("Ki")
+        || s.ends_with("Mi")
+        || s.ends_with("Gi")
+        || s.ends_with("Ti")
+        || (s.parse::<f64>().is_ok() && bytes >= 1024.0);
+
+    if !is_memory {
+        return s.to_string();
+    }
+
+    const TI: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0;
+    const GI: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MI: f64 = 1024.0 * 1024.0;
+    const KI: f64 = 1024.0;
+
+    if bytes >= TI {
+        let val = bytes / TI;
+        if (val - val.round()).abs() < 0.05 {
+            format!("{:.0}Ti", val)
+        } else {
+            format!("{:.1}Ti", val)
+        }
+    } else if bytes >= GI {
+        let val = bytes / GI;
+        if (val - val.round()).abs() < 0.05 {
+            format!("{:.0}Gi", val)
+        } else {
+            format!("{:.1}Gi", val)
+        }
+    } else if bytes >= MI {
+        let val = bytes / MI;
+        if (val - val.round()).abs() < 0.05 {
+            format!("{:.0}Mi", val)
+        } else {
+            format!("{:.1}Mi", val)
+        }
+    } else if bytes >= KI {
+        let val = bytes / KI;
+        if (val - val.round()).abs() < 0.05 {
+            format!("{:.0}Ki", val)
+        } else {
+            format!("{:.1}Ki", val)
+        }
+    } else {
+        format!("{:.0}B", bytes)
+    }
 }
 
 fn format_age(now: chrono::DateTime<Utc>, created: chrono::DateTime<Utc>) -> String {
@@ -976,6 +1039,40 @@ mod tests {
     }
 
     #[test]
+    fn format_k8s_memory_ki_to_gi() {
+        // 7816040Ki ≈ 7.5Gi
+        assert_eq!(format_k8s_memory("7816040Ki"), "7.5Gi");
+    }
+
+    #[test]
+    fn format_k8s_memory_exact_gi() {
+        assert_eq!(format_k8s_memory("8Gi"), "8Gi");
+    }
+
+    #[test]
+    fn format_k8s_memory_mi() {
+        assert_eq!(format_k8s_memory("512Mi"), "512Mi");
+    }
+
+    #[test]
+    fn format_k8s_memory_plain_bytes_large() {
+        // 1073741824 bytes = 1Gi
+        assert_eq!(format_k8s_memory("1073741824"), "1Gi");
+    }
+
+    #[test]
+    fn format_k8s_memory_cpu_passthrough() {
+        // CPU values should not be reformatted
+        assert_eq!(format_k8s_memory("4"), "4");
+        assert_eq!(format_k8s_memory("500m"), "500m");
+    }
+
+    #[test]
+    fn format_k8s_memory_empty() {
+        assert_eq!(format_k8s_memory(""), "N/A");
+    }
+
+    #[test]
     fn configmap_info_serialization() {
         let cm = ConfigMapInfo {
             name: "test-cm".into(),
@@ -1010,7 +1107,8 @@ mod tests {
             node: "n1".into(),
         }];
         let usage = compute_resource_usage(&nodes, &pods, None);
-        assert!((usage.cpu_percent - 0.0).abs() < 1e-9);
+        assert!((usage.cpu_percent - (-1.0)).abs() < 1e-9); // sentinel: no metrics → -1.0
+        assert!((usage.mem_percent - (-1.0)).abs() < 1e-9);
         assert_eq!(usage.running_pods, 1);
     }
 
