@@ -199,8 +199,10 @@ pub struct App {
     /// True when a fetch timed out (30s) — triggers warning in status bar
     pub fetch_timed_out: bool,
 
-    /// Cached viewport height for PageUp/PageDown (set from run_tui before each render)
+    /// Cached table viewport height for PageUp/PageDown (set from run_tui before each render)
     pub page_size: usize,
+    /// Cached sidebar viewport height for PageUp/PageDown
+    pub sidebar_page_size: usize,
 }
 
 impl App {
@@ -279,6 +281,7 @@ impl App {
             fetch_generation: 0,
             fetch_timed_out: false,
             page_size: 0,
+            sidebar_page_size: 0,
         }
     }
 
@@ -359,6 +362,7 @@ impl App {
             fetch_generation: 0,
             fetch_timed_out: false,
             page_size: 0,
+            sidebar_page_size: 0,
         }
     }
 
@@ -481,9 +485,8 @@ impl App {
                     self.help_scroll_offset = self.help_scroll_offset.saturating_sub(1);
                 }
                 AppEvent::Down | AppEvent::ArrowDown => {
-                    // Cap at max help content lines (prevents unbounded growth)
-                    const HELP_MAX_LINES: u16 = 30;
-                    if self.help_scroll_offset < HELP_MAX_LINES {
+                    let max = self.help_content_line_count();
+                    if self.help_scroll_offset < max {
                         self.help_scroll_offset += 1;
                     }
                 }
@@ -492,10 +495,10 @@ impl App {
                     self.help_scroll_offset = self.help_scroll_offset.saturating_sub(jump);
                 }
                 AppEvent::PageDown => {
-                    const HELP_MAX_LINES: u16 = 30;
+                    let max = self.help_content_line_count();
                     let jump = (self.page_size / 2).max(1) as u16;
                     self.help_scroll_offset =
-                        (self.help_scroll_offset + jump).min(HELP_MAX_LINES);
+                        (self.help_scroll_offset + jump).min(max);
                 }
                 _ => {}
             }
@@ -660,13 +663,14 @@ impl App {
     }
 
     fn page_up(&mut self) {
-        let jump = (self.page_size / 2).max(1);
         match self.active_panel {
             ActivePanel::Sidebar => {
+                let jump = (self.sidebar_page_size / 2).max(1);
                 self.tree_cursor = self.tree_cursor.saturating_sub(jump);
                 self.adjust_sidebar_scroll();
             }
             ActivePanel::Center => {
+                let jump = (self.page_size / 2).max(1);
                 if self.active_tab == 1 {
                     self.table_scroll_offset = self.table_scroll_offset.saturating_sub(jump);
                     return;
@@ -678,14 +682,15 @@ impl App {
     }
 
     fn page_down(&mut self) {
-        let jump = (self.page_size / 2).max(1);
         match self.active_panel {
             ActivePanel::Sidebar => {
+                let jump = (self.sidebar_page_size / 2).max(1);
                 let visible = self.visible_tree_len();
                 self.tree_cursor = (self.tree_cursor + jump).min(visible.saturating_sub(1));
                 self.adjust_sidebar_scroll();
             }
             ActivePanel::Center => {
+                let jump = (self.page_size / 2).max(1);
                 if self.active_tab == 1 {
                     let max = self.top_tab_line_count();
                     self.table_scroll_offset =
@@ -1137,6 +1142,28 @@ impl App {
         }
     }
 
+    /// Approximate content line count for the help overlay.
+    /// Mirrors the line-building logic in render_help_overlay (ui.rs).
+    /// Used to cap help_scroll_offset in the event handler.
+    fn help_content_line_count(&self) -> u16 {
+        let context_lines: u16 = if self.search_active {
+            5 // section + blank + 3 keys
+        } else {
+            match self.active_panel {
+                ActivePanel::Sidebar => 6, // section + blank + 4 keys
+                ActivePanel::Center => {
+                    if self.active_tab == 1 {
+                        4 // section + blank + 2 keys
+                    } else {
+                        6 // section + blank + 3 keys + desc line
+                    }
+                }
+            }
+        };
+        // Global section: blank + section + blank + 8 keys + blank + footer = 12
+        context_lines + 12
+    }
+
     /// Get the number of rows in the current resource view (for cursor clamping).
     /// Respects active search filter so cursor stays within visible bounds.
     pub fn current_row_count(&self) -> usize {
@@ -1272,6 +1299,7 @@ mod tests {
             fetch_generation: 0,
             fetch_timed_out: false,
             page_size: 0,
+            sidebar_page_size: 0,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -2711,14 +2739,15 @@ mod tests {
     fn help_scroll_offset_capped() {
         let mut app = test_app();
         app.show_help = true;
-        // Press Down 100 times — offset should not grow unboundedly
+        let expected_max = app.help_content_line_count();
+        // Press Down 100 times — offset should be capped to content line count
         for _ in 0..100 {
             app.handle_event(AppEvent::Down);
         }
-        assert!(
-            app.help_scroll_offset <= 30,
-            "help_scroll_offset should be capped, got {}",
-            app.help_scroll_offset
+        assert_eq!(
+            app.help_scroll_offset, expected_max,
+            "help_scroll_offset should be capped at content lines ({}), got {}",
+            expected_max, app.help_scroll_offset
         );
     }
 
@@ -2910,8 +2939,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             let search_offset: u16 = if app.search_active { 1 } else { 0 };
             let table_viewport = body_height.saturating_sub(2 + 1 + search_offset) as usize;
             app.ensure_table_scroll_visible(table_viewport);
-            // Cache viewport height for PageUp/PageDown
+            // Cache viewport heights for PageUp/PageDown
             app.page_size = table_viewport;
+            app.sidebar_page_size = sidebar_viewport;
         }
 
         // Draw first — shows skeleton UI instantly on startup (US-004)
