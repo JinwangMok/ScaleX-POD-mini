@@ -3095,8 +3095,8 @@ spec:
 
         // Routing is dashboard-managed; verify ops-guide documents required hostnames
         assert!(
-            ops_guide.contains("api.tower.jinwang.dev"),
-            "ops-guide.md must document K8s API hostname 'api.tower.jinwang.dev'"
+            ops_guide.contains("tower-api.jinwang.dev"),
+            "ops-guide.md must document K8s API hostname 'tower-api.jinwang.dev'"
         );
         assert!(
             ops_guide.contains("cd.jinwang.dev"),
@@ -3775,7 +3775,7 @@ spec:
 
         // Required routing rules per CL-14 — verified via ops-guide since routing is dashboard-managed
         let required_hostnames = [
-            "api.tower.jinwang.dev",
+            "tower-api.jinwang.dev",
             "auth.jinwang.dev",
             "cd.jinwang.dev",
         ];
@@ -4817,7 +4817,7 @@ config:
 
         // Required domains per checklist #14 — verified via ops-guide since routing is dashboard-managed
         let required_routes = [
-            "api.tower.jinwang.dev",
+            "tower-api.jinwang.dev",
             "auth.jinwang.dev",
             "cd.jinwang.dev",
         ];
@@ -5372,7 +5372,7 @@ config:
 
         // Must reference CF Tunnel kubectl endpoint (even if to explain limitation)
         assert!(
-            ops_guide.contains("api.tower.jinwang.dev"),
+            ops_guide.contains("tower-api.jinwang.dev"),
             "ops-guide must reference CF Tunnel kubectl endpoint"
         );
 
@@ -5467,7 +5467,7 @@ config:
         let domains = [
             "auth.jinwang.dev",
             "cd.jinwang.dev",
-            "api.tower.jinwang.dev",
+            "tower-api.jinwang.dev",
         ];
         for domain in &domains {
             assert!(

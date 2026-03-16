@@ -255,7 +255,28 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
         vars.push_str(&format!("cilium_native_routing_cidr: \"{cidr}\"\n"));
     }
 
+    // Auto-derive supplementary SANs from api_endpoint so the API server cert
+    // includes the external domain (required for TLS hostname verification via CF Tunnel).
+    if let Some(ref endpoint) = cluster.api_endpoint {
+        // Extract host from "https://host:port" or "https://host" without url crate
+        let host = endpoint
+            .strip_prefix("https://")
+            .or_else(|| endpoint.strip_prefix("http://"))
+            .unwrap_or(endpoint)
+            .split(':')
+            .next()
+            .unwrap_or("");
+        // Only add DNS names, not bare IPs (IPs are already covered by Kubespray)
+        if !host.is_empty() && host.parse::<std::net::IpAddr>().is_err() {
+            vars.push_str("\n# Auto-derived from api_endpoint for external TLS access\n");
+            vars.push_str("supplementary_addresses_in_ssl_keys:\n");
+            vars.push_str(&format!("  - \"{host}\"\n"));
+        }
+    }
+
     // Extra vars from kubespray_extra_vars (as YAML)
+    // Note: if kubespray_extra_vars also contains supplementary_addresses_in_ssl_keys,
+    // it will override the auto-derived value above (last definition wins in Kubespray).
     if let Some(ref extra) = cluster.kubespray_extra_vars {
         vars.push_str("\n# Cluster-specific extra vars\n");
         if let Ok(extra_str) = serde_yaml::to_string(extra) {
@@ -2036,6 +2057,48 @@ supplementary_addresses_in_ssl_keys:
         assert!(
             vars.contains("kube_service_addresses: \"10.96.0.0/20\""),
             "cluster vars must include service CIDR from cluster def"
+        );
+    }
+
+    #[test]
+    fn test_cluster_vars_auto_derives_san_from_api_endpoint() {
+        let common = make_common();
+        let mut cluster = make_cluster_def("tower", "tower");
+        cluster.api_endpoint = Some("https://tower-api.jinwang.dev".to_string());
+
+        let vars = generate_cluster_vars(&cluster, &common);
+        assert!(
+            vars.contains("supplementary_addresses_in_ssl_keys:"),
+            "must emit supplementary_addresses_in_ssl_keys"
+        );
+        assert!(
+            vars.contains("\"tower-api.jinwang.dev\""),
+            "must include domain from api_endpoint"
+        );
+    }
+
+    #[test]
+    fn test_cluster_vars_no_san_without_api_endpoint() {
+        let common = make_common();
+        let cluster = make_cluster_def("tower", "tower");
+
+        let vars = generate_cluster_vars(&cluster, &common);
+        assert!(
+            !vars.contains("supplementary_addresses_in_ssl_keys"),
+            "must not emit SAN when api_endpoint is None"
+        );
+    }
+
+    #[test]
+    fn test_cluster_vars_no_san_for_ip_endpoint() {
+        let common = make_common();
+        let mut cluster = make_cluster_def("tower", "tower");
+        cluster.api_endpoint = Some("https://192.168.88.100:6443".to_string());
+
+        let vars = generate_cluster_vars(&cluster, &common);
+        assert!(
+            !vars.contains("supplementary_addresses_in_ssl_keys"),
+            "must not emit SAN for IP-based api_endpoint"
         );
     }
 }

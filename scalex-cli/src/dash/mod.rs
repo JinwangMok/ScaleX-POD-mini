@@ -3,6 +3,7 @@ pub mod data;
 pub mod event;
 pub mod infra;
 pub mod kube_client;
+pub mod sa_provisioner;
 #[allow(dead_code)]
 pub mod theme;
 pub mod ui;
