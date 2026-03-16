@@ -502,12 +502,12 @@ impl App {
                     }
                 }
                 AppEvent::PageUp => {
-                    let jump = (self.page_size / 2).max(1) as u16;
+                    let jump = (self.help_viewport_height / 2).max(1);
                     self.help_scroll_offset = self.help_scroll_offset.saturating_sub(jump);
                 }
                 AppEvent::PageDown => {
                     let max = self.help_max_scroll();
-                    let jump = (self.page_size / 2).max(1) as u16;
+                    let jump = (self.help_viewport_height / 2).max(1);
                     self.help_scroll_offset = (self.help_scroll_offset + jump).min(max);
                 }
                 AppEvent::Home => {
@@ -555,18 +555,17 @@ impl App {
                 };
             }
             AppEvent::ResourceType(c) => {
-                // Resource view shortcuts only work when center panel is active
-                if self.active_panel == ActivePanel::Center {
-                    if let Some(rv) = ResourceView::from_char(c) {
-                        if self.resource_view != rv {
-                            self.resource_view = rv;
-                            self.table_cursor = 0;
-                            self.table_scroll_offset = 0;
-                            self.needs_refresh = true;
-                            self.fetch_generation += 1;
-                            self.is_fetching = false;
-                        }
+                if let Some(rv) = ResourceView::from_char(c) {
+                    if self.resource_view != rv {
+                        self.resource_view = rv;
+                        self.table_cursor = 0;
+                        self.table_scroll_offset = 0;
+                        self.needs_refresh = true;
+                        self.fetch_generation += 1;
+                        self.is_fetching = false;
                     }
+                    // Switch to center panel to show the resource view
+                    self.active_panel = ActivePanel::Center;
                 }
             }
             AppEvent::Help => {
@@ -1194,9 +1193,13 @@ impl App {
     }
 
     /// Number of content lines in the Top tab (for scroll clamping).
+    /// Respects active search filter (US-303).
     fn top_tab_line_count(&self) -> usize {
         match self.current_snapshot() {
-            Some(snap) => 2 + snap.nodes.len().max(1), // header + blank + nodes (or "No data")
+            Some(snap) => {
+                let filtered = snap.nodes.iter().filter(|n| self.matches_search(&n.name)).count();
+                2 + filtered.max(1) // header + blank + nodes (or "No data"/"No results")
+            }
             None => 1,
         }
     }
@@ -1485,16 +1488,17 @@ mod tests {
     }
 
     #[test]
-    fn resource_shortcut_ignored_from_sidebar() {
+    fn resource_shortcut_from_sidebar_switches_view_and_panel() {
         let mut app = test_app();
         app.active_panel = ActivePanel::Sidebar;
         app.resource_view = ResourceView::Pods;
 
         app.handle_event(AppEvent::ResourceType('d'));
 
-        // Resource shortcuts only work in center panel
-        assert_eq!(app.resource_view, ResourceView::Pods);
-        assert!(!app.needs_refresh);
+        // US-302: Resource shortcuts now work from sidebar — switch view AND panel
+        assert_eq!(app.resource_view, ResourceView::Deployments);
+        assert_eq!(app.active_panel, ActivePanel::Center);
+        assert!(app.needs_refresh);
     }
 
     // --- US-030: Table cursor bounds clamping ---
@@ -2963,6 +2967,107 @@ mod tests {
             app.search_query, None,
             "Shift+Tab should clear partial search query"
         );
+    }
+
+    // --- US-301: Help PgUp/PgDn uses help_viewport_height ---
+
+    #[test]
+    fn help_pagedown_uses_help_viewport_height() {
+        let mut app = test_app();
+        app.show_help = true;
+        app.help_viewport_height = 10;
+        app.page_size = 50; // different from help_viewport_height — should NOT be used
+
+        app.handle_event(AppEvent::PageDown);
+
+        // Jump should be help_viewport_height/2 = 5, not page_size/2 = 25
+        assert_eq!(
+            app.help_scroll_offset, 5,
+            "Help PageDown should jump by help_viewport_height/2 (5), not page_size/2 (25)"
+        );
+    }
+
+    #[test]
+    fn help_pageup_uses_help_viewport_height() {
+        let mut app = test_app();
+        app.show_help = true;
+        app.help_viewport_height = 10;
+        app.help_scroll_offset = 8;
+        app.page_size = 50;
+
+        app.handle_event(AppEvent::PageUp);
+
+        // Jump should be help_viewport_height/2 = 5
+        assert_eq!(
+            app.help_scroll_offset, 3,
+            "Help PageUp should jump by help_viewport_height/2 (5), not page_size/2 (25)"
+        );
+    }
+
+    // --- US-302: Resource shortcuts work from sidebar ---
+
+    #[test]
+    fn resource_shortcut_from_sidebar_same_view_no_refresh() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Sidebar;
+        app.resource_view = ResourceView::Pods;
+
+        app.handle_event(AppEvent::ResourceType('p')); // same view
+
+        // Same-view shortcut still switches to center but no refresh
+        assert_eq!(app.resource_view, ResourceView::Pods);
+        assert_eq!(app.active_panel, ActivePanel::Center);
+        assert!(!app.needs_refresh);
+    }
+
+    // --- US-303: Top tab line count respects search filter ---
+
+    #[test]
+    fn top_tab_line_count_filters_by_search() {
+        let mut app = test_app();
+        app.active_tab = 1;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes: vec![
+                crate::dash::data::NodeInfo {
+                    name: "node-alpha".into(),
+                    status: "Ready".into(),
+                    roles: vec![],
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "8Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "8Gi".into(),
+                },
+                crate::dash::data::NodeInfo {
+                    name: "node-beta".into(),
+                    status: "Ready".into(),
+                    roles: vec![],
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "8Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "8Gi".into(),
+                },
+            ],
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+
+        // No filter: 2 + max(2, 1) = 4
+        assert_eq!(app.top_tab_line_count(), 4);
+
+        // Filter for "alpha": only 1 node matches → 2 + max(1, 1) = 3
+        app.search_query = Some("alpha".into());
+        assert_eq!(app.top_tab_line_count(), 3);
+
+        // Filter for "nonexistent": 0 matches → 2 + max(0, 1) = 3 (shows "No results")
+        app.search_query = Some("nonexistent".into());
+        assert_eq!(app.top_tab_line_count(), 3);
     }
 }
 

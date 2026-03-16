@@ -608,7 +608,7 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    if app.is_view_stale(app.resource_view) {
+    if app.active_tab == 0 && app.is_view_stale(app.resource_view) {
         title_spans.push(Span::styled(
             "[cached] ",
             Style::default().fg(theme::BRIGHT_ORANGE),
@@ -1121,6 +1121,13 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
 
+    // Filter nodes by search query (US-303)
+    let filtered_nodes: Vec<&data::NodeInfo> = snapshot
+        .nodes
+        .iter()
+        .filter(|n| app.matches_search(&n.name))
+        .collect();
+
     let mut lines = vec![
         Line::from(vec![Span::styled(
             " Node Resource Utilization ",
@@ -1131,7 +1138,7 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
     ];
 
-    for node in &snapshot.nodes {
+    for node in &filtered_nodes {
         let status_icon = if node.status == "Ready" { "●" } else { "○" };
         let status_color = if node.status == "Ready" {
             theme::BRIGHT_GREEN
@@ -1161,9 +1168,17 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    if snapshot.nodes.is_empty() {
+    if filtered_nodes.is_empty() {
+        let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
+            format!(
+                " No results for \"{}\"",
+                app.search_query.as_deref().unwrap_or("")
+            )
+        } else {
+            " No node data available".to_string()
+        };
         lines.push(Line::from(Span::styled(
-            " No node data available",
+            msg,
             Style::default().fg(theme::FG4),
         )));
     }
