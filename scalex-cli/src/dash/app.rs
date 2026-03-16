@@ -764,7 +764,8 @@ impl App {
                 if self.active_tab == 1 {
                     // Top tab: line-by-line scroll (Paragraph, no row selection)
                     let max = self.top_tab_line_count();
-                    if max > 0 && self.table_scroll_offset + 1 < max {
+                    let max_offset = max.saturating_sub(self.page_size);
+                    if self.table_scroll_offset < max_offset {
                         self.table_scroll_offset += 1;
                     }
                     return;
@@ -810,8 +811,9 @@ impl App {
                 let jump = (self.page_size / 2).max(1);
                 if self.active_tab == 1 {
                     let max = self.top_tab_line_count();
+                    let max_offset = max.saturating_sub(self.page_size);
                     self.table_scroll_offset =
-                        (self.table_scroll_offset + jump).min(max.saturating_sub(1));
+                        (self.table_scroll_offset + jump).min(max_offset);
                     return;
                 }
                 let max = self.current_row_count();
@@ -850,7 +852,7 @@ impl App {
             ActivePanel::Center => {
                 if self.active_tab == 1 {
                     let max = self.top_tab_line_count();
-                    self.table_scroll_offset = max.saturating_sub(1);
+                    self.table_scroll_offset = max.saturating_sub(self.page_size);
                 } else {
                     let max = self.current_row_count();
                     self.table_cursor = max.saturating_sub(1);
@@ -3131,15 +3133,68 @@ mod tests {
             configmaps: vec![],
             resource_usage: Default::default(),
         });
-        // top_tab_line_count = 2 + 1 = 3, max scroll = 2
+        // top_tab_line_count = 2 + 1 = 3
+        // With page_size=0 (test default), max_offset = 3 - 0 = 3
+        // With realistic page_size=10, max_offset = 3 - 10 = 0 (content fits in viewport)
+        app.page_size = 10;
         for _ in 0..20 {
             app.handle_event(AppEvent::Down);
         }
-        assert!(
-            app.table_scroll_offset < 20,
-            "scroll offset should be capped, got {}",
-            app.table_scroll_offset
+        assert_eq!(
+            app.table_scroll_offset, 0,
+            "scroll should stay 0 when content fits in viewport"
         );
+    }
+
+    #[test]
+    fn top_tab_page_down_clamps_to_viewport() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 1;
+        app.selected_cluster = Some("tower".into());
+        // Create 20 nodes → top_tab_line_count = 2 + 20 = 22
+        let nodes: Vec<crate::dash::data::NodeInfo> = (0..20)
+            .map(|i| crate::dash::data::NodeInfo {
+                name: format!("node-{}", i),
+                status: "Ready".into(),
+                roles: vec![],
+                cpu_capacity: "4".into(),
+                mem_capacity: "8Gi".into(),
+                cpu_allocatable: "4".into(),
+                mem_allocatable: "8Gi".into(),
+                age: "1d".into(),
+                ..Default::default()
+            })
+            .collect();
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![],
+            nodes,
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            resource_usage: Default::default(),
+        });
+        app.rebuild_snapshot_index();
+        // Viewport of 10 lines, content of 22 lines → max_offset = 12
+        app.page_size = 10;
+        app.handle_event(AppEvent::End); // jump_end
+        assert_eq!(
+            app.table_scroll_offset, 12,
+            "jump_end should clamp to line_count - viewport"
+        );
+
+        // page_down from 0 with jump=5 should go to 5
+        app.table_scroll_offset = 0;
+        app.handle_event(AppEvent::PageDown);
+        assert_eq!(app.table_scroll_offset, 5); // jump = page_size/2 = 5
+
+        // page_down from 10 should clamp to 12
+        app.table_scroll_offset = 10;
+        app.handle_event(AppEvent::PageDown);
+        assert_eq!(app.table_scroll_offset, 12);
     }
 
     #[test]

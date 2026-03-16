@@ -94,6 +94,7 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Search cleared on context switch**: Selecting a cluster or namespace via `Enter` clears active search filter (`search_query` and `search_query_lower`) to prevent stale filters applying to new context.
 - **Dirty-flag redraw**: `needs_redraw: bool` skips `terminal.draw()` when nothing changed. Set true by keyboard events, fetch results, discovery events, terminal resize. Tick sets it only when spinner is visible (`is_fetching || !discover_complete`). Eliminates ~90% of unnecessary terminal I/O when idle.
 - **Pre-computed cluster labels**: `TreeNode.ns_count_label` caches "name (Nns)" format, computed during `sync_tree_from_snapshots`. Used by `render_sidebar` instead of per-frame `format!()` for expanded cluster nodes.
+- **Top tab viewport-aware scroll**: `page_down`, `jump_end`, and `move_down` for Top tab (Paragraph scroll) clamp offset to `max(0, line_count - page_size)`, not `line_count - 1`. Prevents over-scrolling past content when viewport is larger than content.
 
 ### Header Layout
 
