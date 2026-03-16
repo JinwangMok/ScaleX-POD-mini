@@ -565,6 +565,8 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
                 format!("  {} Discovering clusters...", spinner)
             } else if app.snapshots.is_empty() && app.is_fetching {
                 format!("  {} Loading cluster data...", spinner)
+            } else if app.all_clusters_failed() {
+                "  All clusters failed to connect. Check sidebar for details. Press 'r' to retry.".to_string()
             } else if app.snapshots.is_empty() && app.clusters.is_empty() {
                 "  No clusters found. Run 'scalex cluster init' first.".to_string()
             } else if app.selected_cluster.is_some() && app.is_fetching {
@@ -994,6 +996,11 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         vec![Span::styled(
             format!(" {} Loading cluster data...", spinner),
             Style::default().fg(theme::BRIGHT_YELLOW),
+        )]
+    } else if app.all_clusters_failed() {
+        vec![Span::styled(
+            " [!!] All clusters failed — press 'r' to retry",
+            Style::default().fg(theme::BRIGHT_RED),
         )]
     } else if app.snapshots.is_empty() {
         vec![Span::styled(

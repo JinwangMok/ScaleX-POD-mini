@@ -998,6 +998,16 @@ impl App {
             .as_ref()
             .and_then(|name| self.snapshots.iter().find(|s| &s.name == name))
     }
+
+    /// Check if all discovered clusters have failed to connect
+    pub fn all_clusters_failed(&self) -> bool {
+        !self.cluster_connection_status.is_empty()
+            && self.clusters.is_empty()
+            && self
+                .cluster_connection_status
+                .values()
+                .all(|s| matches!(s, ConnectionStatus::Failed(_)))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2218,6 +2228,43 @@ mod tests {
         assert_eq!(app.active_tab, 0);
         assert_eq!(app.table_cursor, 10); // unchanged
     }
+
+    // --- US-079: all_clusters_failed helper ---
+
+    #[test]
+    fn all_clusters_failed_returns_true_when_all_fail() {
+        let mut app = test_app();
+        app.cluster_connection_status
+            .insert("tower".into(), ConnectionStatus::Failed("timeout".into()));
+        app.cluster_connection_status
+            .insert("sandbox".into(), ConnectionStatus::Failed("refused".into()));
+        // No clusters connected (app.clusters is empty from test_app)
+        assert!(app.all_clusters_failed());
+    }
+
+    #[test]
+    fn all_clusters_failed_returns_false_when_some_connected() {
+        let mut app = test_app();
+        app.cluster_connection_status
+            .insert("tower".into(), ConnectionStatus::Connected);
+        app.cluster_connection_status
+            .insert("sandbox".into(), ConnectionStatus::Failed("refused".into()));
+        assert!(!app.all_clusters_failed());
+    }
+
+    #[test]
+    fn all_clusters_failed_returns_false_when_empty() {
+        let app = test_app();
+        assert!(!app.all_clusters_failed());
+    }
+
+    #[test]
+    fn all_clusters_failed_returns_false_during_discovery() {
+        let mut app = test_app();
+        app.cluster_connection_status
+            .insert("tower".into(), ConnectionStatus::Discovering);
+        assert!(!app.all_clusters_failed());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2411,10 +2458,15 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
         }
 
         // --- Trigger background fetch if needed ---
+        let was_manual_refresh = app.needs_refresh;
         if !app.is_fetching
             && !app.clusters.is_empty()
             && (last_refresh.elapsed() >= refresh_interval || app.needs_refresh)
         {
+            // Reload infra data on manual refresh (r key)
+            if was_manual_refresh {
+                app.load_infra();
+            }
             app.needs_refresh = false;
             app.is_fetching = true;
             app.fetch_started_at = Some(Instant::now());
