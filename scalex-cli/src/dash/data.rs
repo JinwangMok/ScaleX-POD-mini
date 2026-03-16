@@ -425,9 +425,9 @@ pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<
 
 /// Fetch cluster snapshot with optional selective resource filtering.
 ///
-/// - `active_resource: None` → fetch ALL resources (used by headless mode)
-/// - `active_resource: Some(r)` → fetch only namespaces + nodes + the active resource
-///   (reduces 7 API calls → 3, cutting latency from ~6s to <1s)
+/// - `active_resource: None` → fetch ALL resources (used for selected cluster / headless)
+/// - `active_resource: Some(r)` → fetch only nodes + the active resource
+///   (reduces API calls, cutting latency)
 ///
 /// Metrics fetch is removed (metrics_server_enabled hardcoded false).
 pub async fn fetch_cluster_snapshot(
