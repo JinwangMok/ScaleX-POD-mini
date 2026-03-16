@@ -428,14 +428,36 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 (normal, marker_s, theme::BG_HARD)
             };
 
-            // Connection status suffix for cluster nodes
+            // Connection status suffix for cluster nodes (includes health dot for connected)
             let conn_suffix = match &node.node_type {
                 NodeType::Cluster(name) => match app.cluster_connection_status.get(name) {
                     Some(ConnectionStatus::Discovering) => Some((" [..]", theme::FG4)),
                     Some(ConnectionStatus::Failed(_)) => Some((" [!!]", theme::BRIGHT_RED)),
-                    Some(ConnectionStatus::Connected) | None => None,
+                    Some(ConnectionStatus::Connected) | None => {
+                        // Show health dot for connected clusters with snapshot data
+                        app.snapshots
+                            .iter()
+                            .find(|s| &s.name == name)
+                            .map(|s| match s.health {
+                                data::HealthStatus::Green => (" ●", theme::BRIGHT_GREEN),
+                                data::HealthStatus::Yellow => (" ●", theme::BRIGHT_YELLOW),
+                                data::HealthStatus::Red => (" ●", theme::BRIGHT_RED),
+                                data::HealthStatus::Unknown => (" ○", theme::FG4),
+                            })
+                    }
                 },
                 _ => None,
+            };
+
+            // US-205: Append namespace count for expanded clusters
+            let label_with_ns = match &node.node_type {
+                NodeType::Cluster(name) if node.expanded => app
+                    .snapshots
+                    .iter()
+                    .find(|s| &s.name == name)
+                    .map(|s| format!("{} ({}ns)", node.label, s.namespaces.len()))
+                    .unwrap_or_else(|| node.label.clone()),
+                _ => node.label.clone(),
             };
 
             // Truncate label to fit sidebar width.
@@ -448,13 +470,12 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let suffix_cols = conn_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0); // ASCII only
             let available = (inner.width as usize).saturating_sub(prefix_cols + suffix_cols);
             // Labels are k8s names (ASCII), so chars().count() == display columns
-            let label_char_count = node.label.chars().count();
+            let label_char_count = label_with_ns.chars().count();
             let display_label: String = if label_char_count > available {
                 if available > 1 {
-                    let truncated: String = node.label.chars().take(available - 1).collect();
+                    let truncated: String = label_with_ns.chars().take(available - 1).collect();
                     format!("{}…", truncated)
                 } else {
-                    // No room for label + ellipsis; show just ellipsis or nothing
                     if available == 1 {
                         "…".to_string()
                     } else {
@@ -462,7 +483,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                     }
                 }
             } else {
-                node.label.clone()
+                label_with_ns
             };
             // Display columns for the label
             let label_cols = if label_char_count > available {
@@ -500,26 +521,35 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    // Reserve 1 row for scroll indicator when content overflows viewport (US-202)
+    let visible_len = app.visible_tree_len();
+    let overflows = visible_len > inner.height as usize;
+    let (para_area, indicator_area) = if overflows {
+        let para_h = inner.height.saturating_sub(1);
+        (
+            Rect::new(inner.x, inner.y, inner.width, para_h),
+            Some(Rect::new(inner.x, inner.y + para_h, inner.width, 1)),
+        )
+    } else {
+        (inner, None)
+    };
+
     let paragraph =
         Paragraph::new(lines).scroll((app.sidebar_scroll_offset.min(u16::MAX as usize) as u16, 0));
-    f.render_widget(paragraph, inner);
+    f.render_widget(paragraph, para_area);
 
-    // Scroll indicator when content overflows viewport
-    let visible_len = app.visible_tree_len();
-    if visible_len > inner.height as usize {
+    // Scroll indicator on dedicated line (never overlaps tree content)
+    if let Some(ind_area) = indicator_area {
         let indicator = format!(
             " {}/{} ",
             (app.tree_cursor + 1).min(visible_len),
             visible_len,
         );
-        let x = inner.x;
-        let y = inner.y + inner.height.saturating_sub(1);
-        let indicator_area = Rect::new(x, y, indicator.len().min(inner.width as usize) as u16, 1);
         let indicator_widget = Paragraph::new(Span::styled(
             indicator,
             Style::default().fg(theme::FG4).bg(theme::BG_HARD),
         ));
-        f.render_widget(indicator_widget, indicator_area);
+        f.render_widget(indicator_widget, ind_area);
     }
 }
 

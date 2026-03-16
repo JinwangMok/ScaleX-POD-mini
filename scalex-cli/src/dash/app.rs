@@ -203,6 +203,8 @@ pub struct App {
     pub page_size: usize,
     /// Cached sidebar viewport height for PageUp/PageDown
     pub sidebar_page_size: usize,
+    /// Cached help popup inner height for scroll clamping (US-204)
+    pub help_viewport_height: u16,
 }
 
 impl App {
@@ -282,6 +284,7 @@ impl App {
             fetch_timed_out: false,
             page_size: 0,
             sidebar_page_size: 0,
+            help_viewport_height: 0,
         }
     }
 
@@ -363,6 +366,7 @@ impl App {
             fetch_timed_out: false,
             page_size: 0,
             sidebar_page_size: 0,
+            help_viewport_height: 0,
         }
     }
 
@@ -491,7 +495,7 @@ impl App {
                     self.help_scroll_offset = self.help_scroll_offset.saturating_sub(1);
                 }
                 AppEvent::Down | AppEvent::ArrowDown => {
-                    let max = self.help_content_line_count();
+                    let max = self.help_max_scroll();
                     if self.help_scroll_offset < max {
                         self.help_scroll_offset += 1;
                     }
@@ -501,7 +505,7 @@ impl App {
                     self.help_scroll_offset = self.help_scroll_offset.saturating_sub(jump);
                 }
                 AppEvent::PageDown => {
-                    let max = self.help_content_line_count();
+                    let max = self.help_max_scroll();
                     let jump = (self.page_size / 2).max(1) as u16;
                     self.help_scroll_offset = (self.help_scroll_offset + jump).min(max);
                 }
@@ -509,7 +513,7 @@ impl App {
                     self.help_scroll_offset = 0;
                 }
                 AppEvent::End => {
-                    self.help_scroll_offset = self.help_content_line_count();
+                    self.help_scroll_offset = self.help_max_scroll();
                 }
                 _ => {}
             }
@@ -1218,6 +1222,13 @@ impl App {
         context_lines + 13
     }
 
+    /// Maximum scroll offset for help overlay, accounting for viewport height (US-204).
+    /// Prevents offset from growing beyond what the render actually uses.
+    fn help_max_scroll(&self) -> u16 {
+        self.help_content_line_count()
+            .saturating_sub(self.help_viewport_height)
+    }
+
     /// Get the number of rows in the current resource view (for cursor clamping).
     /// Respects active search filter so cursor stays within visible bounds.
     pub fn current_row_count(&self) -> usize {
@@ -1354,6 +1365,7 @@ mod tests {
             fetch_timed_out: false,
             page_size: 0,
             sidebar_page_size: 0,
+            help_viewport_height: 0,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -2984,6 +2996,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
     let cancelled = Arc::new(AtomicBool::new(false));
 
     // Phase 2: background cluster discovery (streaming per-cluster results)
+    let discover_tx_retry = discover_tx.clone(); // Keep clone for retry (US-201)
     let cancel_discover = cancelled.clone();
     tokio::spawn(async move {
         kube_client::discover_clusters_streaming(kubeconfig_dir, discover_tx, cancel_discover)
@@ -3002,13 +3015,20 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             // Sidebar viewport = body height (right border only, no top/bottom border)
             let sidebar_viewport = body_height as usize;
             app.ensure_sidebar_scroll_visible(sidebar_viewport);
-            // Table viewport = body height minus block borders (2) minus header row (1) minus optional search bar (1)
+            // Table viewport = body height minus block borders (2) minus header row (1, Resources only) minus optional search bar (1)
             let search_offset: u16 = if app.search_active { 1 } else { 0 };
-            let table_viewport = body_height.saturating_sub(2 + 1 + search_offset) as usize;
+            let header_row: u16 = if app.active_tab == 0 { 1 } else { 0 }; // US-203: Top tab has no header row
+            let table_viewport =
+                body_height.saturating_sub(2 + header_row + search_offset) as usize;
             app.ensure_table_scroll_visible(table_viewport);
             // Cache viewport heights for PageUp/PageDown
             app.page_size = table_viewport;
             app.sidebar_page_size = sidebar_viewport;
+            // Help popup viewport height (US-204)
+            let help_content = app.help_content_line_count();
+            let max_popup = term_size.height.saturating_sub(2).max(5);
+            let popup_h = (help_content + 2).min(max_popup);
+            app.help_viewport_height = popup_h.saturating_sub(2);
         }
 
         // Draw first — shows skeleton UI instantly on startup (US-004)
@@ -3120,6 +3140,39 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 app.is_fetching = false;
                 app.fetch_started_at = None;
                 app.fetch_timed_out = true;
+            }
+        }
+
+        // --- Retry failed cluster discovery on manual refresh (US-201) ---
+        if app.needs_refresh {
+            let failed_names: Vec<String> = app
+                .cluster_connection_status
+                .iter()
+                .filter(|(_, s)| matches!(s, ConnectionStatus::Failed(_)))
+                .map(|(n, _)| n.clone())
+                .collect();
+            if !failed_names.is_empty() {
+                // Reset failed clusters to Discovering and re-spawn discovery
+                for name in &failed_names {
+                    app.cluster_connection_status
+                        .insert(name.clone(), ConnectionStatus::Discovering);
+                }
+                let dir = args
+                    .kubeconfig_dir
+                    .clone()
+                    .unwrap_or_else(|| std::path::PathBuf::from("_generated/clusters"));
+                let retry_tx = discover_tx_retry.clone();
+                let retry_cancel = cancelled.clone();
+                let retry_names = failed_names;
+                tokio::spawn(async move {
+                    kube_client::discover_clusters_streaming_filtered(
+                        dir,
+                        retry_tx,
+                        retry_cancel,
+                        &retry_names,
+                    )
+                    .await;
+                });
             }
         }
 
