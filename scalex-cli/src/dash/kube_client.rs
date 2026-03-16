@@ -259,6 +259,132 @@ pub async fn discover_clusters_streaming(
     let _ = tx.send(DiscoverEvent::Complete).await;
 }
 
+/// Re-discover only specific clusters by name (for retrying failed connections).
+/// Same 3-tier strategy as discover_clusters_streaming but filtered to only the given names.
+pub async fn discover_clusters_streaming_filtered(
+    dir: PathBuf,
+    tx: tokio::sync::mpsc::Sender<DiscoverEvent>,
+    cancelled: Arc<AtomicBool>,
+    names: &[String],
+) {
+    let repo_root = dir
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(Path::new("."));
+    let bastion = resolve_bastion(repo_root);
+    let api_endpoints = load_api_endpoints(repo_root);
+
+    let mut handles = Vec::new();
+    let mut next_local_port: u16 = 16543; // offset from initial discovery ports
+
+    for name in names {
+        let kubeconfig_path = dir.join(name).join("kubeconfig.yaml");
+        if !kubeconfig_path.exists() {
+            let _ = tx
+                .send(DiscoverEvent::Failed {
+                    name: name.clone(),
+                    error: "kubeconfig.yaml not found".into(),
+                })
+                .await;
+            continue;
+        }
+
+        let endpoint = api_endpoints.get(name).cloned();
+        let local_port = next_local_port;
+        next_local_port += 1;
+        let cluster_name = name.clone();
+        let tx = tx.clone();
+        let cancelled = cancelled.clone();
+        let bastion = bastion.clone();
+
+        handles.push(tokio::spawn(async move {
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
+
+            // Strategy 1: api_endpoint
+            if let Some(ref ep) = endpoint {
+                if let Ok(client) = build_client_with_endpoint(&kubeconfig_path, ep).await {
+                    if probe_client(&client).await {
+                        let ver = fetch_server_version(&client).await;
+                        let _ = tx
+                            .send(DiscoverEvent::Connected(ClusterClient {
+                                name: cluster_name,
+                                kubeconfig_path,
+                                client,
+                                tunnel_pid: None,
+                                server_version: ver,
+                                endpoint: Some(ep.clone()),
+                            }))
+                            .await;
+                        return;
+                    }
+                }
+            }
+
+            // Strategy 2: direct connection
+            if let Ok(client) = build_client(&kubeconfig_path).await {
+                if probe_client(&client).await {
+                    let ver = fetch_server_version(&client).await;
+                    let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
+                    let _ = tx
+                        .send(DiscoverEvent::Connected(ClusterClient {
+                            name: cluster_name,
+                            kubeconfig_path,
+                            client,
+                            tunnel_pid: None,
+                            server_version: ver,
+                            endpoint: ep,
+                        }))
+                        .await;
+                    return;
+                }
+            }
+
+            // Strategy 3: SSH tunnel
+            if let Some(ref bastion_host) = bastion {
+                match setup_auto_tunnel(&kubeconfig_path, &cluster_name, bastion_host, local_port)
+                    .await
+                {
+                    Ok((client, pid)) => {
+                        let ver = fetch_server_version(&client).await;
+                        let _ = tx
+                            .send(DiscoverEvent::Connected(ClusterClient {
+                                name: cluster_name,
+                                kubeconfig_path,
+                                client,
+                                tunnel_pid: Some(pid),
+                                server_version: ver,
+                                endpoint: Some(format!("localhost:{} (tunnel)", local_port)),
+                            }))
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(DiscoverEvent::Failed {
+                                name: cluster_name,
+                                error: format!("{}", e),
+                            })
+                            .await;
+                    }
+                }
+            } else {
+                let _ = tx
+                    .send(DiscoverEvent::Failed {
+                        name: cluster_name,
+                        error: "No bastion available for auto-tunnel".into(),
+                    })
+                    .await;
+            }
+        }));
+    }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
+    // Note: no Complete event — this is a partial retry, not full discovery
+}
+
 /// Discover kubeconfig files from the given directory.
 /// Expects structure: `{dir}/{cluster_name}/kubeconfig.yaml`
 ///
