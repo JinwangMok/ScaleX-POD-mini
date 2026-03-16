@@ -379,50 +379,69 @@ impl App {
                         }
                     }
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 // Arrow keys in search mode: no-op (don't type characters)
                 AppEvent::ArrowUp | AppEvent::ArrowDown | AppEvent::ArrowLeft | AppEvent::ArrowRight => {}
+                // Tab/Shift+Tab: exit search and switch panel
+                AppEvent::NextPanel | AppEvent::PrevPanel => {
+                    self.search_active = false;
+                    self.active_panel = match self.active_panel {
+                        ActivePanel::Sidebar => ActivePanel::Center,
+                        ActivePanel::Center => ActivePanel::Sidebar,
+                    };
+                }
                 // All character-producing events → literal text input
                 // Vim keys (q→Quit, h→Left, l→Right, ?→Help) are remapped to chars
                 AppEvent::Quit => {
                     self.search_query.get_or_insert_with(String::new).push('q');
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 AppEvent::Help => {
                     self.search_query.get_or_insert_with(String::new).push('?');
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 AppEvent::Left => {
                     self.search_query.get_or_insert_with(String::new).push('h');
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 AppEvent::Right => {
                     self.search_query.get_or_insert_with(String::new).push('l');
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 AppEvent::Up => {
                     self.search_query.get_or_insert_with(String::new).push('k');
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 AppEvent::Down => {
                     self.search_query.get_or_insert_with(String::new).push('j');
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 AppEvent::Refresh => {
                     self.search_query.get_or_insert_with(String::new).push('r');
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 AppEvent::Search => {
                     self.search_query.get_or_insert_with(String::new).push('/');
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 AppEvent::ResourceType(c) => {
                     self.search_query.get_or_insert_with(String::new).push(c);
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 AppEvent::CharInput(c) => {
                     self.search_query.get_or_insert_with(String::new).push(c);
                     self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
                 }
                 _ => {}
             }
@@ -2077,6 +2096,65 @@ mod tests {
 
         assert_eq!(app.tree[1].expanded, expanded_before, "Backspace should not collapse node");
     }
+
+    // --- US-070: Tab key exits search and switches panel ---
+
+    #[test]
+    fn search_tab_exits_and_switches_panel() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("test".into());
+        app.active_panel = ActivePanel::Center;
+
+        app.handle_event(AppEvent::NextPanel);
+
+        assert!(!app.search_active);
+        assert_eq!(app.active_panel, ActivePanel::Sidebar);
+    }
+
+    #[test]
+    fn search_shift_tab_exits_and_switches_panel() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("test".into());
+        app.active_panel = ActivePanel::Center;
+
+        app.handle_event(AppEvent::PrevPanel);
+
+        assert!(!app.search_active);
+        assert_eq!(app.active_panel, ActivePanel::Sidebar);
+    }
+
+    // --- US-073: Search input resets table_scroll_offset ---
+
+    #[test]
+    fn search_backspace_resets_scroll_offset() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some("hello".into());
+        app.table_scroll_offset = 10;
+        app.table_cursor = 5;
+
+        app.handle_event(AppEvent::Backspace);
+
+        assert_eq!(app.table_cursor, 0);
+        assert_eq!(app.table_scroll_offset, 0);
+    }
+
+    #[test]
+    fn search_char_input_resets_scroll_offset() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+        app.table_scroll_offset = 10;
+        app.table_cursor = 5;
+
+        app.handle_event(AppEvent::CharInput('x'));
+
+        assert_eq!(app.table_cursor, 0);
+        assert_eq!(app.table_scroll_offset, 0);
+        assert_eq!(app.search_query, Some("x".into()));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2121,6 +2199,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new_with_names(&cluster_names, args.refresh);
+    app.load_infra(); // Load infrastructure data once at startup
     let tick_rate = Duration::from_millis(100);
     let refresh_interval = Duration::from_secs(args.refresh);
     let mut last_refresh = Instant::now();
@@ -2251,7 +2330,6 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             app.api_latency_ms = result.latency_ms;
             app.last_fetched_resource = result.active_resource;
             app.sync_tree_from_snapshots();
-            app.load_infra();
             app.self_rss_mb = read_self_rss_mb();
             app.is_fetching = false;
             app.fetch_started_at = None;

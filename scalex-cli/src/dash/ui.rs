@@ -683,9 +683,20 @@ fn render_pods_table(f: &mut Frame, app: &App, pods: &[crate::dash::data::PodInf
             let base = row_base_style(is_selected);
             let status_color = match pod.status.as_str() {
                 "Running" => theme::BRIGHT_GREEN,
-                "Pending" => theme::BRIGHT_YELLOW,
-                "Succeeded" => theme::BRIGHT_BLUE,
-                "Failed" | "CrashLoopBackOff" | "Error" => theme::BRIGHT_RED,
+                "Pending" | "ContainerCreating" | "PodInitializing" | "Terminating" => {
+                    theme::BRIGHT_YELLOW
+                }
+                "Succeeded" | "Completed" => theme::BRIGHT_BLUE,
+                "Failed" | "CrashLoopBackOff" | "Error" | "OOMKilled"
+                | "ImagePullBackOff" | "ErrImagePull" | "CreateContainerConfigError"
+                | "InvalidImageName" => theme::BRIGHT_RED,
+                s if s.starts_with("Init:") => {
+                    if s.contains("Error") || s.contains("CrashLoopBackOff") {
+                        theme::BRIGHT_RED
+                    } else {
+                        theme::BRIGHT_YELLOW
+                    }
+                }
                 _ => theme::FG3,
             };
             Row::new(vec![
@@ -1173,7 +1184,9 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
 
     // -- Layout: auto-size height, centered --
     let popup_width = 50.min(area.width.saturating_sub(4));
-    let popup_height = (lines.len() as u16 + 2).min(area.height.saturating_sub(4)); // +2 for borders
+    let content_height = lines.len() as u16;
+    let max_popup_height = area.height.saturating_sub(2).max(5); // leave margin, min 5
+    let popup_height = (content_height + 2).min(max_popup_height); // +2 for borders
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
 
@@ -1186,6 +1199,12 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(theme::BRIGHT_YELLOW))
         .style(Style::default().bg(theme::BG_HARD));
 
-    let paragraph = Paragraph::new(lines).block(block);
+    // Scroll if content exceeds inner area (popup_height - 2 for borders)
+    let inner_height = popup_height.saturating_sub(2);
+    let scroll_offset = content_height.saturating_sub(inner_height);
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((scroll_offset, 0));
     f.render_widget(paragraph, popup_area);
 }
