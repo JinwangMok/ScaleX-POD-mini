@@ -3643,7 +3643,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 })
                 .collect();
 
-            tokio::spawn(async move {
+            // Spawn fetch task with panic safety — always send a FetchResult
+            // so is_fetching gets cleared (prevents 30s stall on task panic)
+            let fetch_handle = tokio::spawn(async move {
                 let start = Instant::now();
                 let mut handles = Vec::new();
                 for (name, client, active_res) in &cluster_refs {
@@ -3684,6 +3686,19 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         generation,
                     })
                     .await;
+            });
+            // If the fetch task panics, send an empty result to unblock is_fetching
+            let panic_tx = fetch_tx.clone();
+            tokio::spawn(async move {
+                if fetch_handle.await.is_err() {
+                    let _ = panic_tx
+                        .send(FetchResult {
+                            snapshots: Vec::new(),
+                            latency_ms: 0,
+                            generation,
+                        })
+                        .await;
+                }
             });
         }
     };
