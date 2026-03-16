@@ -1192,15 +1192,15 @@ impl App {
     /// Used to cap help_scroll_offset in the event handler.
     fn help_content_line_count(&self) -> u16 {
         let context_lines: u16 = if self.search_active {
-            5 // section + blank + 3 keys
+            6 // section + blank + 4 keys (<type>, Enter, ESC, Backspace)
         } else {
             match self.active_panel {
                 ActivePanel::Sidebar => 7, // section + blank + 5 keys (j/k, PgUp/Dn, Home/End, h/l, Enter)
                 ActivePanel::Center => {
                     if self.active_tab == 1 {
-                        4 // section + blank + 2 keys
+                        5 // section + blank + 3 keys (j/k, PgUp/Dn, Home/End)
                     } else {
-                        8 // section + blank + 5 keys (j/k, PgUp/Dn, Home/End, pdscn, desc) + desc line
+                        7 // section + blank + 4 keys (j/k, PgUp/Dn, Home/End, pdscn) + desc line
                     }
                 }
             }
@@ -2977,8 +2977,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             let body_height = term_size
                 .height
                 .saturating_sub(header_height + status_bar_height);
-            // Sidebar viewport = body height minus border (right border only, inner = same height)
-            let sidebar_viewport = body_height.saturating_sub(0) as usize;
+            // Sidebar viewport = body height (right border only, no top/bottom border)
+            let sidebar_viewport = body_height as usize;
             app.ensure_sidebar_scroll_visible(sidebar_viewport);
             // Table viewport = body height minus block borders (2) minus header row (1) minus optional search bar (1)
             let search_offset: u16 = if app.search_active { 1 } else { 0 };
