@@ -24,8 +24,8 @@ pub fn render(f: &mut Frame, app: &App) {
             "Terminal too small ({}x{}). Need {}x{} minimum.",
             size.width, size.height, MIN_WIDTH, MIN_HEIGHT
         );
-        let paragraph = Paragraph::new(msg)
-            .style(Style::default().fg(theme::BRIGHT_YELLOW).bg(theme::BG));
+        let paragraph =
+            Paragraph::new(msg).style(Style::default().fg(theme::BRIGHT_YELLOW).bg(theme::BG));
         f.render_widget(paragraph, size);
         return;
     }
@@ -455,7 +455,11 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                     format!("{}…", truncated)
                 } else {
                     // No room for label + ellipsis; show just ellipsis or nothing
-                    if available == 1 { "…".to_string() } else { String::new() }
+                    if available == 1 {
+                        "…".to_string()
+                    } else {
+                        String::new()
+                    }
                 }
             } else {
                 node.label.clone()
@@ -509,8 +513,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         );
         let x = inner.x;
         let y = inner.y + inner.height.saturating_sub(1);
-        let indicator_area =
-            Rect::new(x, y, indicator.len().min(inner.width as usize) as u16, 1);
+        let indicator_area = Rect::new(x, y, indicator.len().min(inner.width as usize) as u16, 1);
         let indicator_widget = Paragraph::new(Span::styled(
             indicator,
             Style::default().fg(theme::FG4).bg(theme::BG_HARD),
