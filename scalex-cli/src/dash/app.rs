@@ -155,6 +155,7 @@ pub struct App {
 
     // Help overlay
     pub show_help: bool,
+    pub help_scroll_offset: u16,
 
     // Search
     pub search_active: bool,
@@ -256,6 +257,7 @@ impl App {
             infra: InfraSnapshot::default(),
             api_latency_ms: 0,
             show_help: false,
+            help_scroll_offset: 0,
             search_active: false,
             search_query: None,
             self_rss_mb: None,
@@ -333,6 +335,7 @@ impl App {
             infra: InfraSnapshot::default(),
             api_latency_ms: 0,
             show_help: false,
+            help_scroll_offset: 0,
             search_active: false,
             search_query: None,
             self_rss_mb: None,
@@ -394,6 +397,7 @@ impl App {
                         ActivePanel::Sidebar => ActivePanel::Center,
                         ActivePanel::Center => ActivePanel::Sidebar,
                     };
+                    self.table_scroll_offset = 0;
                 }
                 // All character-producing events → literal text input
                 // Vim keys (q→Quit, h→Left, l→Right, ?→Help) are remapped to chars
@@ -455,11 +459,18 @@ impl App {
         // show_help and search_active are mutually exclusive by construction:
         // search intercepts Help/Quit (above), and help blocks Search (below).
         if self.show_help {
-            if matches!(
-                evt,
-                AppEvent::Help | AppEvent::Quit | AppEvent::Enter | AppEvent::Escape
-            ) {
-                self.show_help = false;
+            match evt {
+                AppEvent::Help | AppEvent::Quit | AppEvent::Enter | AppEvent::Escape => {
+                    self.show_help = false;
+                    self.help_scroll_offset = 0;
+                }
+                AppEvent::Up | AppEvent::ArrowUp => {
+                    self.help_scroll_offset = self.help_scroll_offset.saturating_sub(1);
+                }
+                AppEvent::Down | AppEvent::ArrowDown => {
+                    self.help_scroll_offset += 1; // clamped in render
+                }
+                _ => {}
             }
             return;
         }
@@ -508,7 +519,10 @@ impl App {
                     }
                 }
             }
-            AppEvent::Help => self.show_help = true,
+            AppEvent::Help => {
+                self.show_help = true;
+                self.help_scroll_offset = 0;
+            }
             AppEvent::Search => {
                 // Activate search mode and switch to center panel (search filters center table)
                 self.search_active = true;
@@ -1077,6 +1091,7 @@ mod tests {
             infra: InfraSnapshot::default(),
             api_latency_ms: 0,
             show_help: false,
+            help_scroll_offset: 0,
             search_active: false,
             search_query: None,
             self_rss_mb: None,
