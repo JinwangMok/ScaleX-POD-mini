@@ -33,6 +33,9 @@ pub enum AppEvent {
     Backspace,
     // Refresh
     Refresh, // r
+    // Page navigation (half-viewport jumps)
+    PageUp,
+    PageDown,
     // Character input (unmapped printable chars — used by search mode)
     CharInput(char),
     // Tick (periodic refresh)
@@ -76,6 +79,9 @@ fn map_key_event(key: KeyEvent) -> AppEvent {
         KeyCode::Down if !ctrl => AppEvent::ArrowDown,
         KeyCode::Left if !ctrl => AppEvent::ArrowLeft,
         KeyCode::Right if !ctrl => AppEvent::ArrowRight,
+        // Page navigation
+        KeyCode::PageUp => AppEvent::PageUp,
+        KeyCode::PageDown => AppEvent::PageDown,
         // Navigation — vim keys (typed as chars in search mode)
         KeyCode::Char('k') if !ctrl => AppEvent::Up,
         KeyCode::Char('j') if !ctrl => AppEvent::Down,
