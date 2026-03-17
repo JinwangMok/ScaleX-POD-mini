@@ -117,6 +117,9 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Safe unwrap elimination**: `navigate_to_parent` and `visible_tree_indices_cached` use `if let`/`unwrap_or_default` instead of `unwrap()` on invariant-maintained `Option`.
 - **Skip namespace fetch for non-selected clusters**: `ActiveResource::Nodes` arm fetches only nodes (no namespace API call). Merge logic preserves cached namespaces when fetch returns empty vec.
 - **Parallel fetch result collection**: Per-cluster fetch handles collected via `futures::future::join_all` instead of sequential `for handle in handles { handle.await }`. Eliminates cancellation latency and serial blocking.
+- **Zero-clone pre-draw visible indices**: `run_tui` pre-draw populates `render_visible_indices` via `extend_from_slice` from cache instead of `clone().unwrap()`. Reuses existing Vec capacity across frames.
+- **Static tab shortcut labels**: `render_center` uses `&'static str` constants (`SHORTCUTS_ACTIVE`/`SHORTCUTS_INACTIVE`) instead of per-frame `format!("[{}]{} ", key, label)`. Eliminates 5 String allocations per frame.
+- **Static health dot strings**: `render_status_bar` uses `"● "` / `"○ "` constants instead of per-cluster `format!("{} ", symbol)`.
 
 ### Header Layout
 

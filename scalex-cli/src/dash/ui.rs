@@ -547,19 +547,22 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
     let ctx_label = &app.ctx_label;
 
     // Resource shortcut indicator: p d s c n with active one highlighted
-    let resource_shortcuts = [
-        ('p', "Pods", ResourceView::Pods),
-        ('d', "Deploy", ResourceView::Deployments),
-        ('s', "Svc", ResourceView::Services),
-        ('c', "CM", ResourceView::ConfigMaps),
-        ('n', "Nodes", ResourceView::Nodes),
+    // Static strings avoid per-frame format!() allocation for tab labels
+    const SHORTCUTS_ACTIVE: [&str; 5] = ["[p]Pods ", "[d]Deploy ", "[s]Svc ", "[c]CM ", "[n]Nodes "];
+    const SHORTCUTS_INACTIVE: [&str; 5] = ["p:Pods ", "d:Deploy ", "s:Svc ", "c:CM ", "n:Nodes "];
+    const SHORTCUT_VIEWS: [ResourceView; 5] = [
+        ResourceView::Pods,
+        ResourceView::Deployments,
+        ResourceView::Services,
+        ResourceView::ConfigMaps,
+        ResourceView::Nodes,
     ];
     let mut title_spans: Vec<Span> = vec![Span::styled(" ", Style::default().fg(theme::FG))];
     if app.active_tab == 0 {
-        for (key, label, view) in &resource_shortcuts {
-            if *view == app.resource_view {
+        for i in 0..5 {
+            if SHORTCUT_VIEWS[i] == app.resource_view {
                 title_spans.push(Span::styled(
-                    format!("[{}]{} ", key, label),
+                    SHORTCUTS_ACTIVE[i],
                     Style::default()
                         .fg(theme::BG_HARD)
                         .bg(theme::BRIGHT_AQUA)
@@ -567,7 +570,7 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
                 ));
             } else {
                 title_spans.push(Span::styled(
-                    format!("{}:{} ", key, label),
+                    SHORTCUTS_INACTIVE[i],
                     Style::default().fg(theme::FG4),
                 ));
             }
@@ -1315,15 +1318,18 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let narrow = inner.width < 100;
+    // Static health dot strings — avoids per-cluster format!() allocation per frame
+    const DOT_FILLED: &str = "● ";
+    const DOT_EMPTY: &str = "○ ";
     for (i, snapshot) in app.snapshots.iter().enumerate() {
-        let (symbol, color) = match snapshot.health {
-            HealthStatus::Green => ("●", theme::BRIGHT_GREEN),
-            HealthStatus::Yellow => ("●", theme::BRIGHT_YELLOW),
-            HealthStatus::Red => ("●", theme::BRIGHT_RED),
-            HealthStatus::Unknown => ("○", theme::FG4),
+        let (dot_str, color) = match snapshot.health {
+            HealthStatus::Green => (DOT_FILLED, theme::BRIGHT_GREEN),
+            HealthStatus::Yellow => (DOT_FILLED, theme::BRIGHT_YELLOW),
+            HealthStatus::Red => (DOT_FILLED, theme::BRIGHT_RED),
+            HealthStatus::Unknown => (DOT_EMPTY, theme::FG4),
         };
         health_spans.push(Span::styled(
-            format!("{} ", symbol),
+            dot_str,
             Style::default().fg(color),
         ));
         // Use pre-computed health strings (computed on fetch arrival, not per-frame)
