@@ -65,6 +65,8 @@ pub struct NodeInfo {
     /// Pre-computed "allocatable/capacity" columns to avoid per-frame format!()
     pub cpu_display: String,
     pub mem_display: String,
+    /// Kubelet version (e.g., "v1.33.1") from node.status.nodeInfo
+    pub kubelet_version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,6 +106,8 @@ pub struct ServiceInfo {
     pub namespace: String,
     pub svc_type: String,
     pub cluster_ip: String,
+    /// External IP from LoadBalancer ingress, or "<none>" for non-LB services
+    pub external_ip: String,
     pub ports: String,
     pub age: String,
 }
@@ -301,6 +305,11 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
                 mem_allocatable_display, mem_capacity_display
             );
 
+            let kubelet_version = status
+                .and_then(|s| s.node_info.as_ref())
+                .map(|ni| ni.kubelet_version.clone())
+                .unwrap_or_default();
+
             NodeInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 status: node_status,
@@ -315,6 +324,7 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
                 mem_allocatable_display,
                 cpu_display,
                 mem_display,
+                kubelet_version,
             }
         })
         .collect())
@@ -456,11 +466,25 @@ pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<
                 .map(|ts| format_age(now, ts.0))
                 .unwrap_or_else(|| "<unknown>".into());
 
+            // External IP from LoadBalancer ingress status
+            let external_ip = svc
+                .status
+                .as_ref()
+                .and_then(|s| s.load_balancer.as_ref())
+                .and_then(|lb| lb.ingress.as_ref())
+                .and_then(|ingress| {
+                    ingress.first().and_then(|i| {
+                        i.ip.clone().or_else(|| i.hostname.clone())
+                    })
+                })
+                .unwrap_or_else(|| "<none>".into());
+
             ServiceInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 namespace: meta.namespace.clone().unwrap_or_default(),
                 svc_type,
                 cluster_ip,
+                external_ip,
                 ports,
                 age,
             }
@@ -597,6 +621,16 @@ pub async fn fetch_cluster_snapshot(
     let mut pods_vec = pods.unwrap_or_default();
     sort_pods_by_severity(&mut pods_vec);
 
+    // Sort other resources alphabetically by name (k9s parity)
+    let mut nodes = nodes;
+    nodes.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut deployments_vec = deployments.unwrap_or_default();
+    deployments_vec.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut services_vec = services.unwrap_or_default();
+    services_vec.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut configmaps_vec = configmaps.unwrap_or_default();
+    configmaps_vec.sort_by(|a, b| a.name.cmp(&b.name));
+
     // For health computation, use pods if we have them, otherwise empty
     // (health will be recomputed on next full fetch)
     let health = compute_health(&nodes, &pods_vec);
@@ -608,9 +642,9 @@ pub async fn fetch_cluster_snapshot(
         namespaces,
         nodes,
         pods: pods_vec,
-        deployments: deployments.unwrap_or_default(),
-        services: services.unwrap_or_default(),
-        configmaps: configmaps.unwrap_or_default(),
+        deployments: deployments_vec,
+        services: services_vec,
+        configmaps: configmaps_vec,
         resource_usage,
     })
 }
