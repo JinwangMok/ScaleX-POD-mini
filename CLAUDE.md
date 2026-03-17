@@ -189,6 +189,12 @@ The TUI header is k9s-style and responsive:
 - **Cached center panel title**: `ctx_title_span` pre-computed on cluster/namespace change via `sync_ctx_label()`. `render_center` borrows cached string instead of per-frame `format!("| {} ", ctx_label)`.
 - **Static usage bar labels**: `render_usage_bar` uses static `label` + `" ["` spans instead of `format!("{} [", label)`. Eliminates 2 format allocations per bar per frame.
 - **Headless parallel fetch**: `run_headless` uses `futures::future::join_all` instead of sequential `for handle in handles { handle.await }` for cluster data fetching.
+- **Safe PID cast**: All `pid as i32` casts for `libc::kill` are guarded with `pid <= i32::MAX as u32` bounds check. Prevents negative PID values that could send signals to process groups.
+- **Snapshot index rebuild**: `rebuild_snapshot_index()` called after fetch result merge loop to prevent stale index mappings when new clusters are added.
+- **Zero-clone visible indices in run_tui**: Auto-select path uses `ensure_visible_indices_cached()` + direct cache reference instead of `visible_tree_indices_cached()` clone.
+- **Iterator-based Top tab render**: `render_top_tab` iterates `snapshot.nodes.iter().filter()` directly instead of collecting into `Vec<&NodeInfo>` per frame.
+- **Static spinner strings**: Status bar uses pre-computed `SPINNERS`, `DISCOVER_SPINNERS`, `LOADING_SPINNERS` static arrays instead of per-frame `format!()` for spinner animation.
+- **Zero-allocation header strings**: `render_header_full` and `render_header_compact` pass `&str` references directly to `Span::styled` instead of `.to_string()` conversion per frame.
 - **Per-resource fetch tracking**: `fetched_resources: HashSet<ActiveResource>` distinguishes "not yet fetched" (empty vec, not in set) from "fetched but truly empty" (empty vec, in set). Cleared on cluster/namespace change. View switch to unfetched resource shows "Loading {type}..." spinner instead of empty table.
 
 ## Key Patterns

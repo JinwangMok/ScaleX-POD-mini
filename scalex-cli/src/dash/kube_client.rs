@@ -918,6 +918,9 @@ fn lookup_cp_ip(kubeconfig_path: &Path, cluster_name: &str) -> Option<String> {
 
 /// Check if a process is still alive.
 fn is_process_alive(pid: u32) -> bool {
+    if pid > i32::MAX as u32 {
+        return false; // PID out of i32 range — cannot be valid on Linux
+    }
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
@@ -927,8 +930,10 @@ fn is_process_alive(pid: u32) -> bool {
 pub fn cleanup_tunnels(clusters: &[ClusterClient]) {
     for cluster in clusters {
         if let Some(pid) = cluster.tunnel_pid {
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
+            if pid <= i32::MAX as u32 {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
             }
         }
     }

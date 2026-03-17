@@ -3927,12 +3927,14 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         // US-600: populate namespace children from cached snapshots
                         app.sync_tree_from_snapshots();
                         // Recompute visible indices AFTER tree mutation to get correct cursor position
-                        let visible = app.visible_tree_indices_cached();
+                        app.ensure_visible_indices_cached();
                         if let Some(idx) = app.tree.iter().position(
                             |n| matches!(&n.node_type, NodeType::Cluster(c) if c == &name),
                         ) {
-                            if let Some(vi) = visible.iter().position(|&i| i == idx) {
-                                app.tree_cursor = vi;
+                            if let Some(ref vis) = app.cached_visible_indices {
+                                if let Some(vi) = vis.iter().position(|&i| i == idx) {
+                                    app.tree_cursor = vi;
+                                }
                             }
                         }
                     }
@@ -3997,6 +3999,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     app.snapshots.push(new_snap);
                 }
             }
+            // Rebuild snapshot index to prevent stale mappings after merge/insert
+            app.rebuild_snapshot_index();
             app.api_latency_ms = result.latency_ms;
             // Mark all resource types as fetched (full prefetch for selected cluster)
             app.fetched_resources.insert(ActiveResource::Pods);
@@ -4201,8 +4205,10 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
 
     // Cleanup all SSH tunnels (panic-safe: tunnel_pids accumulated during run)
     for &pid in &app.tunnel_pids {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+        if pid <= i32::MAX as u32 {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
         }
     }
 
