@@ -111,6 +111,7 @@ pub fn map_key_event(key: KeyEvent) -> AppEvent {
         KeyCode::Char('s') if !ctrl => AppEvent::ResourceType('s'),
         KeyCode::Char('c') if !ctrl => AppEvent::ResourceType('c'),
         KeyCode::Char('n') if !ctrl => AppEvent::ResourceType('n'),
+        KeyCode::Char('e') if !ctrl => AppEvent::ResourceType('e'),
 
         // Search & Help
         KeyCode::Char('/') => AppEvent::Search,
@@ -221,7 +222,7 @@ mod tests {
     #[test]
     fn unmapped_chars_various() {
         for c in [
-            'b', 'e', 'f', 'g', 'i', 'm', 'o', 't', 'u', 'w', 'x', 'y', 'z',
+            'b', 'f', 'g', 'i', 'm', 'o', 't', 'u', 'w', 'x', 'y', 'z',
         ] {
             assert_eq!(
                 map_key_event(key(KeyCode::Char(c), KeyModifiers::NONE)),
