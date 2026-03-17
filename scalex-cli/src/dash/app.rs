@@ -281,7 +281,7 @@ pub struct App {
 
     /// Pre-computed status bar health strings per cluster. Updated on fetch result arrival.
     /// Eliminates per-frame format!() for pod/node counts in render_status_bar.
-    pub status_bar_health_strings: Vec<(String, String)>, // (narrow_str, wide_str) per snapshot
+    pub status_bar_health_strings: Vec<(String, String, String)>, // (narrow_str, wide_str, name_label) per snapshot
 
     /// Pre-computed "| self: 42MB | latency: 150ms" for status bar.
     /// Updated on fetch result arrival. Spinner appended dynamically in render.
@@ -1605,7 +1605,8 @@ impl App {
                         s.name, ru.running_pods, ru.total_pods, ru.ready_nodes, ru.total_nodes
                     )
                 };
-                (narrow, wide)
+                let name_label = format!("{}: ", s.name);
+                (narrow, wide, name_label)
             })
             .collect();
 

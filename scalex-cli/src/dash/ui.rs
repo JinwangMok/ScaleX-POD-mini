@@ -1331,7 +1331,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(color),
         ));
         // Use pre-computed health strings (computed on fetch arrival, not per-frame)
-        if let Some((narrow_str, wide_str)) = app.status_bar_health_strings.get(i) {
+        if let Some((narrow_str, wide_str, _)) = app.status_bar_health_strings.get(i) {
             let text = if narrow { narrow_str.as_str() } else { wide_str.as_str() };
             health_spans.push(Span::styled(text, Style::default().fg(theme::FG3)));
         }
@@ -1346,10 +1346,14 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     if !very_narrow {
         let bar_width = if narrow { 5 } else { 8 };
-        for snapshot in &app.snapshots {
+        for (i, snapshot) in app.snapshots.iter().enumerate() {
             let ru = &snapshot.resource_usage;
+            // Use pre-computed "name: " label to avoid per-frame format!()
+            let name_label = app.status_bar_health_strings.get(i)
+                .map(|(_, _, nl)| nl.as_str())
+                .unwrap_or("");
             usage_spans.push(Span::styled(
-                format!("{}: ", snapshot.name),
+                name_label,
                 Style::default().fg(theme::FG3),
             ));
             usage_spans.extend(render_usage_bar(

@@ -386,7 +386,8 @@ pub async fn discover_clusters_streaming(
 
 /// Global atomic port counter for SSH tunnel allocation (US-212).
 /// Starts at 16443 and increments across initial discovery and retries to avoid conflicts.
-static NEXT_TUNNEL_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(16443);
+/// Uses u32 to prevent silent wrap-around at u16::MAX (65535) after many retries.
+static NEXT_TUNNEL_PORT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16443);
 
 /// Re-discover only specific clusters by name (for retrying failed connections).
 /// Same 3-tier strategy as discover_clusters_streaming but filtered to only the given names.
@@ -836,7 +837,7 @@ async fn setup_auto_tunnel(
     kubeconfig_path: &Path,
     cluster_name: &str,
     bastion_host: &str,
-    local_port: u16,
+    local_port: u32,
 ) -> Result<(Client, u32)> {
     let (server_url, server_ip, server_port) =
         extract_server_url(kubeconfig_path).context("Cannot parse server URL from kubeconfig")?;

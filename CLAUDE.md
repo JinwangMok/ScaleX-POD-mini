@@ -195,6 +195,8 @@ The TUI header is k9s-style and responsive:
 - **Iterator-based Top tab render**: `render_top_tab` iterates `snapshot.nodes.iter().filter()` directly instead of collecting into `Vec<&NodeInfo>` per frame.
 - **Static spinner strings**: Status bar uses pre-computed `SPINNERS`, `DISCOVER_SPINNERS`, `LOADING_SPINNERS` static arrays instead of per-frame `format!()` for spinner animation.
 - **Zero-allocation header strings**: `render_header_full` and `render_header_compact` pass `&str` references directly to `Span::styled` instead of `.to_string()` conversion per frame.
+- **Safe tunnel port counter**: `NEXT_TUNNEL_PORT` uses `AtomicU32` instead of `AtomicU16` to prevent silent wrap-around at 65535 after many retry cycles.
+- **Pre-computed cluster name labels**: `status_bar_health_strings` tuple includes pre-computed `"name: "` label. `render_status_bar` borrows cached string instead of `format!("{}: ", snapshot.name)` per cluster per frame.
 - **Per-resource fetch tracking**: `fetched_resources: HashSet<ActiveResource>` distinguishes "not yet fetched" (empty vec, not in set) from "fetched but truly empty" (empty vec, in set). Cleared on cluster/namespace change. View switch to unfetched resource shows "Loading {type}..." spinner instead of empty table.
 
 ## Key Patterns
