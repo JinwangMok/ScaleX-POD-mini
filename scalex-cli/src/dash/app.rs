@@ -1127,7 +1127,10 @@ impl App {
             return; // Root nodes have no parent
         }
         self.ensure_visible_indices_cached();
-        let visible = self.cached_visible_indices.as_ref().unwrap();
+        let visible = match self.cached_visible_indices.as_ref() {
+            Some(v) => v,
+            None => return, // Should not happen after ensure, but safe fallback
+        };
         // Walk backwards through visible indices to find parent
         let cursor_vi = visible.iter().position(|&i| i == tree_idx).unwrap_or(0);
         for vi in (0..cursor_vi).rev() {
@@ -1176,8 +1179,7 @@ impl App {
     /// `ensure_visible_indices_cached()` + direct cache access to avoid cloning.
     fn visible_tree_indices_cached(&mut self) -> Vec<usize> {
         self.ensure_visible_indices_cached();
-        // SAFETY: ensure_visible_indices_cached guarantees Some
-        self.cached_visible_indices.clone().unwrap()
+        self.cached_visible_indices.clone().unwrap_or_default()
     }
 
     /// Ensure the visible indices cache is populated (no clone).
@@ -3893,8 +3895,11 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             for new_snap in result.snapshots {
                 if let Some(&idx) = app.snapshot_index.get(&new_snap.name) {
                     let existing = &mut app.snapshots[idx];
-                    // Always update namespaces and nodes (fetched every cycle)
-                    existing.namespaces = new_snap.namespaces;
+                    // Update namespaces only if fetched (non-empty); non-selected clusters
+                    // skip namespace fetch and return empty vec — preserve cached namespaces.
+                    if !new_snap.namespaces.is_empty() {
+                        existing.namespaces = new_snap.namespaces;
+                    }
                     existing.nodes = new_snap.nodes;
                     // Update resource fields only if they were fetched (non-empty or full fetch)
                     // Full fetch for selected cluster populates all; nodes-only for others leaves empty
@@ -4064,13 +4069,17 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     }));
                 }
 
+                // Await all cluster fetches in parallel (not sequentially)
+                let results = futures::future::join_all(handles).await;
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
                 let mut snapshots = Vec::new();
-                for handle in handles {
-                    if cancel.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    if let Ok(Some(snapshot)) = handle.await {
-                        snapshots.push(snapshot);
+                for result in results {
+                    match result {
+                        Ok(Some(snapshot)) => snapshots.push(snapshot),
+                        Ok(None) => {} // fetch_cluster_snapshot returned Err, already logged
+                        Err(_) => {} // task panicked — silently skip (outer panic guard handles reporting)
                     }
                 }
                 let latency_ms = start.elapsed().as_millis() as u64;

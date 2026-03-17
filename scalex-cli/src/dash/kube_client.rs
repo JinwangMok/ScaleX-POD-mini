@@ -677,11 +677,7 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
 
             // Strategy 2: direct connection via kubeconfig IP
             if let Ok(client) = build_client(&kubeconfig_path).await {
-                if kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
-                    .list(&kube::api::ListParams::default().limit(1))
-                    .await
-                    .is_ok()
-                {
+                if probe_client(&client).await {
                     let ver = fetch_server_version(&client).await;
                     let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
                     return Some(ClusterClient {
@@ -699,11 +695,7 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
             let original_path = kubeconfig_path.with_extension("yaml.original");
             if original_path.exists() {
                 if let Ok(client) = build_client(&original_path).await {
-                    if kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
-                        .list(&kube::api::ListParams::default().limit(1))
-                        .await
-                        .is_ok()
-                    {
+                    if probe_client(&client).await {
                         let ver = fetch_server_version(&client).await;
                         let ep = extract_server_url(&original_path).map(|(url, _, _)| url);
                         return Some(ClusterClient {
