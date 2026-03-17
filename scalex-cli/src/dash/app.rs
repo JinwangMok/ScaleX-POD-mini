@@ -246,6 +246,15 @@ pub struct App {
     /// Pre-computed context label (e.g., "tower > kube-system"). Updated on cluster/namespace change.
     /// Eliminates per-frame `format!()` in render_center.
     pub ctx_label: String,
+
+    /// Cached row count for current resource view + search filter.
+    /// Invalidated (None) on: data change, view switch, search change, cluster/namespace change.
+    /// Avoids redundant O(n) filter iteration in move_down/page_down/jump_end/render_center.
+    cached_row_count: Option<usize>,
+
+    /// Pre-computed status bar health strings per cluster. Updated on fetch result arrival.
+    /// Eliminates per-frame format!() for pod/node counts in render_status_bar.
+    pub status_bar_health_strings: Vec<(String, String)>, // (narrow_str, wide_str) per snapshot
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -362,6 +371,8 @@ impl App {
             needs_redraw: true,
             render_visible_indices: Vec::new(),
             ctx_label: "No cluster selected".to_string(),
+            cached_row_count: None,
+            status_bar_health_strings: Vec::new(),
         }
     }
 
@@ -457,13 +468,16 @@ impl App {
             needs_redraw: true,
             render_visible_indices: Vec::new(),
             ctx_label: "No cluster selected".to_string(),
+            cached_row_count: None,
+            status_bar_health_strings: Vec::new(),
         }
     }
 
     pub fn handle_event(&mut self, evt: AppEvent) {
-        // Invalidate tree cache at the start of each event cycle.
-        // First visible_tree_len() call recomputes; subsequent calls use cache through render.
+        // Invalidate caches at the start of each event cycle.
+        // First call recomputes; subsequent calls use cache through render.
         self.invalidate_tree_cache();
+        self.invalidate_row_count_cache();
 
         // ForceQuit (Ctrl+C) always exits regardless of mode
         if matches!(evt, AppEvent::ForceQuit) {
@@ -967,11 +981,10 @@ impl App {
         if self.active_panel != ActivePanel::Sidebar {
             return;
         }
-        let visible = self.visible_tree_indices_cached();
-        if self.tree_cursor >= visible.len() {
-            return;
-        }
-        let idx = visible[self.tree_cursor];
+        let idx = match self.tree_index_at_cursor() {
+            Some(i) => i,
+            None => return,
+        };
         let node = &self.tree[idx];
 
         match &node.node_type {
@@ -1047,11 +1060,10 @@ impl App {
         if self.active_panel != ActivePanel::Sidebar {
             return;
         }
-        let visible = self.visible_tree_indices_cached();
-        if self.tree_cursor >= visible.len() {
-            return;
-        }
-        let idx = visible[self.tree_cursor];
+        let idx = match self.tree_index_at_cursor() {
+            Some(i) => i,
+            None => return,
+        };
         let node_type = self.tree[idx].node_type.clone();
 
         // Leaf nodes can't collapse — navigate to parent instead
@@ -1059,7 +1071,7 @@ impl App {
             node_type,
             NodeType::Namespace { .. } | NodeType::InfraItem(_)
         ) {
-            self.navigate_to_parent(&visible, idx);
+            self.navigate_to_parent(idx);
             return;
         }
 
@@ -1075,7 +1087,7 @@ impl App {
             }
         } else {
             // Already collapsed — navigate to parent
-            self.navigate_to_parent(&visible, idx);
+            self.navigate_to_parent(idx);
         }
     }
 
@@ -1083,11 +1095,10 @@ impl App {
         if self.active_panel != ActivePanel::Sidebar {
             return;
         }
-        let visible = self.visible_tree_indices_cached();
-        if self.tree_cursor >= visible.len() {
-            return;
-        }
-        let idx = visible[self.tree_cursor];
+        let idx = match self.tree_index_at_cursor() {
+            Some(i) => i,
+            None => return,
+        };
 
         // Leaf nodes can't expand — no-op
         if matches!(
@@ -1110,11 +1121,13 @@ impl App {
 
     /// Navigate cursor to the parent of the node at `tree_idx`.
     /// Parent is the nearest preceding node with a smaller depth.
-    fn navigate_to_parent(&mut self, visible: &[usize], tree_idx: usize) {
+    fn navigate_to_parent(&mut self, tree_idx: usize) {
         let target_depth = self.tree[tree_idx].depth;
         if target_depth == 0 {
             return; // Root nodes have no parent
         }
+        self.ensure_visible_indices_cached();
+        let visible = self.cached_visible_indices.as_ref().unwrap();
         // Walk backwards through visible indices to find parent
         let cursor_vi = visible.iter().position(|&i| i == tree_idx).unwrap_or(0);
         for vi in (0..cursor_vi).rev() {
@@ -1140,8 +1153,9 @@ impl App {
             self.tree.drain((parent_idx + 1)..(parent_idx + 1 + count));
             self.invalidate_tree_cache();
         }
-        // Clamp cursor to visible range after children removal
-        let visible_len = self.visible_tree_len();
+        // Clamp cursor to visible range after children removal (no Vec clone)
+        self.ensure_visible_indices_cached();
+        let visible_len = self.cached_visible_len.unwrap_or(0);
         if visible_len > 0 && self.tree_cursor >= visible_len {
             self.tree_cursor = visible_len - 1;
         }
@@ -1158,14 +1172,31 @@ impl App {
     }
 
     /// Compute visible tree indices and populate cache. Use from `&mut self` code paths.
+    /// Returns a clone of the cached Vec — prefer `tree_index_at_cursor()` or
+    /// `ensure_visible_indices_cached()` + direct cache access to avoid cloning.
     fn visible_tree_indices_cached(&mut self) -> Vec<usize> {
-        if let Some(ref cached) = self.cached_visible_indices {
-            return cached.clone();
+        self.ensure_visible_indices_cached();
+        // SAFETY: ensure_visible_indices_cached guarantees Some
+        self.cached_visible_indices.clone().unwrap()
+    }
+
+    /// Ensure the visible indices cache is populated (no clone).
+    fn ensure_visible_indices_cached(&mut self) {
+        if self.cached_visible_indices.is_some() {
+            return;
         }
         let result = Self::compute_visible_indices(&self.tree);
         self.cached_visible_len = Some(result.len());
-        self.cached_visible_indices = Some(result.clone());
-        result
+        self.cached_visible_indices = Some(result);
+    }
+
+    /// Get the tree index at the current tree_cursor position without cloning the Vec.
+    /// Returns None if cursor is out of bounds.
+    fn tree_index_at_cursor(&mut self) -> Option<usize> {
+        self.ensure_visible_indices_cached();
+        self.cached_visible_indices
+            .as_ref()
+            .and_then(|v| v.get(self.tree_cursor).copied())
     }
 
     fn compute_visible_indices(tree: &[TreeNode]) -> Vec<usize> {
@@ -1428,7 +1459,25 @@ impl App {
 
     /// Get the number of rows in the current resource view (for cursor clamping).
     /// Respects active search filter so cursor stays within visible bounds.
-    pub fn current_row_count(&self) -> usize {
+    /// Uses cached value when available to avoid redundant O(n) filter iterations.
+    pub fn current_row_count(&mut self) -> usize {
+        if let Some(cached) = self.cached_row_count {
+            return cached;
+        }
+        let count = self.compute_row_count();
+        self.cached_row_count = Some(count);
+        count
+    }
+
+    /// Immutable row count for render paths (reads cache only, falls back to compute).
+    pub fn current_row_count_readonly(&self) -> usize {
+        if let Some(cached) = self.cached_row_count {
+            return cached;
+        }
+        self.compute_row_count()
+    }
+
+    fn compute_row_count(&self) -> usize {
         match self.current_snapshot() {
             Some(snap) => match self.resource_view {
                 ResourceView::Pods => snap
@@ -1459,6 +1508,44 @@ impl App {
             },
             None => 0,
         }
+    }
+
+    /// Invalidate cached row count. Call on: data change, view switch, search change, cluster/ns change.
+    fn invalidate_row_count_cache(&mut self) {
+        self.cached_row_count = None;
+    }
+
+    /// Recompute pre-formatted status bar health strings from current snapshots.
+    /// Called on fetch result arrival to avoid per-frame format!() allocations.
+    pub fn sync_status_bar_strings(&mut self) {
+        self.status_bar_health_strings = self
+            .snapshots
+            .iter()
+            .map(|s| {
+                let ru = &s.resource_usage;
+                let narrow = if ru.succeeded_pods > 0 {
+                    format!(
+                        "{} {}+{}/{}  ",
+                        s.name, ru.running_pods, ru.succeeded_pods, ru.total_pods
+                    )
+                } else {
+                    format!("{} {}/{}  ", s.name, ru.running_pods, ru.total_pods)
+                };
+                let wide = if ru.succeeded_pods > 0 {
+                    format!(
+                        "{} pods:{}+{}/{} nodes:{}/{}  ",
+                        s.name, ru.running_pods, ru.succeeded_pods, ru.total_pods,
+                        ru.ready_nodes, ru.total_nodes
+                    )
+                } else {
+                    format!(
+                        "{} pods:{}/{} nodes:{}/{}  ",
+                        s.name, ru.running_pods, ru.total_pods, ru.ready_nodes, ru.total_nodes
+                    )
+                };
+                (narrow, wide)
+            })
+            .collect();
     }
 
     pub fn current_snapshot(&self) -> Option<&ClusterSnapshot> {
@@ -1599,6 +1686,8 @@ mod tests {
             needs_redraw: true,
             render_visible_indices: Vec::new(),
             ctx_label: "No cluster selected".to_string(),
+            cached_row_count: None,
+            status_bar_health_strings: Vec::new(),
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -3834,6 +3923,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             app.fetched_resources.insert(ActiveResource::ConfigMaps);
             app.fetched_resources.insert(ActiveResource::Nodes);
             app.sync_tree_from_snapshots();
+            app.sync_status_bar_strings();
             app.self_rss_mb = result.self_rss_mb;
             // Apply infra data loaded on worker thread
             if let Some(infra_snap) = result.infra {

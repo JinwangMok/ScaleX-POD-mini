@@ -19,7 +19,9 @@ pub enum ActiveResource {
 }
 
 /// Per-API-call timeout to prevent slow calls from blocking the entire fetch.
-const API_CALL_TIMEOUT: Duration = Duration::from_secs(2);
+/// Reduced from 2s to 1s — K8s API calls on a healthy cluster complete in <200ms;
+/// 1s is generous while halving worst-case fetch latency.
+const API_CALL_TIMEOUT: Duration = Duration::from_secs(1);
 
 // ---------------------------------------------------------------------------
 // Data models

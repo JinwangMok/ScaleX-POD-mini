@@ -107,6 +107,12 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Node VERSION column**: `NodeInfo.kubelet_version` populated from `node.status.nodeInfo.kubeletVersion`. Shown in nodes table after ROLES column and in Top tab after node name. Useful for upgrade planning.
 - **Service EXTERNAL-IP column**: `ServiceInfo.external_ip` populated from `status.loadBalancer.ingress[].ip/hostname`. Shows `<none>` for non-LB services. Column appears between CLUSTER-IP and PORTS.
 - **Alphabetical resource sorting**: Deployments, services, configmaps, and nodes sorted by name after fetch. Pods retain severity-first sorting (CrashLoopBackOff first, then pending, running, completed).
+- **Reduced API timeouts**: `API_CALL_TIMEOUT` reduced from 2s to 1s, `DISCOVER_TIMEOUT` from 3s to 2s. Healthy clusters respond in <200ms; tighter timeouts halve worst-case fetch latency.
+- **Zero-clone tree index lookups**: `tree_index_at_cursor()` reads from cached visible indices without cloning `Vec<usize>`. `ensure_visible_indices_cached()` populates cache; callers avoid `visible_tree_indices_cached()` clone where possible.
+- **Static sidebar padding**: `render_sidebar` uses static `SPACES` buffer for row padding instead of per-row `" ".repeat(pad)` heap allocation.
+- **Cached row count**: `cached_row_count: Option<usize>` avoids redundant O(n) filter iterations in `move_down`/`page_down`/`jump_end`/`render_center`. Invalidated per event cycle.
+- **Pre-computed status bar strings**: `status_bar_health_strings` computed on fetch result arrival via `sync_status_bar_strings()`. `render_status_bar` reads pre-computed strings instead of `format!()` per snapshot per frame.
+- **Viewport-only Row construction**: `render_resource_table` counts filtered items without collecting into `Vec<&T>`, then builds `Row` objects only for viewport-visible items via iterator `skip`/`take`.
 
 ### Header Layout
 
