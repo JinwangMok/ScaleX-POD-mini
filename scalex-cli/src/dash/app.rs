@@ -37,6 +37,7 @@ pub enum ResourceView {
     Services,
     ConfigMaps,
     Nodes,
+    Events,
 }
 
 impl ResourceView {
@@ -47,6 +48,7 @@ impl ResourceView {
             Self::Services => "Services",
             Self::ConfigMaps => "ConfigMaps",
             Self::Nodes => "Nodes",
+            Self::Events => "Events",
         }
     }
 
@@ -57,6 +59,7 @@ impl ResourceView {
             's' => Some(Self::Services),
             'c' => Some(Self::ConfigMaps),
             'n' => Some(Self::Nodes),
+            'e' => Some(Self::Events),
             _ => None,
         }
     }
@@ -68,6 +71,7 @@ impl ResourceView {
             Self::Services => ActiveResource::Services,
             Self::ConfigMaps => ActiveResource::ConfigMaps,
             Self::Nodes => ActiveResource::Nodes,
+            Self::Events => ActiveResource::Events,
         }
     }
 }
@@ -290,6 +294,14 @@ pub struct App {
     /// Pre-computed header info (cluster name, endpoint, k8s version, config path).
     /// Updated via sync_header_info() on cluster selection or discovery events.
     pub header_info: HeaderInfo,
+
+    /// Pre-computed sidebar scroll indicator (e.g., " 3/12 "). Updated via sync_sidebar_indicator().
+    /// Eliminates per-frame format!() in render_sidebar.
+    pub sidebar_indicator: String,
+
+    /// Pre-computed row count indicator (e.g., "3/12 "). Updated via sync_row_count_indicator().
+    /// Eliminates per-frame format!() in render_center.
+    pub row_count_indicator: String,
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -409,6 +421,8 @@ impl App {
             status_bar_health_strings: Vec::new(),
             status_bar_self_line: "| self: N/A | latency: 0ms".to_string(),
             header_info: HeaderInfo::default(),
+            sidebar_indicator: String::new(),
+            row_count_indicator: String::new(),
         }
     }
 
@@ -507,6 +521,8 @@ impl App {
             status_bar_health_strings: Vec::new(),
             status_bar_self_line: "| self: N/A | latency: 0ms".to_string(),
             header_info: HeaderInfo::default(),
+            sidebar_indicator: String::new(),
+            row_count_indicator: String::new(),
         }
     }
 
@@ -788,6 +804,31 @@ impl App {
             },
             None => HeaderInfo::default(),
         };
+    }
+
+    /// Sync the sidebar scroll indicator string. Called when tree_cursor or visible_len changes.
+    pub fn sync_sidebar_indicator(&mut self) {
+        let visible_len = self.visible_tree_len();
+        if visible_len > 0 {
+            self.sidebar_indicator = format!(
+                " {}/{} ",
+                (self.tree_cursor + 1).min(visible_len),
+                visible_len,
+            );
+        } else {
+            self.sidebar_indicator.clear();
+        }
+    }
+
+    /// Sync the row count indicator string. Called when table_cursor or row count changes.
+    pub fn sync_row_count_indicator(&mut self) {
+        let row_count = self.current_row_count();
+        if row_count > 0 {
+            let pos = self.table_cursor.min(row_count.saturating_sub(1)) + 1;
+            self.row_count_indicator = format!("{}/{} ", pos, row_count);
+        } else {
+            self.row_count_indicator.clear();
+        }
     }
 
     /// Sync the pre-lowercased search query cache. Called once per event cycle.
@@ -1471,12 +1512,7 @@ impl App {
         }
     }
 
-    /// Check if a resource view is showing stale (cached) data from a previous fetch cycle
-    pub fn is_view_stale(&self, _view: ResourceView) -> bool {
-        // Full prefetch: selected cluster always fetches all resources,
-        // so views are never stale after a successful fetch.
-        false
-    }
+    // is_view_stale removed — full prefetch means views are never stale.
 
     /// Number of content lines in the Top tab (for scroll clamping).
     /// Respects active search filter (US-303).
@@ -1566,6 +1602,15 @@ impl App {
                     .nodes
                     .iter()
                     .filter(|n| self.matches_search(&n.name))
+                    .count(),
+                ResourceView::Events => snap
+                    .events
+                    .iter()
+                    .filter(|e| {
+                        self.matches_search_with_ns(&e.reason, &e.namespace)
+                            || self.matches_search(&e.object)
+                            || self.matches_search(&e.message)
+                    })
                     .count(),
             },
             None => 0,
@@ -1762,6 +1807,8 @@ mod tests {
             status_bar_health_strings: Vec::new(),
             status_bar_self_line: "| self: N/A | latency: 0ms".to_string(),
             header_info: HeaderInfo::default(),
+            sidebar_indicator: String::new(),
+            row_count_indicator: String::new(),
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -1988,6 +2035,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
         app.table_cursor = 0;
@@ -2272,6 +2320,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
         app.table_cursor = 20;
@@ -2332,6 +2381,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
         // 20 rows, viewport = 10, max_offset = 10
@@ -2415,6 +2465,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
 
@@ -2566,6 +2617,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
         // Search for "alpha" → only 1 result
@@ -2690,6 +2742,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
 
@@ -2721,6 +2774,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
 
@@ -2760,6 +2814,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
         // Set scroll offset beyond data
@@ -3302,6 +3357,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
         app.table_scroll_offset = 0;
@@ -3337,6 +3393,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
         // top_tab_line_count = 2 + 1 = 3
@@ -3381,6 +3438,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
         app.rebuild_snapshot_index();
@@ -3472,6 +3530,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
 
@@ -3513,6 +3572,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
         // top_tab_line_count = 2 + 1 = 3, viewport = 5, max_offset = 0
@@ -3649,6 +3709,7 @@ mod tests {
             deployments: vec![],
             services: vec![],
             configmaps: vec![],
+            events: vec![],
             resource_usage: Default::default(),
         });
 
@@ -3869,6 +3930,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 app.render_visible_indices.clear();
                 app.render_visible_indices.extend_from_slice(cached);
             }
+            // Pre-compute format strings to eliminate per-frame format!() in render path
+            app.sync_sidebar_indicator();
+            app.sync_row_count_indicator();
             terminal.draw(|f| ui::render(f, &app))?;
             app.needs_redraw = false;
         }
@@ -3989,6 +4053,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         existing.deployments = new_snap.deployments;
                         existing.services = new_snap.services;
                         existing.configmaps = new_snap.configmaps;
+                        existing.events = new_snap.events;
                     }
                     // Recompute health from merged nodes + pods
                     existing.health = data::compute_health(&existing.nodes, &existing.pods);
@@ -4009,6 +4074,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             app.fetched_resources.insert(ActiveResource::Services);
             app.fetched_resources.insert(ActiveResource::ConfigMaps);
             app.fetched_resources.insert(ActiveResource::Nodes);
+            app.fetched_resources.insert(ActiveResource::Events);
             app.sync_tree_from_snapshots();
             app.sync_status_bar_strings();
             app.sync_header_info();

@@ -95,7 +95,7 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Dirty-flag redraw**: `needs_redraw: bool` skips `terminal.draw()` when nothing changed. Set true by keyboard events, fetch results, discovery events, terminal resize. Tick sets it only when spinner is visible (`is_fetching || !discover_complete`). Eliminates ~90% of unnecessary terminal I/O when idle.
 - **Pre-computed cluster labels**: `TreeNode.ns_count_label` caches "name (Nns)" format, computed during `sync_tree_from_snapshots`. Used by `render_sidebar` instead of per-frame `format!()` for expanded cluster nodes.
 - **Top tab viewport-aware scroll**: `page_down`, `jump_end`, and `move_down` for Top tab (Paragraph scroll) clamp offset to `max(0, line_count - page_size)`, not `line_count - 1`. Prevents over-scrolling past content when viewport is larger than content.
-- **Single-join parallel fetch**: `fetch_cluster_snapshot` runs all API calls (namespaces, nodes, pods, deployments, services, configmaps) in a single `tokio::join!` instead of two sequential groups. Eliminates sequential latency between namespace/node and resource fetches.
+- **Single-join parallel fetch**: `fetch_cluster_snapshot` runs all API calls (namespaces, nodes, pods, deployments, services, configmaps, events) in a single `tokio::join!` instead of two sequential groups. Eliminates sequential latency between namespace/node and resource fetches.
 - **Zero-clone render visible indices**: `render_visible_indices: Vec<usize>` pre-computed once before `terminal.draw()` in `run_tui`. `render_sidebar` borrows directly (`&app.render_visible_indices`) instead of cloning `Vec<usize>` per frame.
 - **Static sidebar indentation**: `render_sidebar` uses pre-computed static `&str` slices (`INDENTS` array) instead of per-row `"  ".repeat(depth)` allocation. Label references use `&str`/`Cow<str>` to avoid `String::clone()` in the common (non-truncated) case.
 - **Index-based tree sync**: `sync_tree_from_snapshots` uses index-based iteration over `self.snapshots` to avoid cloning all snapshot names and namespace lists into a temporary `Vec`. Namespace change detection uses lockstep iterator comparison instead of collecting into `Vec<String>`.
@@ -106,7 +106,7 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Cached context label**: `App.ctx_label` pre-computed on cluster/namespace change via `sync_ctx_label()`. `render_center` borrows `&app.ctx_label` instead of `format!()` per frame.
 - **Node VERSION column**: `NodeInfo.kubelet_version` populated from `node.status.nodeInfo.kubeletVersion`. Shown in nodes table after ROLES column and in Top tab after node name. Useful for upgrade planning.
 - **Service EXTERNAL-IP column**: `ServiceInfo.external_ip` populated from `status.loadBalancer.ingress[].ip/hostname`. Shows `<none>` for non-LB services. Column appears between CLUSTER-IP and PORTS.
-- **Alphabetical resource sorting**: Deployments, services, configmaps, and nodes sorted by name after fetch. Pods retain severity-first sorting (CrashLoopBackOff first, then pending, running, completed).
+- **Alphabetical resource sorting**: Deployments, services, configmaps, and nodes sorted by name after fetch. Pods retain severity-first sorting (CrashLoopBackOff first, then pending, running, completed). Events sorted by last_seen ascending (most recent first).
 - **Reduced API timeouts**: `API_CALL_TIMEOUT` reduced from 2s to 500ms, `DISCOVER_TIMEOUT` from 3s to 2s. Healthy clusters respond in <200ms; tighter timeouts minimize worst-case fetch latency.
 - **Zero-clone tree index lookups**: `tree_index_at_cursor()` reads from cached visible indices without cloning `Vec<usize>`. `ensure_visible_indices_cached()` populates cache; callers avoid `visible_tree_indices_cached()` clone where possible.
 - **Static sidebar padding**: `render_sidebar` uses static `SPACES` buffer for row padding instead of per-row `" ".repeat(pad)` heap allocation.
@@ -139,7 +139,7 @@ The TUI header is k9s-style and responsive:
 | `Home`/`End` | Jump to first/last item |
 | `Tab`/`Shift+Tab` | Cycle between Sidebar and Center panel |
 | `1` `2` | Switch to tab (1=Resources, 2=Top) |
-| `p` `d` `s` `c` `n` | Switch resource view (works from both panels; from Sidebar also switches to Center) |
+| `p` `d` `s` `c` `n` `e` | Switch resource view (works from both panels; from Sidebar also switches to Center) |
 | `/` | Enter search mode (filter by name and namespace) |
 | `r` | Force data refresh + retry failed cluster connections |
 | `?` | Toggle help overlay (context-sensitive: shows keys for current panel/view) |
@@ -198,6 +198,14 @@ The TUI header is k9s-style and responsive:
 - **Safe tunnel port counter**: `NEXT_TUNNEL_PORT` uses `AtomicU32` instead of `AtomicU16` to prevent silent wrap-around at 65535 after many retry cycles.
 - **Pre-computed cluster name labels**: `status_bar_health_strings` tuple includes pre-computed `"name: "` label. `render_status_bar` borrows cached string instead of `format!("{}: ", snapshot.name)` per cluster per frame.
 - **Per-resource fetch tracking**: `fetched_resources: HashSet<ActiveResource>` distinguishes "not yet fetched" (empty vec, not in set) from "fetched but truly empty" (empty vec, in set). Cleared on cluster/namespace change. View switch to unfetched resource shows "Loading {type}..." spinner instead of empty table.
+- **Events resource view**: `EventInfo` struct with namespace, event_type, reason, object (Kind/name), message, count, last_seen, age. Fetched via core/v1 Events API with `API_CALL_TIMEOUT`. `e` key switches to Events view. Warning events shown in yellow. Table columns: NAMESPACE, LAST SEEN, TYPE, REASON, OBJECT, MESSAGE. Events sorted by last_seen ascending. Search matches reason, namespace, object, and message.
+- **Static preamble spinner strings**: `render_tab_preamble` and `render_resources_tab` loading indicators use static `[&str; 4]` arrays instead of per-frame `format!()` with spinner character. Static `&str` messages replace `.to_string()` on literals.
+- **Static usage bar percent suffix**: `PERCENT_SUFFIXES` static `[&str; 101]` lookup table replaces per-frame `format!("] {:>3.0}% ", percent)` in `render_usage_bar`. Indexed by `percent.round() as usize`.
+- **Dead code removed**: `is_view_stale()` method removed (always returned false with full prefetch). `[cached]` indicator rendering removed from `render_center`.
+- **Events table uses generic renderer**: `render_events_table` uses `render_resource_table` generic with `resource_header()` for consistent header styling (BRIGHT_YELLOW+BG1), correct cursor highlight (panel-guarded via `row_base_style`), and single-pass filter iteration.
+- **Cached row count in render**: `render_resource_table` reads `current_row_count_readonly()` (cached from event cycle) instead of re-counting filtered items per render call. Eliminates double iteration (count + render) in the table render hot path.
+- **Pre-computed sidebar indicator**: `App.sidebar_indicator` caches `" pos/total "` string, synced before each draw via `sync_sidebar_indicator()`. `render_sidebar` borrows cached string instead of per-frame `format!()`.
+- **Pre-computed row count indicator**: `App.row_count_indicator` caches `"pos/total "` string, synced before each draw via `sync_row_count_indicator()`. `render_center` borrows cached string instead of per-frame `format!()`.
 
 ## Key Patterns
 
