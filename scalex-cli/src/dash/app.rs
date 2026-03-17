@@ -73,10 +73,9 @@ impl ResourceView {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Tab {
+    #[allow(dead_code)]
     pub name: String,
-    pub closable: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -317,11 +316,9 @@ impl App {
         let tabs = vec![
             Tab {
                 name: "Resources".to_string(),
-                closable: false,
             },
             Tab {
                 name: "Top".to_string(),
-                closable: false,
             },
         ];
 
@@ -414,11 +411,9 @@ impl App {
         let tabs = vec![
             Tab {
                 name: "Resources".to_string(),
-                closable: false,
             },
             Tab {
                 name: "Top".to_string(),
-                closable: false,
             },
         ];
 
@@ -663,6 +658,7 @@ impl App {
                     ActivePanel::Center => ActivePanel::Sidebar,
                 };
             }
+            // PrevPanel: identical to NextPanel with only 2 panels (toggle behavior)
             AppEvent::PrevPanel => {
                 self.active_panel = match self.active_panel {
                     ActivePanel::Sidebar => ActivePanel::Center,
@@ -1607,11 +1603,9 @@ mod tests {
             tabs: vec![
                 Tab {
                     name: "Resources".into(),
-                    closable: false,
                 },
                 Tab {
                     name: "Top".into(),
-                    closable: false,
                 },
             ],
             resource_view: ResourceView::Pods,
@@ -3790,8 +3784,13 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 }
             }
 
-            // Pre-compute visible indices once for the render pass (avoids Vec clone per caller)
-            app.render_visible_indices = app.visible_tree_indices_cached();
+            // Pre-compute visible indices for the render pass — zero-clone swap from cache.
+            app.ensure_visible_indices_cached();
+            if let Some(ref cached) = app.cached_visible_indices {
+                // Reuse existing allocation if capacity matches, otherwise clone.
+                app.render_visible_indices.clear();
+                app.render_visible_indices.extend_from_slice(cached);
+            }
             terminal.draw(|f| ui::render(f, &app))?;
             app.needs_redraw = false;
         }
