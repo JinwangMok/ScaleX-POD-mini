@@ -747,6 +747,56 @@ pub async fn describe_resource(
     Ok(format_describe(&obj, &resource.api_resource.kind))
 }
 
+/// Describe a resource by kind/name using well-known API mappings.
+/// Returns formatted describe output. Used by the YAML modal for static resource views.
+pub async fn describe_resource_yaml(
+    client: &Client,
+    kind: &str,
+    name: &str,
+    namespace: Option<&str>,
+) -> Result<String> {
+    let (group, version, plural, namespaced) = match kind {
+        "Pod" => ("", "v1", "pods", true),
+        "Deployment" => ("apps", "v1", "deployments", true),
+        "Service" => ("", "v1", "services", true),
+        "ConfigMap" => ("", "v1", "configmaps", true),
+        "Node" => ("", "v1", "nodes", false),
+        "Event" => ("", "v1", "events", true),
+        "Namespace" => ("", "v1", "namespaces", false),
+        "StatefulSet" => ("apps", "v1", "statefulsets", true),
+        "DaemonSet" => ("apps", "v1", "daemonsets", true),
+        "ReplicaSet" => ("apps", "v1", "replicasets", true),
+        "Job" => ("batch", "v1", "jobs", true),
+        "CronJob" => ("batch", "v1", "cronjobs", true),
+        "Ingress" => ("networking.k8s.io", "v1", "ingresses", true),
+        _ => return Err(anyhow::anyhow!("Unknown resource kind: {}", kind)),
+    };
+    let api_version = if group.is_empty() {
+        version.to_string()
+    } else {
+        format!("{}/{}", group, version)
+    };
+    let ar = kube::api::ApiResource {
+        group: group.into(),
+        version: version.into(),
+        kind: kind.into(),
+        api_version,
+        plural: plural.into(),
+    };
+    let api: Api<DynamicObject> = if namespaced {
+        match namespace {
+            Some(ns) => Api::namespaced_with(client.clone(), ns, &ar),
+            None => Api::default_namespaced_with(client.clone(), &ar),
+        }
+    } else {
+        Api::all_with(client.clone(), &ar)
+    };
+    let obj = tokio::time::timeout(DESCRIBE_TIMEOUT, api.get(name))
+        .await
+        .map_err(|_| anyhow::anyhow!("Timeout describing {} '{}'", kind, name))??;
+    Ok(format_describe(&obj, kind))
+}
+
 /// Format a DynamicObject into a kubectl-describe-style text output.
 ///
 /// Produces a hierarchical human-readable summary with sections for metadata,

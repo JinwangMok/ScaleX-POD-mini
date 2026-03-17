@@ -97,6 +97,24 @@ pub struct DynamicFetchRequest {
     pub generation: u64,
 }
 
+/// Pending request to start streaming logs for a pod/container.
+pub struct LogStreamRequest {
+    pub cluster_name: String,
+    pub namespace: String,
+    pub pod_name: String,
+    pub container_name: String,
+    pub generation: u64,
+}
+
+/// Pending request to fetch YAML/describe for a resource via kube-rs API.
+pub struct DescribeFetchRequest {
+    pub cluster_name: String,
+    pub namespace: Option<String>,
+    pub resource_kind: String,
+    pub resource_name: String,
+    pub generation: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Tab {
     #[allow(dead_code)]
@@ -350,7 +368,8 @@ pub struct App {
     pub active_view: ActiveView,
     /// Pending one-shot dynamic resource fetch request
     pub pending_dynamic_fetch: Option<DynamicFetchRequest>,
-    /// Pre-computed footer label for the current resource view
+    /// Pre-computed footer label for the current resource view (used by dynamic view)
+    #[allow(dead_code)]
     pub footer_resource_label: String,
 
     /// Port-picker modal — opened by Shift+F on pod/service rows.
@@ -358,6 +377,27 @@ pub struct App {
 
     /// Port-forward manager — tracks active port-forward subprocesses.
     pub port_forward_manager: crate::dash::port_forward::PortForwardManager,
+
+    /// YAML/describe modal — opened by `y` on any resource row.
+    pub yaml_modal: crate::dash::yaml_modal::YamlModal,
+
+    /// Log viewer modal — opened by Shift+L on pod rows.
+    pub log_viewer: crate::dash::log_viewer::LogViewer,
+
+    /// Pending log stream request (consumed by run_tui to spawn async task).
+    pub pending_log_request: Option<LogStreamRequest>,
+
+    /// Generation counter for log streaming (stale results discarded).
+    pub log_stream_generation: u64,
+
+    /// Pending describe fetch request (consumed by run_tui for async API fetch).
+    pub pending_describe_fetch: Option<DescribeFetchRequest>,
+
+    /// Generation counter for describe fetch.
+    pub describe_generation: u64,
+
+    /// Set to true when leaving dynamic view — signals run_tui to cancel active watcher.
+    pub cancel_watcher: bool,
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -488,6 +528,13 @@ impl App {
             footer_resource_label: String::new(),
             port_picker: crate::dash::port_picker::PortPicker::new(),
             port_forward_manager: crate::dash::port_forward::PortForwardManager::new(),
+            yaml_modal: crate::dash::yaml_modal::YamlModal::new(),
+            log_viewer: crate::dash::log_viewer::LogViewer::new(),
+            pending_log_request: None,
+            log_stream_generation: 0,
+            pending_describe_fetch: None,
+            describe_generation: 0,
+            cancel_watcher: false,
         }
     }
 
@@ -597,6 +644,13 @@ impl App {
             footer_resource_label: String::new(),
             port_picker: crate::dash::port_picker::PortPicker::new(),
             port_forward_manager: crate::dash::port_forward::PortForwardManager::new(),
+            yaml_modal: crate::dash::yaml_modal::YamlModal::new(),
+            log_viewer: crate::dash::log_viewer::LogViewer::new(),
+            pending_log_request: None,
+            log_stream_generation: 0,
+            pending_describe_fetch: None,
+            describe_generation: 0,
+            cancel_watcher: false,
         }
     }
 
@@ -726,6 +780,24 @@ impl App {
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
                 }
+                // y in search mode → type 'y' as literal
+                AppEvent::Describe => {
+                    self.search_query.get_or_insert_with(String::new).push('y');
+                    self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
+                }
+                // Shift+L in search mode → type 'L' as literal
+                AppEvent::Logs => {
+                    self.search_query.get_or_insert_with(String::new).push('L');
+                    self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
+                }
+                // Shift+S in search mode → type 'S' as literal
+                AppEvent::Shell => {
+                    self.search_query.get_or_insert_with(String::new).push('S');
+                    self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
+                }
                 _ => {}
             }
             self.sync_search_lower();
@@ -835,6 +907,18 @@ impl App {
                     self.command_mode.reset_history_cursor();
                     self.command_mode.push_char(digit, &self.resource_registry);
                 }
+                AppEvent::Describe => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char('y', &self.resource_registry);
+                }
+                AppEvent::Logs => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char('l', &self.resource_registry);
+                }
+                AppEvent::Shell => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char('s', &self.resource_registry);
+                }
                 _ => {}
             }
             return;
@@ -884,6 +968,47 @@ impl App {
             return;
         }
 
+        // YAML/describe modal — intercept events when visible
+        if self.yaml_modal.visible {
+            // Sync viewport_height from page_size (set by run_tui before each render)
+            if self.yaml_modal.viewport_height == 0 && self.page_size > 0 {
+                self.yaml_modal.viewport_height = self.page_size as u16;
+            }
+            match evt {
+                AppEvent::Escape | AppEvent::Quit => {
+                    self.yaml_modal.close();
+                    self.describe_generation += 1; // Cancel any in-flight describe fetch
+                }
+                AppEvent::Up | AppEvent::ArrowUp => self.yaml_modal.scroll_up(),
+                AppEvent::Down | AppEvent::ArrowDown => self.yaml_modal.scroll_down(),
+                AppEvent::PageUp => self.yaml_modal.page_up(),
+                AppEvent::PageDown => self.yaml_modal.page_down(),
+                AppEvent::Home => self.yaml_modal.jump_home(),
+                AppEvent::End => self.yaml_modal.jump_end(),
+                _ => {}
+            }
+            return;
+        }
+
+        // Log viewer modal — intercept events when visible
+        if self.log_viewer.visible {
+            match evt {
+                AppEvent::Escape | AppEvent::Quit => {
+                    self.log_viewer.close();
+                    self.log_stream_generation += 1; // Cancel any in-flight log stream
+                }
+                AppEvent::Up | AppEvent::ArrowUp => self.log_viewer.scroll_up(),
+                AppEvent::Down | AppEvent::ArrowDown => self.log_viewer.scroll_down(),
+                AppEvent::PageUp => self.log_viewer.page_up(self.page_size),
+                AppEvent::PageDown => self.log_viewer.page_down(self.page_size),
+                AppEvent::Home => self.log_viewer.jump_to_top(),
+                AppEvent::End => self.log_viewer.jump_to_bottom(),
+                AppEvent::CharInput('f') => self.log_viewer.toggle_follow(),
+                _ => {}
+            }
+            return;
+        }
+
         match evt {
             AppEvent::Quit => self.running = false,
             AppEvent::Up | AppEvent::ArrowUp => self.move_up(),
@@ -925,6 +1050,7 @@ impl App {
                         self.active_view = ActiveView::Static;
                         self.dynamic_resource_data = None;
                         self.pending_dynamic_fetch = None;
+                        self.cancel_watcher = true;
                     }
                     if self.resource_view != rv {
                         self.resource_view = rv;
@@ -947,6 +1073,24 @@ impl App {
                 // Shift+F: open port-picker for selected pod or service
                 if self.active_panel == ActivePanel::Center && self.active_tab == 0 {
                     self.open_port_forward_for_selected();
+                }
+            }
+            AppEvent::Describe => {
+                // y: open YAML/describe modal for selected resource
+                if self.active_panel == ActivePanel::Center && self.active_tab == 0 {
+                    self.open_describe_for_selected();
+                }
+            }
+            AppEvent::Logs => {
+                // Shift+L: open log viewer for selected pod
+                if self.active_panel == ActivePanel::Center && self.active_tab == 0 {
+                    self.open_logs_for_selected();
+                }
+            }
+            AppEvent::Shell => {
+                // Shift+S: open shell/exec for selected pod
+                if self.active_panel == ActivePanel::Center && self.active_tab == 0 {
+                    self.toasts.warn("Shell exec not yet implemented".to_string());
                 }
             }
             AppEvent::Help => {
@@ -1088,6 +1232,166 @@ impl App {
 
     /// Handle a submitted command from command mode.
     /// Resolves resource type → creates DynamicResourceData → queues fetch.
+    /// Open YAML/describe modal for the currently selected resource.
+    fn open_describe_for_selected(&mut self) {
+        if self.active_tab != 0 { return; }
+        let info = {
+            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let search_lower = self.search_query_lower.clone();
+            match self.resource_view {
+                ResourceView::Pods => {
+                    let filtered: Vec<_> = snapshot.pods.iter()
+                        .filter(|p| match &search_lower {
+                            Some(q) => contains_ignore_ascii_case(&p.name, q)
+                                || contains_ignore_ascii_case(&p.namespace, q),
+                            None => true,
+                        }).collect();
+                    filtered.get(self.table_cursor).map(|pod| {
+                        let content = format!(
+                            "Name:         {}\nNamespace:    {}\nNode:         {}\nStatus:       {}\nReady:        {}\nRestarts:     {}\nAge:          {}\nContainers:   {}\n",
+                            pod.name, pod.namespace, pod.node, pod.status,
+                            pod.ready, pod.restarts, pod.age,
+                            pod.containers.join(", "),
+                        );
+                        ("Pod".to_string(), pod.name.clone(), content)
+                    })
+                }
+                ResourceView::Deployments => {
+                    let filtered: Vec<_> = snapshot.deployments.iter()
+                        .filter(|d| match &search_lower {
+                            Some(q) => contains_ignore_ascii_case(&d.name, q)
+                                || contains_ignore_ascii_case(&d.namespace, q),
+                            None => true,
+                        }).collect();
+                    filtered.get(self.table_cursor).map(|dep| {
+                        let content = format!(
+                            "Name:         {}\nNamespace:    {}\nReady:        {}\nUp-to-date:   {}\nAvailable:    {}\nAge:          {}\n",
+                            dep.name, dep.namespace, dep.ready,
+                            dep.up_to_date_display, dep.available_display, dep.age,
+                        );
+                        ("Deployment".to_string(), dep.name.clone(), content)
+                    })
+                }
+                ResourceView::Services => {
+                    let filtered: Vec<_> = snapshot.services.iter()
+                        .filter(|s| match &search_lower {
+                            Some(q) => contains_ignore_ascii_case(&s.name, q)
+                                || contains_ignore_ascii_case(&s.namespace, q),
+                            None => true,
+                        }).collect();
+                    filtered.get(self.table_cursor).map(|svc| {
+                        let content = format!(
+                            "Name:         {}\nNamespace:    {}\nType:         {}\nCluster-IP:   {}\nExternal-IP:  {}\nPorts:        {}\nAge:          {}\n",
+                            svc.name, svc.namespace, svc.svc_type,
+                            svc.cluster_ip, svc.external_ip, svc.ports, svc.age,
+                        );
+                        ("Service".to_string(), svc.name.clone(), content)
+                    })
+                }
+                ResourceView::Nodes => {
+                    let filtered: Vec<_> = snapshot.nodes.iter()
+                        .filter(|n| match &search_lower {
+                            Some(q) => contains_ignore_ascii_case(&n.name, q),
+                            None => true,
+                        }).collect();
+                    filtered.get(self.table_cursor).map(|node| {
+                        let content = format!(
+                            "Name:         {}\nStatus:       {}\nRoles:        {}\nVersion:      {}\nAge:          {}\nCPU:          {}\nMemory:       {}/{}\n",
+                            node.name, node.status, node.roles_display,
+                            node.kubelet_version, node.age, node.cpu_display,
+                            node.mem_display, node.mem_capacity_display,
+                        );
+                        ("Node".to_string(), node.name.clone(), content)
+                    })
+                }
+                ResourceView::ConfigMaps => {
+                    let filtered: Vec<_> = snapshot.configmaps.iter()
+                        .filter(|cm| match &search_lower {
+                            Some(q) => contains_ignore_ascii_case(&cm.name, q)
+                                || contains_ignore_ascii_case(&cm.namespace, q),
+                            None => true,
+                        }).collect();
+                    filtered.get(self.table_cursor).map(|cm| {
+                        let content = format!(
+                            "Name:         {}\nNamespace:    {}\nData:         {}\nAge:          {}\n",
+                            cm.name, cm.namespace, cm.data_keys_display, cm.age,
+                        );
+                        ("ConfigMap".to_string(), cm.name.clone(), content)
+                    })
+                }
+                ResourceView::Events => {
+                    let filtered: Vec<_> = snapshot.events.iter()
+                        .filter(|ev| match &search_lower {
+                            Some(q) => contains_ignore_ascii_case(&ev.reason, q)
+                                || contains_ignore_ascii_case(&ev.namespace, q)
+                                || contains_ignore_ascii_case(&ev.object, q)
+                                || contains_ignore_ascii_case(&ev.message, q),
+                            None => true,
+                        }).collect();
+                    filtered.get(self.table_cursor).map(|ev| {
+                        let content = format!(
+                            "Namespace:    {}\nType:         {}\nReason:       {}\nObject:       {}\nMessage:      {}\nCount:        {}\nLast Seen:    {}\nAge:          {}\n",
+                            ev.namespace, ev.event_type, ev.reason, ev.object,
+                            ev.message, ev.count, ev.last_seen, ev.age,
+                        );
+                        ("Event".to_string(), ev.object.clone(), content)
+                    })
+                }
+            }
+        };
+        if let Some((kind, name, content)) = info {
+            self.yaml_modal.open(&kind, &name, content);
+            // Queue async fetch for full API describe (replaces cached summary when result arrives)
+            if let Some(cluster_name) = &self.selected_cluster {
+                self.describe_generation += 1;
+                let ns = self.selected_namespace.clone();
+                self.pending_describe_fetch = Some(DescribeFetchRequest {
+                    cluster_name: cluster_name.clone(),
+                    namespace: ns,
+                    resource_kind: kind,
+                    resource_name: name,
+                    generation: self.describe_generation,
+                });
+            }
+        }
+    }
+
+    /// Open log viewer for the currently selected pod.
+    fn open_logs_for_selected(&mut self) {
+        if self.active_tab != 0 { return; }
+        if self.resource_view != ResourceView::Pods {
+            self.toasts.warn("Logs are only available for Pods");
+            return;
+        }
+        let pod_data = {
+            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let search_lower = self.search_query_lower.clone();
+            let filtered: Vec<_> = snapshot.pods.iter()
+                .filter(|p| match &search_lower {
+                    Some(q) => contains_ignore_ascii_case(&p.name, q)
+                        || contains_ignore_ascii_case(&p.namespace, q),
+                    None => true,
+                }).collect();
+            filtered.get(self.table_cursor).map(|pod| {
+                (pod.name.clone(), pod.namespace.clone(), pod.containers.clone())
+            })
+        };
+        if let Some((pod_name, namespace, containers)) = pod_data {
+            let cluster_name = self.selected_cluster.clone().unwrap_or_default();
+            // Use first container (container selector integration in Phase 3)
+            let container = containers.first().cloned().unwrap_or_default();
+            self.log_viewer.open(&pod_name, &namespace, &container, &cluster_name);
+            self.log_stream_generation += 1;
+            self.pending_log_request = Some(LogStreamRequest {
+                cluster_name,
+                namespace,
+                pod_name,
+                container_name: container,
+                generation: self.log_stream_generation,
+            });
+        }
+    }
+
     fn handle_command_submit(&mut self) {
         if let Some(cmd) = self.command_mode.take_submitted() {
             let input = cmd.trim().to_ascii_lowercase();
@@ -1141,6 +1445,7 @@ impl App {
     }
 
     /// Sync footer resource label. Called before draw.
+    #[allow(dead_code)]
     pub fn sync_footer_resource_label(&mut self) {
         let row_count = self.current_row_count();
         if self.active_view == ActiveView::Dynamic {
@@ -2305,6 +2610,13 @@ mod tests {
             footer_resource_label: String::new(),
             port_picker: crate::dash::port_picker::PortPicker::new(),
             port_forward_manager: crate::dash::port_forward::PortForwardManager::new(),
+            yaml_modal: crate::dash::yaml_modal::YamlModal::new(),
+            log_viewer: crate::dash::log_viewer::LogViewer::new(),
+            pending_log_request: None,
+            log_stream_generation: 0,
+            pending_describe_fetch: None,
+            describe_generation: 0,
+            cancel_watcher: false,
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -4322,6 +4634,424 @@ mod tests {
         let visible_after = app.visible_tree_indices();
         assert_eq!(visible_after.len(), 4, "expand should restore all children visibility");
     }
+
+    // --- Port-forward Shift+F tests ---
+
+    #[test]
+    fn shift_f_on_non_pod_service_view_shows_toast() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.resource_view = ResourceView::Deployments;
+
+        app.handle_event(AppEvent::PortForward);
+
+        // Should show a warning toast
+        assert!(
+            app.toasts.visible().next().is_some(),
+            "Shift+F on Deployments view should produce a warning toast"
+        );
+    }
+
+    fn empty_resource_usage() -> crate::dash::data::ResourceUsage {
+        crate::dash::data::ResourceUsage {
+            cpu_percent: 0.0,
+            mem_percent: 0.0,
+            total_pods: 0,
+            running_pods: 0,
+            succeeded_pods: 0,
+            failed_pods: 0,
+            total_nodes: 0,
+            ready_nodes: 0,
+        }
+    }
+
+    #[test]
+    fn shift_f_on_pods_view_opens_port_picker() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.resource_view = ResourceView::Pods;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into()],
+            nodes: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: empty_resource_usage(),
+            pods: vec![crate::dash::data::PodInfo {
+                name: "nginx-abc123".into(),
+                namespace: "default".into(),
+                status: "Running".into(),
+                ready: "1/1".into(),
+                restarts: 0,
+                restarts_display: "0".into(),
+                age: "1d".into(),
+                node: "node-1".into(),
+                containers: vec!["nginx".into()],
+            }],
+        });
+        app.snapshot_index.insert("tower".into(), 0);
+
+        app.handle_event(AppEvent::PortForward);
+
+        assert!(
+            app.port_picker.visible,
+            "Shift+F on Pods view with a selected pod should open port picker"
+        );
+        assert_eq!(app.port_picker.resource_name, "nginx-abc123");
+        assert_eq!(app.port_picker.namespace, "default");
+        assert_eq!(app.port_picker.resource_kind, "pod");
+    }
+
+    #[test]
+    fn shift_f_on_services_view_opens_port_picker() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.resource_view = ResourceView::Services;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into()],
+            nodes: vec![],
+            pods: vec![],
+            deployments: vec![],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: empty_resource_usage(),
+            services: vec![crate::dash::data::ServiceInfo {
+                name: "web-svc".into(),
+                namespace: "default".into(),
+                svc_type: "ClusterIP".into(),
+                cluster_ip: "10.96.0.1".into(),
+                external_ip: "<none>".into(),
+                ports: "80/TCP,443/TCP".into(),
+                age: "5d".into(),
+            }],
+        });
+        app.snapshot_index.insert("tower".into(), 0);
+
+        app.handle_event(AppEvent::PortForward);
+
+        assert!(
+            app.port_picker.visible,
+            "Shift+F on Services view should open port picker"
+        );
+        assert_eq!(app.port_picker.resource_name, "web-svc");
+        assert_eq!(app.port_picker.resource_kind, "svc");
+        assert_eq!(app.port_picker.ports.len(), 2, "Should parse 2 ports from '80/TCP,443/TCP'");
+        assert_eq!(app.port_picker.ports[0].container_port, 80);
+        assert_eq!(app.port_picker.ports[1].container_port, 443);
+    }
+
+    #[test]
+    fn shift_f_noop_on_sidebar() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Sidebar;
+        app.resource_view = ResourceView::Pods;
+
+        app.handle_event(AppEvent::PortForward);
+
+        assert!(
+            !app.port_picker.visible,
+            "Shift+F in sidebar should not open port picker"
+        );
+    }
+
+    #[test]
+    fn port_picker_closes_on_escape() {
+        let mut app = test_app();
+        app.port_picker.open("test".into(), "ns".into(), "pod".into(), Vec::new());
+        assert!(app.port_picker.visible);
+
+        app.handle_event(AppEvent::Escape);
+
+        assert!(!app.port_picker.visible, "Escape should close port picker");
+    }
+
+    #[test]
+    fn port_picker_intercepts_navigation() {
+        let mut app = test_app();
+        app.port_picker.open(
+            "test".into(), "ns".into(), "pod".into(),
+            vec![
+                crate::dash::port_picker::PortInfo {
+                    container_port: 8080,
+                    protocol: "TCP".into(),
+                    name: String::new(),
+                    container_name: String::new(),
+                },
+                crate::dash::port_picker::PortInfo {
+                    container_port: 9090,
+                    protocol: "TCP".into(),
+                    name: String::new(),
+                    container_name: String::new(),
+                },
+            ],
+        );
+
+        assert_eq!(app.port_picker.cursor, 0);
+        app.handle_event(AppEvent::Down);
+        assert_eq!(app.port_picker.cursor, 1, "Down should move port picker cursor");
+        app.handle_event(AppEvent::Up);
+        assert_eq!(app.port_picker.cursor, 0, "Up should move port picker cursor back");
+    }
+
+    #[test]
+    fn parse_service_port_string_basic() {
+        let ports = App::parse_service_port_string("80/TCP");
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].container_port, 80);
+        assert_eq!(ports[0].protocol, "TCP");
+    }
+
+    #[test]
+    fn parse_service_port_string_multiple() {
+        let ports = App::parse_service_port_string("80/TCP,443/TCP,9090/TCP");
+        assert_eq!(ports.len(), 3);
+        assert_eq!(ports[0].container_port, 80);
+        assert_eq!(ports[1].container_port, 443);
+        assert_eq!(ports[2].container_port, 9090);
+    }
+
+    #[test]
+    fn parse_service_port_string_with_nodeport() {
+        let ports = App::parse_service_port_string("80:30080/TCP");
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].container_port, 80);
+    }
+
+    #[test]
+    fn parse_service_port_string_empty() {
+        let ports = App::parse_service_port_string("");
+        assert!(ports.is_empty());
+    }
+
+    #[test]
+    fn parse_service_port_string_none() {
+        let ports = App::parse_service_port_string("<none>");
+        assert!(ports.is_empty());
+    }
+
+    #[test]
+    fn shift_f_in_search_mode_types_uppercase_f() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+
+        app.handle_event(AppEvent::PortForward);
+
+        assert_eq!(
+            app.search_query.as_deref(),
+            Some("F"),
+            "Shift+F in search mode should type 'F'"
+        );
+    }
+
+    // --- YAML/Describe modal tests ---
+
+    #[test]
+    fn y_on_pods_view_opens_yaml_modal() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.resource_view = ResourceView::Pods;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into()],
+            nodes: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: empty_resource_usage(),
+            pods: vec![crate::dash::data::PodInfo {
+                name: "nginx-abc123".into(),
+                namespace: "default".into(),
+                status: "Running".into(),
+                ready: "1/1".into(),
+                restarts: 0,
+                restarts_display: "0".into(),
+                age: "1d".into(),
+                node: "node-1".into(),
+                containers: vec!["nginx".into()],
+            }],
+        });
+        app.snapshot_index.insert("tower".into(), 0);
+
+        app.handle_event(AppEvent::Describe);
+
+        assert!(app.yaml_modal.visible, "y should open YAML modal");
+        assert_eq!(app.yaml_modal.resource_kind, "Pod");
+        assert_eq!(app.yaml_modal.resource_name, "nginx-abc123");
+        assert!(app.yaml_modal.content.contains("nginx-abc123"));
+    }
+
+    #[test]
+    fn y_on_sidebar_is_noop() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Sidebar;
+        app.resource_view = ResourceView::Pods;
+
+        app.handle_event(AppEvent::Describe);
+
+        assert!(!app.yaml_modal.visible, "y on sidebar should not open modal");
+    }
+
+    #[test]
+    fn yaml_modal_closes_on_escape() {
+        let mut app = test_app();
+        app.yaml_modal.open("Pod", "test", "content".to_string());
+        assert!(app.yaml_modal.visible);
+
+        app.handle_event(AppEvent::Escape);
+
+        assert!(!app.yaml_modal.visible, "Escape should close yaml modal");
+    }
+
+    #[test]
+    fn yaml_modal_intercepts_navigation() {
+        let mut app = test_app();
+        app.yaml_modal.open("Pod", "test", "line1\nline2\nline3\nline4\nline5\n".to_string());
+        app.yaml_modal.viewport_height = 2;
+
+        app.handle_event(AppEvent::Down);
+        assert_eq!(app.yaml_modal.scroll_offset, 1, "Down should scroll yaml modal");
+        app.handle_event(AppEvent::Up);
+        assert_eq!(app.yaml_modal.scroll_offset, 0, "Up should scroll yaml modal back");
+    }
+
+    #[test]
+    fn y_in_search_mode_types_y() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+
+        app.handle_event(AppEvent::Describe);
+
+        assert_eq!(app.search_query.as_deref(), Some("y"),
+            "y in search mode should type 'y'");
+    }
+
+    // --- Log viewer tests ---
+
+    #[test]
+    fn shift_l_on_pods_opens_log_viewer() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.resource_view = ResourceView::Pods;
+        app.selected_cluster = Some("tower".into());
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into()],
+            nodes: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: empty_resource_usage(),
+            pods: vec![crate::dash::data::PodInfo {
+                name: "nginx-pod".into(),
+                namespace: "default".into(),
+                status: "Running".into(),
+                ready: "1/1".into(),
+                restarts: 0,
+                restarts_display: "0".into(),
+                age: "1d".into(),
+                node: "node-1".into(),
+                containers: vec!["nginx".into()],
+            }],
+        });
+        app.snapshot_index.insert("tower".into(), 0);
+
+        app.handle_event(AppEvent::Logs);
+
+        assert!(app.log_viewer.visible, "Shift+L on pods should open log viewer");
+        assert_eq!(app.log_viewer.pod_name, "nginx-pod");
+        assert_eq!(app.log_viewer.container_name, "nginx");
+    }
+
+    #[test]
+    fn shift_l_on_non_pods_shows_toast() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.resource_view = ResourceView::Deployments;
+
+        app.handle_event(AppEvent::Logs);
+
+        assert!(!app.log_viewer.visible, "Shift+L on deployments should not open log viewer");
+        assert!(app.toasts.visible().next().is_some(), "Should show warning toast");
+    }
+
+    #[test]
+    fn log_viewer_closes_on_escape() {
+        let mut app = test_app();
+        app.log_viewer.open("pod", "ns", "container", "cluster");
+        assert!(app.log_viewer.visible);
+
+        app.handle_event(AppEvent::Escape);
+
+        assert!(!app.log_viewer.visible, "Escape should close log viewer");
+    }
+
+    #[test]
+    fn log_viewer_f_toggles_follow() {
+        let mut app = test_app();
+        app.log_viewer.open("pod", "ns", "c", "cl");
+        assert!(app.log_viewer.auto_follow);
+
+        app.handle_event(AppEvent::CharInput('f'));
+
+        assert!(!app.log_viewer.auto_follow, "f should toggle auto-follow off");
+    }
+
+    #[test]
+    fn shift_l_in_search_mode_types_l() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+
+        app.handle_event(AppEvent::Logs);
+
+        assert_eq!(app.search_query.as_deref(), Some("L"),
+            "Shift+L in search mode should type 'L'");
+    }
+
+    #[test]
+    fn shift_s_in_search_mode_types_s() {
+        let mut app = test_app();
+        app.search_active = true;
+        app.search_query = Some(String::new());
+
+        app.handle_event(AppEvent::Shell);
+
+        assert_eq!(app.search_query.as_deref(), Some("S"),
+            "Shift+S in search mode should type 'S'");
+    }
+
+    #[test]
+    fn shift_s_shows_not_implemented_toast() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.resource_view = ResourceView::Pods;
+
+        app.handle_event(AppEvent::Shell);
+
+        assert!(app.toasts.visible().next().is_some(),
+            "Shift+S should show not-implemented toast");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4381,6 +5111,17 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
     // Channel for dynamic resource fetch results (command mode)
     let (dyn_fetch_tx, mut dyn_fetch_rx) =
         tokio::sync::mpsc::channel::<(u64, Vec<kube::api::DynamicObject>)>(8);
+    // Channel for resource watcher events (real-time updates for dynamic views)
+    let (watch_tx, mut watch_rx) =
+        tokio::sync::mpsc::channel::<crate::dash::resource_watcher::TaggedWatchEvent>(64);
+    // Active watcher cancellation token (None when no watcher is running)
+    let mut active_watcher_cancel: Option<tokio_util::sync::CancellationToken> = None;
+    // Channel for log streaming lines (generation, line)
+    let (log_line_tx, mut log_line_rx) =
+        tokio::sync::mpsc::channel::<(u64, String)>(256);
+    // Channel for describe fetch results (generation, content)
+    let (describe_tx, mut describe_rx) =
+        tokio::sync::mpsc::channel::<(u64, String)>(4);
 
     // Cancellation flag (shared with background tasks)
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -4634,9 +5375,149 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             if app.active_view == ActiveView::Dynamic {
                 app.is_fetching = false;
                 app.fetch_started_at = None;
+                // Start resource watcher for real-time updates after initial fetch
+                if let Some(ref data) = app.dynamic_resource_data {
+                    // Cancel any existing watcher before starting a new one
+                    if let Some(cancel) = active_watcher_cancel.take() {
+                        cancel.cancel();
+                    }
+                    if let Some(client) = app.clusters.iter()
+                        .find(|c| Some(&c.name) == app.selected_cluster.as_ref())
+                        .map(|c| c.client.clone())
+                    {
+                        let params = crate::dash::resource_watcher::WatchParams {
+                            client,
+                            api_resource: data.resource.api_resource.clone(),
+                            namespaced: data.resource.namespaced,
+                            namespace: app.selected_namespace.clone(),
+                            generation: app.fetch_generation,
+                        };
+                        active_watcher_cancel = Some(
+                            crate::dash::resource_watcher::start_debounced_watcher(
+                                params,
+                                watch_tx.clone(),
+                            ),
+                        );
+                    }
+                }
             }
             let row_count = app.current_row_count();
             app.clamp_table_cursor(row_count);
+        }
+
+        // --- Cancel watcher if requested (e.g., leaving dynamic view) ---
+        if app.cancel_watcher {
+            app.cancel_watcher = false;
+            if let Some(cancel) = active_watcher_cancel.take() {
+                cancel.cancel();
+            }
+        }
+
+        // --- Process watch events (real-time updates for dynamic views) ---
+        while let Ok(tagged) = watch_rx.try_recv() {
+            // Discard stale events from a previous view/generation
+            if tagged.generation != app.fetch_generation {
+                continue;
+            }
+            if let Some(ref mut data) = app.dynamic_resource_data {
+                if crate::dash::resource_watcher::reconcile_objects(
+                    &mut data.objects,
+                    tagged.event,
+                ) {
+                    data.extract_rows();
+                    app.needs_redraw = true;
+                    let row_count = app.current_row_count();
+                    app.clamp_table_cursor(row_count);
+                }
+            }
+        }
+
+        // --- Dispatch log stream request ---
+        if let Some(req) = app.pending_log_request.take() {
+            if let Some(client) = app
+                .clusters
+                .iter()
+                .find(|c| c.name == req.cluster_name)
+                .map(|c| c.client.clone())
+            {
+                let gen = req.generation;
+                let tx = log_line_tx.clone();
+                let ns = req.namespace;
+                let pod = req.pod_name;
+                let container = req.container_name;
+                tokio::spawn(async move {
+                    use futures::AsyncBufReadExt;
+                    use futures::StreamExt;
+                    let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
+                        kube::Api::namespaced(client, &ns);
+                    let lp = kube::api::LogParams {
+                        container: Some(container),
+                        follow: true,
+                        tail_lines: Some(100),
+                        ..Default::default()
+                    };
+                    match pods.log_stream(&pod, &lp).await {
+                        Ok(stream) => {
+                            let mut lines = stream.lines();
+                            while let Some(result) = lines.next().await {
+                                match result {
+                                    Ok(line) => {
+                                        if tx.send((gen, line)).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send((gen, format!("Error: {}", e))).await;
+                        }
+                    }
+                });
+            }
+        }
+
+        // --- Process log stream lines ---
+        while let Ok((gen, line)) = log_line_rx.try_recv() {
+            if gen == app.log_stream_generation && app.log_viewer.visible {
+                app.log_viewer.push_line(line);
+                app.needs_redraw = true;
+            }
+        }
+
+        // --- Dispatch describe fetch request ---
+        if let Some(req) = app.pending_describe_fetch.take() {
+            if let Some(client) = app
+                .clusters
+                .iter()
+                .find(|c| c.name == req.cluster_name)
+                .map(|c| c.client.clone())
+            {
+                let gen = req.generation;
+                let tx = describe_tx.clone();
+                let kind = req.resource_kind.clone();
+                let name = req.resource_name.clone();
+                let ns = req.namespace.clone();
+                tokio::spawn(async move {
+                    let result = dynamic_resource::describe_resource_yaml(
+                        &client, &kind, &name, ns.as_deref(),
+                    ).await;
+                    if let Ok(content) = result {
+                        let _ = tx.send((gen, content)).await;
+                    }
+                });
+            }
+        }
+
+        // --- Process describe fetch results ---
+        while let Ok((gen, content)) = describe_rx.try_recv() {
+            if gen == app.describe_generation && app.yaml_modal.visible {
+                let kind = app.yaml_modal.resource_kind.clone();
+                let name = app.yaml_modal.resource_name.clone();
+                app.yaml_modal.open(&kind, &name, content);
+                app.needs_redraw = true;
+            }
         }
 
         // --- is_fetching timeout defense (30s) ---
@@ -4841,6 +5722,11 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             app.needs_redraw = true;
         }
     };
+
+    // Cancel active resource watcher
+    if let Some(cancel) = active_watcher_cancel.take() {
+        cancel.cancel();
+    }
 
     // Signal cancellation to background tasks
     cancelled.store(true, Ordering::Relaxed);

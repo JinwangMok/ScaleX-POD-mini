@@ -43,6 +43,7 @@ pub enum PfStatus {
 
 /// A tracked port-forward entry.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PortForwardEntry {
     pub id: u32,
     /// Resource being forwarded (e.g. "pod/nginx-abc123").
@@ -100,6 +101,7 @@ pub struct PortForwardManager {
     pub visible: bool,
 }
 
+#[allow(dead_code)]
 impl PortForwardManager {
     pub fn new() -> Self {
         let (event_tx, event_rx) = mpsc::channel(64);

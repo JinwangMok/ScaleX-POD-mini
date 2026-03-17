@@ -84,7 +84,7 @@ pub fn extract_pod_ports(pod: &Pod) -> Vec<ContainerPort> {
         for container in init_containers {
             if let Some(container_ports) = &container.ports {
                 for cp in container_ports {
-                    if let Some(port_num) = u16::try_from(cp.container_port).ok() {
+                    if let Ok(port_num) = u16::try_from(cp.container_port) {
                         ports.push(ContainerPort {
                             pod_name: pod_name.clone(),
                             namespace: namespace.clone(),
@@ -103,7 +103,7 @@ pub fn extract_pod_ports(pod: &Pod) -> Vec<ContainerPort> {
     for container in &spec.containers {
         if let Some(container_ports) = &container.ports {
             for cp in container_ports {
-                if let Some(port_num) = u16::try_from(cp.container_port).ok() {
+                if let Ok(port_num) = u16::try_from(cp.container_port) {
                     ports.push(ContainerPort {
                         pod_name: pod_name.clone(),
                         namespace: namespace.clone(),

@@ -87,6 +87,7 @@ impl YamlModal {
     }
 
     /// Render the modal overlay as a centered popup.
+    #[allow(dead_code)]
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         if !self.visible {
             return;
@@ -123,7 +124,7 @@ impl YamlModal {
                 if !trimmed.is_empty()
                     && trimmed.ends_with(':')
                     && !trimmed.contains("  ")
-                    && trimmed.chars().next().map_or(false, |c| c.is_alphabetic())
+                    && trimmed.chars().next().is_some_and(|c| c.is_alphabetic())
                 {
                     Line::from(Span::styled(
                         line,
