@@ -100,6 +100,10 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Static sidebar indentation**: `render_sidebar` uses pre-computed static `&str` slices (`INDENTS` array) instead of per-row `"  ".repeat(depth)` allocation. Label references use `&str`/`Cow<str>` to avoid `String::clone()` in the common (non-truncated) case.
 - **Index-based tree sync**: `sync_tree_from_snapshots` uses index-based iteration over `self.snapshots` to avoid cloning all snapshot names and namespace lists into a temporary `Vec`. Namespace change detection uses lockstep iterator comparison instead of collecting into `Vec<String>`.
 - **Off-thread blocking I/O**: `read_self_rss_mb()` and `load_infra()` run on the tokio worker thread inside the fetch task, not on the main event loop. Results delivered via `FetchResult` fields (`self_rss_mb`, `infra`).
+- **DeploymentInfo integer fields**: `ready_count` and `desired_count` stored as `i32` alongside the display string `ready`. Render path uses integers directly for READY column color coding — eliminates `Vec::new()` + 2 string parses per deployment row per frame.
+- **Active selection marker on expanded clusters**: `is_active_selection` for `NodeType::Cluster` no longer requires `!node.expanded`. Marker `●` stays visible on the cluster node when selected with no namespace filter, even when the cluster tree is expanded.
+- **Static usage bar strings**: `render_usage_bar` indexes into static `BAR_FILL`/`BAR_EMPTY` `&str` constants instead of `"=".repeat(filled)` / `"-".repeat(empty)`. Eliminates 2 heap allocations per cluster per frame in the status bar.
+- **Cached context label**: `App.ctx_label` pre-computed on cluster/namespace change via `sync_ctx_label()`. `render_center` borrows `&app.ctx_label` instead of `format!()` per frame.
 
 ### Header Layout
 
