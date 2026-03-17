@@ -205,16 +205,16 @@ fn render_header_full(
     let info_lines = vec![
         Line::from(vec![
             Span::styled(" Context:   ", label_style),
-            Span::styled(cluster_name.to_string(), accent_style),
+            Span::styled(cluster_name, accent_style),
         ]),
         Line::from(vec![
             Span::styled(" Cluster:   ", label_style),
-            Span::styled(endpoint_str.to_string(), value_style),
+            Span::styled(endpoint_str, value_style),
         ]),
         Line::from(vec![
             Span::styled(" K8s Rev:   ", label_style),
             Span::styled(
-                k8s_ver.to_string(),
+                k8s_ver,
                 if k8s_ver == "N/A" {
                     label_style
                 } else {
@@ -237,7 +237,7 @@ fn render_header_full(
         ]),
         Line::from(vec![
             Span::styled(" Config:    ", label_style),
-            Span::styled(config_path.to_string(), Style::default().fg(theme::FG3)),
+            Span::styled(config_path, Style::default().fg(theme::FG3)),
         ]),
     ];
 
@@ -278,7 +278,7 @@ fn render_header_compact(
             format!(" v{}  ", scalex_ver),
             Style::default().fg(theme::BRIGHT_ORANGE),
         ),
-        Span::styled(cluster_name.to_string(), accent_style),
+        Span::styled(cluster_name, accent_style),
         Span::styled(
             format!(
                 "  Clusters: {}/{}  K8s: {}",
@@ -290,7 +290,7 @@ fn render_header_compact(
 
     let line2_spans = vec![
         Span::styled(" Cluster: ", label_style),
-        Span::styled(endpoint_str.to_string(), Style::default().fg(theme::FG4)),
+        Span::styled(endpoint_str, Style::default().fg(theme::FG4)),
     ];
 
     let lines = vec![Line::from(line1_spans), Line::from(line2_spans)];
@@ -1155,13 +1155,6 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
     let content_area = render_connection_error_banner(f, app, area);
     let area = content_area;
 
-    // Filter nodes by search query (US-303)
-    let filtered_nodes: Vec<&data::NodeInfo> = snapshot
-        .nodes
-        .iter()
-        .filter(|n| app.matches_search(&n.name))
-        .collect();
-
     // US-902: Show "Utilization" only when metrics data available, else "Resources"
     let has_metrics = snapshot.resource_usage.cpu_percent >= 0.0;
     let top_title = if has_metrics {
@@ -1180,21 +1173,26 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
     ];
 
-    for node in &filtered_nodes {
-        let status_icon = if node.status.starts_with("Ready") { "●" } else { "○" };
-        let status_color = if node.status == "Ready" {
-            theme::BRIGHT_GREEN
-        } else if node.status.contains("SchedulingDisabled") {
-            theme::BRIGHT_YELLOW
+    // Static status icon strings — avoids per-node format!() allocation
+    const ICON_READY: &str = " ● ";
+    const ICON_OTHER: &str = " ○ ";
+
+    // Iterate directly without collecting into Vec (avoids per-frame allocation)
+    let mut has_nodes = false;
+    for node in snapshot.nodes.iter().filter(|n| app.matches_search(&n.name)) {
+        has_nodes = true;
+        let (status_icon, status_color) = if node.status.starts_with("Ready") {
+            if node.status.contains("SchedulingDisabled") {
+                (ICON_READY, theme::BRIGHT_YELLOW)
+            } else {
+                (ICON_READY, theme::BRIGHT_GREEN)
+            }
         } else {
-            theme::BRIGHT_RED
+            (ICON_OTHER, theme::BRIGHT_RED)
         };
 
         lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {} ", status_icon),
-                Style::default().fg(status_color),
-            ),
+            Span::styled(status_icon, Style::default().fg(status_color)),
             Span::styled(
                 &node.name,
                 Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
@@ -1206,7 +1204,7 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    if filtered_nodes.is_empty() {
+    if !has_nodes {
         let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
             format!(
                 " No results for \"{}\"",
@@ -1277,17 +1275,30 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     // Line 1: cluster health indicators + pod/node counts
-    let spinner_chars = ['|', '/', '-', '\\'];
-    let spinner = spinner_chars[(app.tick_count as usize) % 4];
+    // Static spinner strings — avoids per-frame format!() for spinner animation
+    const SPINNERS: [&str; 4] = [" | ", " / ", " - ", " \\ "];
+    const DISCOVER_SPINNERS: [&str; 4] = [
+        " | Discovering clusters...",
+        " / Discovering clusters...",
+        " - Discovering clusters...",
+        " \\ Discovering clusters...",
+    ];
+    const LOADING_SPINNERS: [&str; 4] = [
+        " | Loading cluster data...",
+        " / Loading cluster data...",
+        " - Loading cluster data...",
+        " \\ Loading cluster data...",
+    ];
+    let spin_idx = (app.tick_count as usize) % 4;
 
     let mut health_spans: Vec<Span> = if !app.discover_complete {
         vec![Span::styled(
-            format!(" {} Discovering clusters...", spinner),
+            DISCOVER_SPINNERS[spin_idx],
             Style::default().fg(theme::BRIGHT_YELLOW),
         )]
     } else if app.snapshots.is_empty() && app.is_fetching {
         vec![Span::styled(
-            format!(" {} Loading cluster data...", spinner),
+            LOADING_SPINNERS[spin_idx],
             Style::default().fg(theme::BRIGHT_YELLOW),
         )]
     } else if app.all_clusters_failed() {
@@ -1363,7 +1374,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     ));
     if app.is_fetching {
         usage_spans.push(Span::styled(
-            format!(" {} ", spinner),
+            SPINNERS[spin_idx],
             Style::default().fg(theme::BRIGHT_AQUA),
         ));
     }
