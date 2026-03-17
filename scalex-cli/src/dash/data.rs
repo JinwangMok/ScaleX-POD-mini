@@ -514,17 +514,14 @@ pub async fn fetch_cluster_snapshot(
     namespace: Option<&str>,
     active_resource: Option<ActiveResource>,
 ) -> Result<ClusterSnapshot> {
-    // Always fetch namespaces + nodes (required for sidebar tree + health/status bar)
-    let (namespaces, nodes) = tokio::join!(
-        async { fetch_namespaces(client).await.unwrap_or_default() },
-        async { fetch_nodes(client).await.unwrap_or_default() },
-    );
-
-    // Selectively fetch only the active resource type
-    let (pods, deployments, services, configmaps) = match active_resource {
+    // Single parallel join for ALL API calls — eliminates sequential latency
+    // between the namespaces+nodes group and the resources group.
+    let (namespaces, nodes, pods, deployments, services, configmaps) = match active_resource {
         None => {
-            // Headless / full fetch: get everything in parallel
-            let (p, d, s, c) = tokio::join!(
+            // Full fetch: all 6 API calls in one parallel join
+            let (ns, n, p, d, s, c) = tokio::join!(
+                async { fetch_namespaces(client).await.unwrap_or_default() },
+                async { fetch_nodes(client).await.unwrap_or_default() },
                 async { fetch_pods(client, namespace).await.unwrap_or_default() },
                 async {
                     fetch_deployments(client, namespace)
@@ -538,31 +535,55 @@ pub async fn fetch_cluster_snapshot(
                         .unwrap_or_default()
                 },
             );
-            (Some(p), Some(d), Some(s), Some(c))
+            (ns, n, Some(p), Some(d), Some(s), Some(c))
         }
         Some(ActiveResource::Pods) => {
-            let p = fetch_pods(client, namespace).await.unwrap_or_default();
-            (Some(p), None, None, None)
+            let (ns, n, p) = tokio::join!(
+                async { fetch_namespaces(client).await.unwrap_or_default() },
+                async { fetch_nodes(client).await.unwrap_or_default() },
+                async { fetch_pods(client, namespace).await.unwrap_or_default() },
+            );
+            (ns, n, Some(p), None, None, None)
         }
         Some(ActiveResource::Deployments) => {
-            let d = fetch_deployments(client, namespace)
-                .await
-                .unwrap_or_default();
-            (None, Some(d), None, None)
+            let (ns, n, d) = tokio::join!(
+                async { fetch_namespaces(client).await.unwrap_or_default() },
+                async { fetch_nodes(client).await.unwrap_or_default() },
+                async {
+                    fetch_deployments(client, namespace)
+                        .await
+                        .unwrap_or_default()
+                },
+            );
+            (ns, n, None, Some(d), None, None)
         }
         Some(ActiveResource::Services) => {
-            let s = fetch_services(client, namespace).await.unwrap_or_default();
-            (None, None, Some(s), None)
+            let (ns, n, s) = tokio::join!(
+                async { fetch_namespaces(client).await.unwrap_or_default() },
+                async { fetch_nodes(client).await.unwrap_or_default() },
+                async { fetch_services(client, namespace).await.unwrap_or_default() },
+            );
+            (ns, n, None, None, Some(s), None)
         }
         Some(ActiveResource::ConfigMaps) => {
-            let c = fetch_configmaps(client, namespace)
-                .await
-                .unwrap_or_default();
-            (None, None, None, Some(c))
+            let (ns, n, c) = tokio::join!(
+                async { fetch_namespaces(client).await.unwrap_or_default() },
+                async { fetch_nodes(client).await.unwrap_or_default() },
+                async {
+                    fetch_configmaps(client, namespace)
+                        .await
+                        .unwrap_or_default()
+                },
+            );
+            (ns, n, None, None, None, Some(c))
         }
         Some(ActiveResource::Nodes) => {
-            // Nodes already fetched above, no extra API call needed
-            (None, None, None, None)
+            // Nodes already in the base join, no extra API call
+            let (ns, n) = tokio::join!(
+                async { fetch_namespaces(client).await.unwrap_or_default() },
+                async { fetch_nodes(client).await.unwrap_or_default() },
+            );
+            (ns, n, None, None, None, None)
         }
     };
 

@@ -327,7 +327,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let visible = app.visible_tree_indices();
+    let visible = &app.render_visible_indices;
     let visible_len = visible.len();
 
     // Reserve 1 row for scroll indicator when content overflows viewport (US-202)
@@ -386,7 +386,9 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
             let marker = if is_active_selection { "● " } else { "  " };
 
-            let indent = "  ".repeat(node.depth);
+            // Static indent slices — avoids per-row String allocation from "  ".repeat(depth)
+            const INDENTS: [&str; 5] = ["", "  ", "    ", "      ", "        "];
+            let indent = INDENTS.get(node.depth).copied().unwrap_or(INDENTS[4]);
             let label_color = match &node.node_type {
                 NodeType::Root => theme::BRIGHT_ORANGE,
                 NodeType::Cluster(_) => theme::BRIGHT_BLUE,
@@ -415,7 +417,8 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             };
 
             // Connection status suffix + health dot (single snapshot lookup for both)
-            let (conn_suffix, label_with_ns) = match &node.node_type {
+            // Use &str references to avoid per-row String clones
+            let (conn_suffix, label_ref): (Option<(&str, Color)>, &str) = match &node.node_type {
                 NodeType::Cluster(name) => {
                     // Single snapshot lookup reused for both health dot and namespace count
                     let snap = app.snapshot_index
@@ -435,15 +438,15 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                             })
                         }
                     };
-                    // US-205: namespace count for expanded clusters (pre-computed in sync_tree_from_snapshots)
-                    let label = if node.expanded {
-                        node.ns_count_label.as_ref().cloned().unwrap_or_else(|| node.label.clone())
+                    // US-205: namespace count — borrow pre-computed label, no clone
+                    let label: &str = if node.expanded {
+                        node.ns_count_label.as_deref().unwrap_or(&node.label)
                     } else {
-                        node.label.clone()
+                        &node.label
                     };
                     (suffix, label)
                 }
-                _ => (None, node.label.clone()),
+                _ => (None, &node.label),
             };
 
             // Truncate label to fit sidebar width
@@ -456,18 +459,19 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 .map(|(s, _)| s.chars().count())
                 .unwrap_or(0);
             let available = (inner.width as usize).saturating_sub(prefix_cols + suffix_cols);
-            let label_char_count = label_with_ns.chars().count();
-            let display_label: String = if label_char_count > available {
+            let label_char_count = label_ref.chars().count();
+            // Only allocate when truncation is needed; common case borrows directly
+            let display_label: std::borrow::Cow<str> = if label_char_count > available {
                 if available > 1 {
-                    let truncated: String = label_with_ns.chars().take(available - 1).collect();
-                    format!("{}…", truncated)
+                    let truncated: String = label_ref.chars().take(available - 1).collect();
+                    format!("{}…", truncated).into()
                 } else if available == 1 {
-                    "…".to_string()
+                    "…".into()
                 } else {
-                    String::new()
+                    "".into()
                 }
             } else {
-                label_with_ns
+                label_ref.into()
             };
             let label_cols = label_char_count.min(available);
 

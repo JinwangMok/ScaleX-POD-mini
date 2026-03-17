@@ -58,7 +58,7 @@ scalex get config-files                  # Config file validation
 ## Testing
 
 ```bash
-# Rust CLI tests (777 tests)
+# Rust CLI tests (782 tests)
 cd scalex-cli && cargo test
 cargo clippy                             # Lint
 cargo fmt --check                        # Format check
@@ -95,6 +95,11 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Dirty-flag redraw**: `needs_redraw: bool` skips `terminal.draw()` when nothing changed. Set true by keyboard events, fetch results, discovery events, terminal resize. Tick sets it only when spinner is visible (`is_fetching || !discover_complete`). Eliminates ~90% of unnecessary terminal I/O when idle.
 - **Pre-computed cluster labels**: `TreeNode.ns_count_label` caches "name (Nns)" format, computed during `sync_tree_from_snapshots`. Used by `render_sidebar` instead of per-frame `format!()` for expanded cluster nodes.
 - **Top tab viewport-aware scroll**: `page_down`, `jump_end`, and `move_down` for Top tab (Paragraph scroll) clamp offset to `max(0, line_count - page_size)`, not `line_count - 1`. Prevents over-scrolling past content when viewport is larger than content.
+- **Single-join parallel fetch**: `fetch_cluster_snapshot` runs all API calls (namespaces, nodes, pods, deployments, services, configmaps) in a single `tokio::join!` instead of two sequential groups. Eliminates sequential latency between namespace/node and resource fetches.
+- **Zero-clone render visible indices**: `render_visible_indices: Vec<usize>` pre-computed once before `terminal.draw()` in `run_tui`. `render_sidebar` borrows directly (`&app.render_visible_indices`) instead of cloning `Vec<usize>` per frame.
+- **Static sidebar indentation**: `render_sidebar` uses pre-computed static `&str` slices (`INDENTS` array) instead of per-row `"  ".repeat(depth)` allocation. Label references use `&str`/`Cow<str>` to avoid `String::clone()` in the common (non-truncated) case.
+- **Index-based tree sync**: `sync_tree_from_snapshots` uses index-based iteration over `self.snapshots` to avoid cloning all snapshot names and namespace lists into a temporary `Vec`. Namespace change detection uses lockstep iterator comparison instead of collecting into `Vec<String>`.
+- **Off-thread blocking I/O**: `read_self_rss_mb()` and `load_infra()` run on the tokio worker thread inside the fetch task, not on the main event loop. Results delivered via `FetchResult` fields (`self_rss_mb`, `infra`).
 
 ### Header Layout
 
