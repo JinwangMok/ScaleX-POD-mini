@@ -1,9 +1,13 @@
 use crate::commands::dash::DashArgs;
+use crate::dash::command_mode::CommandMode;
 #[allow(unused_imports)] // HealthStatus used by tests
 use crate::dash::data::{self, ActiveResource, ClusterSnapshot, HealthStatus};
+use crate::dash::dynamic_resource::{self, DynamicResourceData, ResolvedResource};
 use crate::dash::event::{self, AppEvent};
 use crate::dash::infra::{self, InfraSnapshot};
 use crate::dash::kube_client::{self, ClusterClient};
+use crate::dash::resource_registry::ResourceRegistry;
+use crate::dash::toast::ToastManager;
 use crate::dash::ui;
 use anyhow::Result;
 use crossterm::{
@@ -74,6 +78,23 @@ impl ResourceView {
             Self::Events => ActiveResource::Events,
         }
     }
+}
+
+/// Whether the center panel shows a static (hardcoded) or dynamic (command-mode) resource view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActiveView {
+    /// One of the 6 built-in resource views (Pods, Deployments, Services, ConfigMaps, Nodes, Events)
+    Static,
+    /// Dynamic resource view from command mode (`:deploy`, `:crd`, etc.)
+    Dynamic,
+}
+
+/// Request for a one-shot dynamic resource fetch.
+#[derive(Debug, Clone)]
+pub struct DynamicFetchRequest {
+    pub cluster_name: String,
+    pub namespace: Option<String>,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -315,6 +336,28 @@ pub struct App {
     /// Pre-computed row count indicator (e.g., "3/12 "). Updated via sync_row_count_indicator().
     /// Eliminates per-frame format!() in render_center.
     pub row_count_indicator: String,
+
+    // --- Command mode & dynamic resource view ---
+    /// Command mode state (`:` input bar with autocomplete)
+    pub command_mode: CommandMode,
+    /// Resource registry for command-mode autocomplete and lookup
+    pub resource_registry: ResourceRegistry,
+    /// Toast notification manager
+    pub toasts: ToastManager,
+    /// Data for the currently active dynamic resource view (None when in static view)
+    pub dynamic_resource_data: Option<DynamicResourceData>,
+    /// Whether center panel shows static or dynamic resource view
+    pub active_view: ActiveView,
+    /// Pending one-shot dynamic resource fetch request
+    pub pending_dynamic_fetch: Option<DynamicFetchRequest>,
+    /// Pre-computed footer label for the current resource view
+    pub footer_resource_label: String,
+
+    /// Port-picker modal — opened by Shift+F on pod/service rows.
+    pub port_picker: crate::dash::port_picker::PortPicker,
+
+    /// Port-forward manager — tracks active port-forward subprocesses.
+    pub port_forward_manager: crate::dash::port_forward::PortForwardManager,
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -436,6 +479,15 @@ impl App {
             header_info: HeaderInfo::default(),
             sidebar_indicator: String::new(),
             row_count_indicator: String::new(),
+            command_mode: CommandMode::new(),
+            resource_registry: ResourceRegistry::with_builtin_resources(),
+            toasts: ToastManager::new(),
+            dynamic_resource_data: None,
+            active_view: ActiveView::Static,
+            pending_dynamic_fetch: None,
+            footer_resource_label: String::new(),
+            port_picker: crate::dash::port_picker::PortPicker::new(),
+            port_forward_manager: crate::dash::port_forward::PortForwardManager::new(),
         }
     }
 
@@ -536,6 +588,15 @@ impl App {
             header_info: HeaderInfo::default(),
             sidebar_indicator: String::new(),
             row_count_indicator: String::new(),
+            command_mode: CommandMode::new(),
+            resource_registry: ResourceRegistry::with_builtin_resources(),
+            toasts: ToastManager::new(),
+            dynamic_resource_data: None,
+            active_view: ActiveView::Static,
+            pending_dynamic_fetch: None,
+            footer_resource_label: String::new(),
+            port_picker: crate::dash::port_picker::PortPicker::new(),
+            port_forward_manager: crate::dash::port_forward::PortForwardManager::new(),
         }
     }
 
@@ -659,6 +720,12 @@ impl App {
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
                 }
+                // Shift+F in search mode → type 'F' as literal
+                AppEvent::PortForward => {
+                    self.search_query.get_or_insert_with(String::new).push('F');
+                    self.table_cursor = 0;
+                    self.table_scroll_offset = 0;
+                }
                 _ => {}
             }
             self.sync_search_lower();
@@ -702,6 +769,121 @@ impl App {
             return;
         }
 
+        // Command-mode: intercept all events when active (`:` bar is open)
+        if self.command_mode.is_active() {
+            match evt {
+                AppEvent::Enter => {
+                    if self.command_mode.submit() {
+                        self.handle_command_submit();
+                    }
+                }
+                AppEvent::Escape => {
+                    self.command_mode.deactivate();
+                }
+                AppEvent::Backspace => {
+                    self.command_mode.backspace(&self.resource_registry);
+                }
+                AppEvent::ArrowUp | AppEvent::Up => {
+                    self.command_mode.history_prev(&self.resource_registry);
+                }
+                AppEvent::ArrowDown | AppEvent::Down => {
+                    self.command_mode.history_next(&self.resource_registry);
+                }
+                AppEvent::NextPanel => {
+                    // Tab key → tab-complete in command mode
+                    self.command_mode.tab_complete(&self.resource_registry);
+                }
+                AppEvent::PrevPanel => {
+                    // Shift+Tab → reverse tab-complete
+                    self.command_mode.tab_complete_prev(&self.resource_registry);
+                }
+                AppEvent::CharInput(c) => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char(c, &self.resource_registry);
+                }
+                // Remap vim keys to literal chars in command mode (same as search mode)
+                AppEvent::Quit => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char('q', &self.resource_registry);
+                }
+                AppEvent::Left => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char('h', &self.resource_registry);
+                }
+                AppEvent::Right => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char('l', &self.resource_registry);
+                }
+                AppEvent::Search => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char('/', &self.resource_registry);
+                }
+                AppEvent::Help => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char('?', &self.resource_registry);
+                }
+                AppEvent::Refresh => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char('r', &self.resource_registry);
+                }
+                AppEvent::ResourceType(c) => {
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char(c, &self.resource_registry);
+                }
+                AppEvent::Tab(n) if (1..=9).contains(&n) => {
+                    let digit = char::from_digit(n as u32, 10).unwrap_or('0');
+                    self.command_mode.reset_history_cursor();
+                    self.command_mode.push_char(digit, &self.resource_registry);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+
+        // Port-picker modal — intercept events when visible
+        if self.port_picker.visible {
+            match evt {
+                AppEvent::Escape | AppEvent::Quit => {
+                    self.port_picker.close();
+                }
+                AppEvent::Up | AppEvent::ArrowUp => self.port_picker.move_up(),
+                AppEvent::Down | AppEvent::ArrowDown => self.port_picker.move_down(),
+                AppEvent::NextPanel => self.port_picker.toggle_focus(),
+                AppEvent::Enter => {
+                    if self.port_picker.confirm() {
+                        self.process_port_picker_confirmation();
+                    }
+                }
+                AppEvent::Backspace => self.port_picker.backspace(),
+                AppEvent::CharInput(c) if c.is_ascii_digit() => self.port_picker.type_digit(c),
+                AppEvent::Tab(n) if (1..=9).contains(&n) => {
+                    if let Some(digit) = char::from_digit(n as u32, 10) {
+                        self.port_picker.type_digit(digit);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Port-forward manager overlay — intercept events when visible
+        if self.port_forward_manager.visible {
+            match evt {
+                AppEvent::Escape | AppEvent::Quit => {
+                    self.port_forward_manager.close();
+                }
+                AppEvent::Up | AppEvent::ArrowUp => self.port_forward_manager.move_up(),
+                AppEvent::Down | AppEvent::ArrowDown => self.port_forward_manager.move_down(),
+                AppEvent::ResourceType('d') => {
+                    // 'd' key: stop/remove selected port-forward
+                    self.port_forward_manager.delete_selected();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match evt {
             AppEvent::Quit => self.running = false,
             AppEvent::Up | AppEvent::ArrowUp => self.move_up(),
@@ -738,6 +920,12 @@ impl App {
             }
             AppEvent::ResourceType(c) => {
                 if let Some(rv) = ResourceView::from_char(c) {
+                    // Switch back to static view if we were in dynamic view
+                    if self.active_view == ActiveView::Dynamic {
+                        self.active_view = ActiveView::Static;
+                        self.dynamic_resource_data = None;
+                        self.pending_dynamic_fetch = None;
+                    }
                     if self.resource_view != rv {
                         self.resource_view = rv;
                         self.table_cursor = 0;
@@ -753,6 +941,12 @@ impl App {
                     }
                     // Switch to center panel to show the resource view
                     self.active_panel = ActivePanel::Center;
+                }
+            }
+            AppEvent::PortForward => {
+                // Shift+F: open port-picker for selected pod or service
+                if self.active_panel == ActivePanel::Center && self.active_tab == 0 {
+                    self.open_port_forward_for_selected();
                 }
             }
             AppEvent::Help => {
@@ -782,6 +976,10 @@ impl App {
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
                 }
+            }
+            AppEvent::CharInput(':') => {
+                // Activate command mode (`:` bar)
+                self.command_mode.activate();
             }
             AppEvent::Tick | AppEvent::None | AppEvent::CharInput(_) => {}
             AppEvent::ForceQuit => {} // handled at top of handle_event
@@ -885,6 +1083,76 @@ impl App {
         match &self.search_query_lower {
             Some(q) => contains_ignore_ascii_case(name, q) || contains_ignore_ascii_case(namespace, q),
             None => true,
+        }
+    }
+
+    /// Handle a submitted command from command mode.
+    /// Resolves resource type → creates DynamicResourceData → queues fetch.
+    fn handle_command_submit(&mut self) {
+        if let Some(cmd) = self.command_mode.take_submitted() {
+            let input = cmd.trim().to_ascii_lowercase();
+            match input.as_str() {
+                "q" | "quit" | "exit" => {
+                    self.running = false;
+                    return;
+                }
+                "help" => {
+                    self.show_help = true;
+                    self.help_scroll_offset = 0;
+                    return;
+                }
+                _ => {}
+            }
+            if let Some(entry) = self.resource_registry.lookup(&input).cloned() {
+                let ar = entry.to_kube_api_resource();
+                let resolved = ResolvedResource {
+                    api_resource: ar,
+                    namespaced: entry.namespaced,
+                    display_name: entry.kind.clone(),
+                    command_alias: input.to_string(),
+                    columns: dynamic_resource::columns_for_resource(
+                        &entry.kind,
+                        entry.namespaced,
+                    ),
+                };
+                self.active_view = ActiveView::Dynamic;
+                self.dynamic_resource_data = Some(DynamicResourceData::new(resolved));
+                self.table_cursor = 0;
+                self.table_scroll_offset = 0;
+                self.active_panel = ActivePanel::Center;
+                self.fetch_generation += 1;
+                // Queue a one-shot fetch (watch integration comes later)
+                if let Some(cluster_name) = &self.selected_cluster {
+                    self.pending_dynamic_fetch = Some(DynamicFetchRequest {
+                        cluster_name: cluster_name.clone(),
+                        namespace: self.selected_namespace.clone(),
+                        generation: self.fetch_generation,
+                    });
+                    self.is_fetching = true;
+                    self.fetch_started_at = Some(Instant::now());
+                }
+                self.toasts
+                    .info(format!("Switched to {}", entry.kind));
+            } else {
+                self.toasts
+                    .error(format!("Unknown resource type: {}", input));
+            }
+        }
+    }
+
+    /// Sync footer resource label. Called before draw.
+    pub fn sync_footer_resource_label(&mut self) {
+        let row_count = self.current_row_count();
+        if self.active_view == ActiveView::Dynamic {
+            let label = self
+                .dynamic_resource_data
+                .as_ref()
+                .map(|d| d.resource.display_name.as_str())
+                .unwrap_or("Resource");
+            self.footer_resource_label = format!("{} [{}]", label, row_count);
+        } else {
+            self.footer_resource_label =
+                format!("{} [{}]", self.resource_view.label(), row_count);
         }
     }
 
@@ -1607,6 +1875,23 @@ impl App {
     }
 
     fn compute_row_count(&self) -> usize {
+        // Dynamic view: use fuzzy filter for consistent behavior with rendering
+        if self.active_view == ActiveView::Dynamic {
+            return match &self.dynamic_resource_data {
+                Some(dyn_data) if dyn_data.fetched => {
+                    let query = self
+                        .search_query
+                        .as_ref()
+                        .filter(|q| !q.is_empty())
+                        .map(|q| q.as_str());
+                    match query {
+                        Some(q) => crate::dash::filter::filter_and_rank(&dyn_data.rows, q).len(),
+                        None => dyn_data.rows.len(),
+                    }
+                }
+                _ => 0,
+            };
+        }
         match self.current_snapshot() {
             Some(snap) => match self.resource_view {
                 ResourceView::Pods => snap
@@ -1652,6 +1937,8 @@ impl App {
     fn invalidate_row_count_cache(&mut self) {
         self.cached_row_count = None;
     }
+
+    // open_port_forward_for_selected: real implementation below, near end of impl block
 
     /// Recompute pre-formatted status bar health strings from current snapshots.
     /// Called on fetch result arrival to avoid per-frame format!() allocations.
@@ -1734,6 +2021,175 @@ impl App {
             .filter(|(_, tick)| self.tick_count.saturating_sub(*tick) < 40)
             .map(|(msg, _)| msg.as_str())
     }
+
+    // -- Port-forward helpers -----------------------------------------------
+
+    /// Open port-picker for the currently selected pod or service.
+    fn open_port_forward_for_selected(&mut self) {
+        if self.active_tab != 0 { return; }
+        match self.resource_view {
+            ResourceView::Pods => self.open_port_picker_for_pod(),
+            ResourceView::Services => self.open_port_picker_for_service(),
+            _ => {
+                self.toasts.warn("Port-forward is only available for Pods and Services");
+            }
+        }
+    }
+
+    fn open_port_picker_for_pod(&mut self) {
+        let pod_data = {
+            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let search_lower = self.search_query_lower.clone();
+            let filtered: Vec<_> = snapshot.pods.iter()
+                .filter(|p| match &search_lower {
+                    Some(q) => contains_ignore_ascii_case(&p.name, q)
+                        || contains_ignore_ascii_case(&p.namespace, q),
+                    None => true,
+                }).collect();
+            filtered.get(self.table_cursor)
+                .map(|pod| (pod.name.clone(), pod.namespace.clone()))
+        };
+        if let Some((pod_name, namespace)) = pod_data {
+            self.port_picker.open(pod_name, namespace, "pod".to_string(), Vec::new());
+        }
+    }
+
+    fn open_port_picker_for_service(&mut self) {
+        let svc_data = {
+            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let search_lower = self.search_query_lower.clone();
+            let filtered: Vec<_> = snapshot.services.iter()
+                .filter(|s| match &search_lower {
+                    Some(q) => contains_ignore_ascii_case(&s.name, q)
+                        || contains_ignore_ascii_case(&s.namespace, q),
+                    None => true,
+                }).collect();
+            filtered.get(self.table_cursor).map(|svc| {
+                let ports = Self::parse_service_port_string(&svc.ports);
+                (svc.name.clone(), svc.namespace.clone(), ports)
+            })
+        };
+        if let Some((svc_name, namespace, ports)) = svc_data {
+            self.port_picker.open(svc_name, namespace, "svc".to_string(), ports);
+        }
+    }
+
+    fn parse_service_port_string(ports_str: &str) -> Vec<crate::dash::port_picker::PortInfo> {
+        if ports_str.is_empty() || ports_str == "<none>" {
+            return Vec::new();
+        }
+        ports_str.split(',')
+            .filter_map(|segment| {
+                let segment = segment.trim();
+                let (port_part, protocol) = segment.rsplit_once('/')?;
+                let port_num_str = port_part.split(':').next()?;
+                let port_num: u16 = port_num_str.parse().ok()?;
+                Some(crate::dash::port_picker::PortInfo {
+                    container_port: port_num,
+                    protocol: protocol.to_string(),
+                    name: String::new(),
+                    container_name: String::new(),
+                })
+            })
+            .collect()
+    }
+    /// Process a confirmed port-picker selection: start a port-forward subprocess.
+    fn process_port_picker_confirmation(&mut self) {
+        let selection = match self.port_picker.take_selection() {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Check if local port is already in use by another forward
+        if self.port_forward_manager.is_port_in_use(selection.local_port) {
+            self.toasts.warn(format!(
+                "Local port {} is already in use by another forward",
+                selection.local_port
+            ));
+            return;
+        }
+
+        // Get kubeconfig path for the selected cluster
+        let kubeconfig_path = self
+            .selected_cluster
+            .as_ref()
+            .and_then(|name| self.clusters.iter().find(|c| &c.name == name))
+            .map(|c| c.kubeconfig_path.display().to_string());
+
+        let cluster_name = self
+            .selected_cluster
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let local_port = selection.local_port;
+        let remote_port = selection.container_port;
+        let resource_desc = format!("{}/{}", selection.resource_kind, selection.resource_name);
+
+        // Start the port-forward subprocess
+        let _id = self.port_forward_manager.start_monitored(
+            selection,
+            &cluster_name,
+            kubeconfig_path.as_deref(),
+        );
+
+        self.toasts.info(format!(
+            "Starting port-forward: localhost:{} \u{2192} {}:{}",
+            local_port, resource_desc, remote_port,
+        ));
+    }
+
+    /// Poll port-forward manager events and update toast notifications.
+    /// Called from the run_tui event loop.
+    pub fn poll_port_forward_events(&mut self) {
+        while let Ok(event) = self.port_forward_manager.event_rx.try_recv() {
+            // Get entry info for the toast message before handling the event
+            let entry_info = self
+                .port_forward_manager
+                .entries()
+                .iter()
+                .find(|e| {
+                    match &event {
+                        crate::dash::port_forward::PfEvent::Active { id } => e.id == *id,
+                        crate::dash::port_forward::PfEvent::Failed { id, .. } => e.id == *id,
+                        crate::dash::port_forward::PfEvent::Exited { id, .. } => e.id == *id,
+                    }
+                })
+                .map(|e| (e.resource.clone(), e.local_port, e.remote_port));
+
+            match &event {
+                crate::dash::port_forward::PfEvent::Active { .. } => {
+                    if let Some((resource, local, remote)) = &entry_info {
+                        self.toasts.success(format!(
+                            "Port-forward active: localhost:{} \u{2192} {}:{}",
+                            local, resource, remote,
+                        ));
+                    }
+                }
+                crate::dash::port_forward::PfEvent::Failed { error, .. } => {
+                    if let Some((resource, local, _remote)) = &entry_info {
+                        self.toasts.error(format!(
+                            "Port-forward failed for {} (:{}) \u{2014} {}",
+                            resource, local, error,
+                        ));
+                    } else {
+                        self.toasts.error(format!("Port-forward failed: {}", error));
+                    }
+                }
+                crate::dash::port_forward::PfEvent::Exited { message, .. } => {
+                    if let Some((resource, local, _remote)) = &entry_info {
+                        self.toasts.info(format!(
+                            "Port-forward closed for {} (:{}): {}",
+                            resource, local, message,
+                        ));
+                    }
+                }
+            }
+
+            self.port_forward_manager.handle_event(event);
+            self.needs_redraw = true;
+        }
+    }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -1840,6 +2296,15 @@ mod tests {
             header_info: HeaderInfo::default(),
             sidebar_indicator: String::new(),
             row_count_indicator: String::new(),
+            command_mode: CommandMode::new(),
+            resource_registry: ResourceRegistry::with_builtin_resources(),
+            toasts: ToastManager::new(),
+            dynamic_resource_data: None,
+            active_view: ActiveView::Static,
+            pending_dynamic_fetch: None,
+            footer_resource_label: String::new(),
+            port_picker: crate::dash::port_picker::PortPicker::new(),
+            port_forward_manager: crate::dash::port_forward::PortForwardManager::new(),
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -2061,6 +2526,7 @@ mod tests {
                     restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
+                    containers: vec![],
                 })
                 .collect(),
             deployments: vec![],
@@ -2346,6 +2812,7 @@ mod tests {
                     restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
+                    containers: vec![],
                 })
                 .collect(),
             deployments: vec![],
@@ -2407,6 +2874,7 @@ mod tests {
                     restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
+                    containers: vec![],
                 })
                 .collect(),
             deployments: vec![],
@@ -2633,6 +3101,7 @@ mod tests {
                     restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
+                    containers: vec![],
                 },
                 crate::dash::data::PodInfo {
                     name: "beta-pod".into(),
@@ -2643,6 +3112,7 @@ mod tests {
                     restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
+                    containers: vec![],
                 },
             ],
             deployments: vec![],
@@ -2840,6 +3310,7 @@ mod tests {
                     restarts_display: "0".into(),
                     age: "1h".into(),
                     node: "n1".into(),
+                    containers: vec![],
                 })
                 .collect(),
             deployments: vec![],
@@ -3907,6 +4378,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
     let (discover_tx, mut discover_rx) =
         tokio::sync::mpsc::channel::<kube_client::DiscoverEvent>(32);
     let (fetch_tx, mut fetch_rx) = tokio::sync::mpsc::channel::<FetchResult>(32);
+    // Channel for dynamic resource fetch results (command mode)
+    let (dyn_fetch_tx, mut dyn_fetch_rx) =
+        tokio::sync::mpsc::channel::<(u64, Vec<kube::api::DynamicObject>)>(8);
 
     // Cancellation flag (shared with background tasks)
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -3937,7 +4411,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     (body_height as usize).saturating_sub(if sidebar_overflows { 1 } else { 0 });
                 app.ensure_sidebar_scroll_visible(sidebar_viewport);
                 // Table viewport = body height minus block borders (2) minus header row (1, Resources only) minus optional search bar (1)
-                let search_offset: u16 = if app.search_active { 1 } else { 0 };
+                let search_offset: u16 = if app.search_active || app.command_mode.is_active() { 1 } else { 0 };
                 let header_row: u16 = if app.active_tab == 0 { 1 } else { 0 }; // US-203: Top tab has no header row
                 let table_viewport =
                     body_height.saturating_sub(2 + header_row + search_offset) as usize;
@@ -3994,6 +4468,18 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
         };
         app.handle_event(evt);
         app.tick_count += 1;
+
+        // Poll port-forward subprocess events for status updates
+        app.poll_port_forward_events();
+
+        // GC expired toast notifications (triggers redraw if any removed)
+        if app.toasts.gc() {
+            app.needs_redraw = true;
+        }
+        // Redraw if toasts are visible (for fade animation)
+        if app.toasts.has_toasts() {
+            app.needs_redraw = true;
+        }
 
         if !app.running {
             break Ok(());
@@ -4131,6 +4617,26 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             let row_count = app.current_row_count();
             app.clamp_table_cursor(row_count);
             last_refresh = Instant::now();
+        }
+
+        // --- Process dynamic fetch results (command mode) ---
+        while let Ok((generation, objects)) = dyn_fetch_rx.try_recv() {
+            app.needs_redraw = true;
+            if generation != app.fetch_generation {
+                continue; // Stale result
+            }
+            if let Some(ref mut data) = app.dynamic_resource_data {
+                data.objects = objects;
+                data.extract_rows();
+                data.fetched = true;
+            }
+            // Only clear is_fetching if this was a dynamic fetch (not a static cluster fetch)
+            if app.active_view == ActiveView::Dynamic {
+                app.is_fetching = false;
+                app.fetch_started_at = None;
+            }
+            let row_count = app.current_row_count();
+            app.clamp_table_cursor(row_count);
         }
 
         // --- is_fetching timeout defense (30s) ---
@@ -4291,6 +4797,49 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 }
             });
         }
+
+        // --- Dispatch dynamic resource fetch (command mode) ---
+        if let Some(req) = app.pending_dynamic_fetch.take() {
+            if let Some(client) = app
+                .clusters
+                .iter()
+                .find(|c| c.name == req.cluster_name)
+                .map(|c| c.client.clone())
+            {
+                if let Some(ref data) = app.dynamic_resource_data {
+                    let resource = data.resource.clone();
+                    let ns = req.namespace.clone();
+                    let gen = req.generation;
+                    let tx = dyn_fetch_tx.clone();
+                    tokio::spawn(async move {
+                        match dynamic_resource::fetch_dynamic_resources(
+                            &client,
+                            &resource,
+                            ns.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(objects) => {
+                                let _ = tx.send((gen, objects)).await;
+                            }
+                            Err(_e) => {
+                                // Send empty result so UI shows "No resources found"
+                                let _ = tx.send((gen, Vec::new())).await;
+                            }
+                        }
+                    });
+                }
+            }
+        }
+
+        // --- Toast GC (remove expired toasts) ---
+        if app.toasts.gc() {
+            app.needs_redraw = true;
+        }
+        // Keep redraw active while toasts are visible (for fade animation)
+        if app.toasts.has_toasts() {
+            app.needs_redraw = true;
+        }
     };
 
     // Signal cancellation to background tasks
@@ -4300,6 +4849,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+
+    // Stop all active port-forwards (kills kubectl subprocesses)
+    app.port_forward_manager.stop_all();
 
     // Cleanup all SSH tunnels (panic-safe: tunnel_pids accumulated during run)
     for &pid in &app.tunnel_pids {

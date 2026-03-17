@@ -39,6 +39,8 @@ pub enum AppEvent {
     // Jump to first/last item
     Home,
     End,
+    // Port-forward (Shift+F)
+    PortForward,
     // Character input (unmapped printable chars — used by search mode)
     CharInput(char),
     // Tick (periodic refresh)
@@ -120,6 +122,9 @@ pub fn map_key_event(key: KeyEvent) -> AppEvent {
 
         // Refresh
         KeyCode::Char('r') if !ctrl => AppEvent::Refresh,
+
+        // Port-forward (Shift+F)
+        KeyCode::Char('F') if shift && !ctrl => AppEvent::PortForward,
 
         // Any other printable character (for search mode input)
         KeyCode::Char(c) if !ctrl => AppEvent::CharInput(c),
@@ -260,6 +265,23 @@ mod tests {
         assert_eq!(
             map_key_event(key(KeyCode::Char('2'), KeyModifiers::NONE)),
             AppEvent::Tab(2)
+        );
+    }
+
+    #[test]
+    fn shift_f_maps_to_port_forward() {
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('F'), KeyModifiers::SHIFT)),
+            AppEvent::PortForward
+        );
+    }
+
+    #[test]
+    fn lowercase_f_is_char_input_not_port_forward() {
+        // Lowercase 'f' should be CharInput, not PortForward
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('f'), KeyModifiers::NONE)),
+            AppEvent::CharInput('f')
         );
     }
 }
