@@ -113,6 +113,10 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Cached row count**: `cached_row_count: Option<usize>` avoids redundant O(n) filter iterations in `move_down`/`page_down`/`jump_end`/`render_center`. Invalidated per event cycle.
 - **Pre-computed status bar strings**: `status_bar_health_strings` computed on fetch result arrival via `sync_status_bar_strings()`. `render_status_bar` reads pre-computed strings instead of `format!()` per snapshot per frame.
 - **Viewport-only Row construction**: `render_resource_table` counts filtered items without collecting into `Vec<&T>`, then builds `Row` objects only for viewport-visible items via iterator `skip`/`take`.
+- **Headless probe timeout**: Headless `discover_clusters` Strategy 2/2b uses `probe_client()` (with `DISCOVER_TIMEOUT`) instead of inline untimed probe.
+- **Safe unwrap elimination**: `navigate_to_parent` and `visible_tree_indices_cached` use `if let`/`unwrap_or_default` instead of `unwrap()` on invariant-maintained `Option`.
+- **Skip namespace fetch for non-selected clusters**: `ActiveResource::Nodes` arm fetches only nodes (no namespace API call). Merge logic preserves cached namespaces when fetch returns empty vec.
+- **Parallel fetch result collection**: Per-cluster fetch handles collected via `futures::future::join_all` instead of sequential `for handle in handles { handle.await }`. Eliminates cancellation latency and serial blocking.
 
 ### Header Layout
 

@@ -610,12 +610,10 @@ pub async fn fetch_cluster_snapshot(
             (ns, n, None, None, None, Some(c))
         }
         Some(ActiveResource::Nodes) => {
-            // Nodes already in the base join, no extra API call
-            let (ns, n) = tokio::join!(
-                async { fetch_namespaces(client).await.unwrap_or_default() },
-                async { fetch_nodes(client).await.unwrap_or_default() },
-            );
-            (ns, n, None, None, None, None)
+            // Nodes-only fetch for non-selected clusters: skip namespace API call
+            // (namespaces change rarely, preserved by merge logic in run_tui)
+            let n = fetch_nodes(client).await.unwrap_or_default();
+            (Vec::new(), n, None, None, None, None)
         }
     };
 
