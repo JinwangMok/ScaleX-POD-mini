@@ -118,15 +118,28 @@ pub struct HeaderInfo {
     pub endpoint: String,
     pub k8s_version: String,
     pub config_path: String,
+    /// Pre-computed "vX.Y.Z" version string for header display
+    pub version_display: String,
+    /// Pre-computed "   Clusters: N/M" for full header
+    pub cluster_count_full: String,
+    /// Pre-computed "  Clusters: N/M  K8s: vX.Y.Z" for compact header
+    pub cluster_count_compact: String,
+    /// Pre-computed " vX.Y.Z  " for compact header
+    pub version_compact: String,
 }
 
 impl Default for HeaderInfo {
     fn default() -> Self {
+        let ver = env!("CARGO_PKG_VERSION");
         Self {
             cluster_name: "--".to_string(),
             endpoint: "--".to_string(),
             k8s_version: "N/A".to_string(),
             config_path: "--".to_string(),
+            version_display: format!("v{}", ver),
+            cluster_count_full: "   Clusters: 0/0".to_string(),
+            cluster_count_compact: "  Clusters: 0/0  K8s: N/A".to_string(),
+            version_compact: format!(" v{}  ", ver),
         }
     }
 }
@@ -795,13 +808,31 @@ impl App {
             .and_then(|name| self.clusters.iter().find(|c| &c.name == name))
             .or_else(|| self.clusters.first());
 
+        let ver = env!("CARGO_PKG_VERSION");
+        let connected = self
+            .cluster_connection_status
+            .values()
+            .filter(|s| matches!(s, ConnectionStatus::Connected))
+            .count();
+        let total = self.cluster_connection_status.len();
+
         self.header_info = match selected {
-            Some(c) => HeaderInfo {
-                cluster_name: c.name.clone(),
-                endpoint: c.endpoint.as_deref().unwrap_or("--").to_string(),
-                k8s_version: c.server_version.as_deref().unwrap_or("N/A").to_string(),
-                config_path: c.kubeconfig_path.display().to_string(),
-            },
+            Some(c) => {
+                let k8s_ver = c.server_version.as_deref().unwrap_or("N/A").to_string();
+                HeaderInfo {
+                    cluster_name: c.name.clone(),
+                    endpoint: c.endpoint.as_deref().unwrap_or("--").to_string(),
+                    config_path: c.kubeconfig_path.display().to_string(),
+                    version_display: format!("v{}", ver),
+                    cluster_count_full: format!("   Clusters: {}/{}", connected, total),
+                    cluster_count_compact: format!(
+                        "  Clusters: {}/{}  K8s: {}",
+                        connected, total, k8s_ver
+                    ),
+                    version_compact: format!(" v{}  ", ver),
+                    k8s_version: k8s_ver,
+                }
+            }
             None => HeaderInfo::default(),
         };
     }

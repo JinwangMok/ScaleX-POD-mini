@@ -88,21 +88,8 @@ const LOGO: [&str; 6] = [
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let is_full = area.height >= 8;
 
-    // Use pre-computed header info (O(1) instead of O(n) cluster search per frame)
+    // Use pre-computed header info — all strings cached via sync_header_info()
     let hi = &app.header_info;
-    let cluster_name = hi.cluster_name.as_str();
-    let endpoint_str = hi.endpoint.as_str();
-    let k8s_ver = hi.k8s_version.as_str();
-    let config_path = &hi.config_path;
-
-    let scalex_ver = env!("CARGO_PKG_VERSION");
-
-    let total_clusters = app.cluster_connection_status.len();
-    let connected_clusters = app
-        .cluster_connection_status
-        .values()
-        .filter(|s| matches!(s, ConnectionStatus::Connected))
-        .count();
 
     let label_style = Style::default().fg(theme::FG4);
     let value_style = Style::default().fg(theme::FG);
@@ -110,32 +97,16 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 
     if is_full {
         render_header_full(
-            f,
-            area,
-            cluster_name,
-            endpoint_str,
-            k8s_ver,
-            config_path,
-            scalex_ver,
-            total_clusters,
-            connected_clusters,
-            label_style,
-            value_style,
-            accent_style,
+            f, area, hi.cluster_name.as_str(), hi.endpoint.as_str(),
+            hi.k8s_version.as_str(), &hi.config_path,
+            &hi.version_display, &hi.cluster_count_full,
+            label_style, value_style, accent_style,
         );
     } else {
         render_header_compact(
-            f,
-            area,
-            cluster_name,
-            endpoint_str,
-            k8s_ver,
-            scalex_ver,
-            total_clusters,
-            connected_clusters,
-            label_style,
-            value_style,
-            accent_style,
+            f, area, hi.cluster_name.as_str(), hi.endpoint.as_str(),
+            &hi.version_compact, &hi.cluster_count_compact,
+            label_style, value_style, accent_style,
         );
     }
 }
@@ -148,9 +119,8 @@ fn render_header_full(
     endpoint_str: &str,
     k8s_ver: &str,
     config_path: &str,
-    scalex_ver: &str,
-    total_clusters: usize,
-    connected_clusters: usize,
+    version_display: &str,
+    cluster_count_display: &str,
     label_style: Style,
     value_style: Style,
     accent_style: Style,
@@ -225,13 +195,13 @@ fn render_header_full(
         Line::from(vec![
             Span::styled(" ScaleX:    ", label_style),
             Span::styled(
-                format!("v{}", scalex_ver),
+                version_display,
                 Style::default()
                     .fg(theme::BRIGHT_ORANGE)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("   Clusters: {}/{}", connected_clusters, total_clusters),
+                cluster_count_display,
                 Style::default().fg(theme::FG3),
             ),
         ]),
@@ -251,10 +221,8 @@ fn render_header_compact(
     area: Rect,
     cluster_name: &str,
     endpoint_str: &str,
-    k8s_ver: &str,
-    scalex_ver: &str,
-    total_clusters: usize,
-    connected_clusters: usize,
+    version_compact: &str,
+    cluster_count_compact: &str,
     label_style: Style,
     _value_style: Style,
     accent_style: Style,
@@ -275,15 +243,12 @@ fn render_header_compact(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" v{}  ", scalex_ver),
+            version_compact,
             Style::default().fg(theme::BRIGHT_ORANGE),
         ),
         Span::styled(cluster_name, accent_style),
         Span::styled(
-            format!(
-                "  Clusters: {}/{}  K8s: {}",
-                connected_clusters, total_clusters, k8s_ver
-            ),
+            cluster_count_compact,
             Style::default().fg(theme::FG3),
         ),
     ];
