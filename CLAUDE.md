@@ -206,6 +206,7 @@ The TUI header is k9s-style and responsive:
 - **Cached row count in render**: `render_resource_table` reads `current_row_count_readonly()` (cached from event cycle) instead of re-counting filtered items per render call. Eliminates double iteration (count + render) in the table render hot path.
 - **Pre-computed sidebar indicator**: `App.sidebar_indicator` caches `" pos/total "` string, synced before each draw via `sync_sidebar_indicator()`. `render_sidebar` borrows cached string instead of per-frame `format!()`.
 - **Pre-computed row count indicator**: `App.row_count_indicator` caches `"pos/total "` string, synced before each draw via `sync_row_count_indicator()`. `render_center` borrows cached string instead of per-frame `format!()`.
+- **Pre-computed header display strings**: `HeaderInfo.version_display`, `cluster_count_full`, `cluster_count_compact`, `version_compact` computed in `sync_header_info()`. `render_header_full` and `render_header_compact` borrow pre-computed strings instead of per-frame `format!()` for version and cluster count.
 
 ## Key Patterns
 
