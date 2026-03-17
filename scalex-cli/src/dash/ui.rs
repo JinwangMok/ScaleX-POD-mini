@@ -76,13 +76,14 @@ pub fn render(f: &mut Frame, app: &App) {
 // ---------------------------------------------------------------------------
 
 /// ASCII art logo for full-size header (6 lines)
+/// Pre-formatted logo lines with leading space — avoids per-frame format!(" {}", line).
 const LOGO: [&str; 6] = [
-    r"███████╗ ██████╗ █████╗ ██╗     ███████╗██╗  ██╗",
-    r"██╔════╝██╔════╝██╔══██╗██║     ██╔════╝╚██╗██╔╝",
-    r"███████╗██║     ███████║██║     █████╗   ╚███╔╝ ",
-    r"╚════██║██║     ██╔══██║██║     ██╔══╝   ██╔██╗ ",
-    r"███████║╚██████╗██║  ██║███████╗███████╗██╔╝ ██╗",
-    r"╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝",
+    " ███████╗ ██████╗ █████╗ ██╗     ███████╗██╗  ██╗",
+    " ██╔════╝██╔════╝██╔══██╗██║     ██╔════╝╚██╗██╔╝",
+    " ███████╗██║     ███████║██║     █████╗   ╚███╔╝ ",
+    " ╚════██║██║     ██╔══██║██║     ██╔══╝   ██╔██╗ ",
+    " ███████║╚██████╗██║  ██║███████╗███████╗██╔╝ ██╗",
+    " ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝",
 ];
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
@@ -150,16 +151,12 @@ fn render_header_full(
 
     // Left: ASCII art logo
     if show_logo && cols.len() > 1 {
+        let logo_style = Style::default()
+            .fg(theme::BRIGHT_ORANGE)
+            .add_modifier(Modifier::BOLD);
         let logo_lines: Vec<Line> = LOGO
             .iter()
-            .map(|line| {
-                Line::from(Span::styled(
-                    format!(" {}", line),
-                    Style::default()
-                        .fg(theme::BRIGHT_ORANGE)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            })
+            .map(|line| Line::from(Span::styled(*line, logo_style)))
             .collect();
         let logo_para = Paragraph::new(logo_lines).style(Style::default().bg(theme::BG_HARD));
         f.render_widget(logo_para, cols[0]);
