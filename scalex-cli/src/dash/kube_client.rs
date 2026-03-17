@@ -50,7 +50,9 @@ pub fn scan_kubeconfig_names(dir: &Path) -> Vec<String> {
 }
 
 /// Timeout for connection probes during cluster discovery.
-const DISCOVER_TIMEOUT: Duration = Duration::from_secs(3);
+/// Reduced from 3s to 2s — healthy clusters respond in <500ms;
+/// 2s catches slow-but-alive clusters while reducing startup latency.
+const DISCOVER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Load api_endpoint mapping from k8s-clusters.yaml.
 /// Returns empty map if the file doesn't exist or can't be parsed.

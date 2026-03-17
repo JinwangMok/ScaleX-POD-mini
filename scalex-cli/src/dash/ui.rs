@@ -491,7 +491,9 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(color).bg(suffix_bg),
                 ));
             }
-            // Pad to full sidebar width so cursor/selection highlight fills the row
+            // Pad to full sidebar width so cursor/selection highlight fills the row.
+            // Static buffer avoids per-row heap allocation from " ".repeat(pad).
+            const SPACES: &str = "                                                                                ";
             let pad = (inner.width as usize).saturating_sub(used_cols);
             if pad > 0 {
                 let pad_style = if is_cursor {
@@ -499,7 +501,12 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default().bg(theme::BG_HARD)
                 };
-                spans.push(Span::styled(" ".repeat(pad), pad_style));
+                if pad <= SPACES.len() {
+                    spans.push(Span::styled(&SPACES[..pad], pad_style));
+                } else {
+                    // Fallback for extremely wide terminals (>80 col sidebar)
+                    spans.push(Span::styled(" ".repeat(pad), pad_style));
+                };
             }
 
             Line::from(spans)
@@ -581,7 +588,7 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
     }
     // Row count indicator
     if app.active_tab == 0 {
-        let row_count = app.current_row_count();
+        let row_count = app.current_row_count_readonly();
         if row_count > 0 {
             let pos = app.table_cursor.min(row_count.saturating_sub(1)) + 1;
             title_spans.push(Span::styled(
@@ -812,9 +819,11 @@ fn render_resource_table<'a, T, F, R>(
     F: Fn(&'a T) -> bool,
     R: Fn(usize, &'a T, bool) -> Row<'a>,
 {
-    let filtered: Vec<&T> = items.iter().filter(|item| filter_fn(item)).collect();
+    // Count filtered items without collecting into intermediate Vec.
+    // For large resource lists this avoids O(n) Vec<&T> allocation.
+    let filtered_count = items.iter().filter(|item| filter_fn(item)).count();
 
-    if filtered.is_empty() {
+    if filtered_count == 0 {
         let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
             format!(
                 "  No results for \"{}\"",
@@ -828,14 +837,17 @@ fn render_resource_table<'a, T, F, R>(
         return;
     }
 
-    let clamped_cursor = app.table_cursor.min(filtered.len() - 1);
+    let clamped_cursor = app.table_cursor.min(filtered_count - 1);
     let viewport_rows = area.height.saturating_sub(1) as usize;
     // Defensively clamp scroll offset to prevent blank rows (US-211)
     let clamped_scroll = app
         .table_scroll_offset
-        .min(filtered.len().saturating_sub(viewport_rows.max(1)));
-    let rows: Vec<Row> = filtered
+        .min(filtered_count.saturating_sub(viewport_rows.max(1)));
+    // Build Row objects only for viewport-visible items (skip+take on filtered iterator).
+    // Avoids constructing Row for off-screen items.
+    let rows: Vec<Row> = items
         .iter()
+        .filter(|item| filter_fn(item))
         .enumerate()
         .skip(clamped_scroll)
         .take(viewport_rows)
@@ -1303,52 +1315,21 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let narrow = inner.width < 100;
-    for snapshot in &app.snapshots {
+    for (i, snapshot) in app.snapshots.iter().enumerate() {
         let (symbol, color) = match snapshot.health {
             HealthStatus::Green => ("●", theme::BRIGHT_GREEN),
             HealthStatus::Yellow => ("●", theme::BRIGHT_YELLOW),
             HealthStatus::Red => ("●", theme::BRIGHT_RED),
             HealthStatus::Unknown => ("○", theme::FG4),
         };
-        let ru = &snapshot.resource_usage;
         health_spans.push(Span::styled(
             format!("{} ", symbol),
             Style::default().fg(color),
         ));
-        if narrow {
-            // Abbreviated: name + pod count only
-            health_spans.push(Span::styled(
-                if ru.succeeded_pods > 0 {
-                    format!(
-                        "{} {}+{}/{}  ",
-                        snapshot.name, ru.running_pods, ru.succeeded_pods, ru.total_pods
-                    )
-                } else {
-                    format!("{} {}/{}  ", snapshot.name, ru.running_pods, ru.total_pods)
-                },
-                Style::default().fg(theme::FG3),
-            ));
-        } else {
-            health_spans.push(Span::styled(
-                if ru.succeeded_pods > 0 {
-                    format!(
-                        "{} pods:{}+{}/{} nodes:{}/{}  ",
-                        snapshot.name,
-                        ru.running_pods,
-                        ru.succeeded_pods,
-                        ru.total_pods,
-                        ru.ready_nodes,
-                        ru.total_nodes
-                    )
-                } else {
-                    format!(
-                        "{} pods:{}/{} nodes:{}/{}  ",
-                        snapshot.name, ru.running_pods, ru.total_pods, ru.ready_nodes,
-                        ru.total_nodes
-                    )
-                },
-                Style::default().fg(theme::FG3),
-            ));
+        // Use pre-computed health strings (computed on fetch arrival, not per-frame)
+        if let Some((narrow_str, wide_str)) = app.status_bar_health_strings.get(i) {
+            let text = if narrow { narrow_str.as_str() } else { wide_str.as_str() };
+            health_spans.push(Span::styled(text, Style::default().fg(theme::FG3)));
         }
     }
 
