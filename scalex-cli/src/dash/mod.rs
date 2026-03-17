@@ -70,9 +70,10 @@ pub mod headless {
                 data::fetch_cluster_snapshot(&client, &name, ns.as_deref(), None).await
             }));
         }
+        let results = futures::future::join_all(handles).await;
         let mut cluster_data = Vec::new();
-        for handle in handles {
-            if let Ok(Ok(snapshot)) = handle.await {
+        for result in results {
+            if let Ok(Ok(snapshot)) = result {
                 cluster_data.push(snapshot);
             }
         }

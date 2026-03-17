@@ -88,21 +88,12 @@ const LOGO: [&str; 6] = [
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let is_full = area.height >= 8;
 
-    // Gather cluster info for the selected (or first) cluster
-    let selected = app
-        .selected_cluster
-        .as_ref()
-        .and_then(|name| app.clusters.iter().find(|c| &c.name == name))
-        .or_else(|| app.clusters.first());
-
-    let cluster_name = selected.map(|c| c.name.as_str()).unwrap_or("--");
-    let endpoint_str = selected.and_then(|c| c.endpoint.as_deref()).unwrap_or("--");
-    let k8s_ver = selected
-        .and_then(|c| c.server_version.as_deref())
-        .unwrap_or("N/A");
-    let config_path = selected
-        .map(|c| c.kubeconfig_path.display().to_string())
-        .unwrap_or_else(|| "--".into());
+    // Use pre-computed header info (O(1) instead of O(n) cluster search per frame)
+    let hi = &app.header_info;
+    let cluster_name = hi.cluster_name.as_str();
+    let endpoint_str = hi.endpoint.as_str();
+    let k8s_ver = hi.k8s_version.as_str();
+    let config_path = &hi.config_path;
 
     let scalex_ver = env!("CARGO_PKG_VERSION");
 
@@ -124,7 +115,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
             cluster_name,
             endpoint_str,
             k8s_ver,
-            &config_path,
+            config_path,
             scalex_ver,
             total_clusters,
             connected_clusters,
@@ -544,8 +535,6 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
         theme::BG3
     };
 
-    let ctx_label = &app.ctx_label;
-
     // Resource shortcut indicator: p d s c n with active one highlighted
     // Static strings avoid per-frame format!() allocation for tab labels
     const SHORTCUTS_ACTIVE: [&str; 5] = ["[p]Pods ", "[d]Deploy ", "[s]Svc ", "[c]CM ", "[n]Nodes "];
@@ -612,7 +601,7 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     title_spans.push(Span::styled(
-        format!("| {} ", ctx_label),
+        app.ctx_title_span.as_str(),
         Style::default().fg(theme::FG),
     ));
     let block = Block::default()
@@ -1211,10 +1200,7 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(
-                    "  {}  CPU: {}  MEM: {}",
-                    node.kubelet_version, node.cpu_display, node.mem_display
-                ),
+                node.top_display.as_str(),
                 Style::default().fg(theme::FG3),
             ),
         ]));
@@ -1253,8 +1239,8 @@ const BAR_EMPTY: &str = "--------------------"; // 20 chars max
 fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color) -> Vec<Span<'a>> {
     if percent < 0.0 {
         return vec![
-            Span::styled(format!("{} ", label), Style::default().fg(theme::FG4)),
-            Span::styled("N/A ", Style::default().fg(theme::FG4)),
+            Span::styled(label, Style::default().fg(theme::FG4)),
+            Span::styled(" N/A ", Style::default().fg(theme::FG4)),
         ];
     }
     let width = width.min(BAR_FILL.len());
@@ -1270,7 +1256,8 @@ fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color
     };
 
     vec![
-        Span::styled(format!("{} [", label), Style::default().fg(theme::FG4)),
+        Span::styled(label, Style::default().fg(theme::FG4)),
+        Span::styled(" [", Style::default().fg(theme::FG4)),
         Span::styled(&BAR_FILL[..filled], Style::default().fg(bar_color)),
         Span::styled(&BAR_EMPTY[..empty], Style::default().fg(theme::FG4)),
         Span::styled(
@@ -1344,15 +1331,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let very_narrow = inner.width < 60;
 
     // Self overhead + fetch indicator (always shown)
-    let rss_str = app
-        .self_rss_mb
-        .map(|mb| format!("{:.0}MB", mb))
-        .unwrap_or_else(|| "N/A".into());
-    let fetch_indicator = if app.is_fetching {
-        format!(" {} ", spinner)
-    } else {
-        String::new()
-    };
+    // rss_str and latency are pre-computed in status_bar_self_line; spinner appended dynamically
 
     if !very_narrow {
         let bar_width = if narrow { 5 } else { 8 };
@@ -1377,13 +1356,17 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    // Pre-computed self/latency base string; append spinner dynamically if fetching
     usage_spans.push(Span::styled(
-        format!(
-            "| self: {} | latency: {}ms{}",
-            rss_str, app.api_latency_ms, fetch_indicator
-        ),
+        app.status_bar_self_line.as_str(),
         Style::default().fg(theme::BRIGHT_AQUA),
     ));
+    if app.is_fetching {
+        usage_spans.push(Span::styled(
+            format!(" {} ", spinner),
+            Style::default().fg(theme::BRIGHT_AQUA),
+        ));
+    }
     if app.fetch_timed_out {
         usage_spans.push(Span::styled(
             " [!] fetch timed out — press 'r' to retry",

@@ -103,6 +103,31 @@ pub enum NodeType {
 }
 
 // ---------------------------------------------------------------------------
+// Cached header info
+// ---------------------------------------------------------------------------
+
+/// Pre-computed header info to avoid O(n) cluster search per frame.
+/// Updated via sync_header_info() on cluster selection or discovery events.
+#[derive(Debug, Clone)]
+pub struct HeaderInfo {
+    pub cluster_name: String,
+    pub endpoint: String,
+    pub k8s_version: String,
+    pub config_path: String,
+}
+
+impl Default for HeaderInfo {
+    fn default() -> Self {
+        Self {
+            cluster_name: "--".to_string(),
+            endpoint: "--".to_string(),
+            k8s_version: "N/A".to_string(),
+            config_path: "--".to_string(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Connection status for per-cluster discovery tracking
 // ---------------------------------------------------------------------------
 
@@ -246,6 +271,9 @@ pub struct App {
     /// Eliminates per-frame `format!()` in render_center.
     pub ctx_label: String,
 
+    /// Pre-computed "| context_label " for center panel title. Updated on cluster/namespace change.
+    pub ctx_title_span: String,
+
     /// Cached row count for current resource view + search filter.
     /// Invalidated (None) on: data change, view switch, search change, cluster/namespace change.
     /// Avoids redundant O(n) filter iteration in move_down/page_down/jump_end/render_center.
@@ -254,6 +282,14 @@ pub struct App {
     /// Pre-computed status bar health strings per cluster. Updated on fetch result arrival.
     /// Eliminates per-frame format!() for pod/node counts in render_status_bar.
     pub status_bar_health_strings: Vec<(String, String)>, // (narrow_str, wide_str) per snapshot
+
+    /// Pre-computed "| self: 42MB | latency: 150ms" for status bar.
+    /// Updated on fetch result arrival. Spinner appended dynamically in render.
+    pub status_bar_self_line: String,
+
+    /// Pre-computed header info (cluster name, endpoint, k8s version, config path).
+    /// Updated via sync_header_info() on cluster selection or discovery events.
+    pub header_info: HeaderInfo,
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -368,8 +404,11 @@ impl App {
             needs_redraw: true,
             render_visible_indices: Vec::new(),
             ctx_label: "No cluster selected".to_string(),
+            ctx_title_span: "| No cluster selected ".to_string(),
             cached_row_count: None,
             status_bar_health_strings: Vec::new(),
+            status_bar_self_line: "| self: N/A | latency: 0ms".to_string(),
+            header_info: HeaderInfo::default(),
         }
     }
 
@@ -463,8 +502,11 @@ impl App {
             needs_redraw: true,
             render_visible_indices: Vec::new(),
             ctx_label: "No cluster selected".to_string(),
+            ctx_title_span: "| No cluster selected ".to_string(),
             cached_row_count: None,
             status_bar_health_strings: Vec::new(),
+            status_bar_self_line: "| self: N/A | latency: 0ms".to_string(),
+            header_info: HeaderInfo::default(),
         }
     }
 
@@ -725,6 +767,26 @@ impl App {
             (Some(c), Some(ns)) => format!("{} > {}", c, ns),
             (Some(c), None) => format!("{} > All Namespaces", c),
             _ => "No cluster selected".to_string(),
+        };
+        self.ctx_title_span = format!("| {} ", self.ctx_label);
+    }
+
+    /// Sync cached header info. Called on cluster selection change and discovery events.
+    pub fn sync_header_info(&mut self) {
+        let selected = self
+            .selected_cluster
+            .as_ref()
+            .and_then(|name| self.clusters.iter().find(|c| &c.name == name))
+            .or_else(|| self.clusters.first());
+
+        self.header_info = match selected {
+            Some(c) => HeaderInfo {
+                cluster_name: c.name.clone(),
+                endpoint: c.endpoint.as_deref().unwrap_or("--").to_string(),
+                k8s_version: c.server_version.as_deref().unwrap_or("N/A").to_string(),
+                config_path: c.kubeconfig_path.display().to_string(),
+            },
+            None => HeaderInfo::default(),
         };
     }
 
@@ -1014,6 +1076,7 @@ impl App {
                     self.is_fetching = false;
                     self.fetched_resources.clear();
                     self.sync_ctx_label();
+                    self.sync_header_info();
                     // Immediately populate tree from cached snapshots
                     self.sync_tree_from_snapshots();
                 }
@@ -1030,6 +1093,7 @@ impl App {
                 self.table_cursor = 0;
                 self.table_scroll_offset = 0;
                 self.sync_ctx_label();
+                self.sync_header_info();
                 self.needs_refresh = true;
                 self.refresh_selected_only = true;
                 self.fetch_generation += 1;
@@ -1544,6 +1608,16 @@ impl App {
                 (narrow, wide)
             })
             .collect();
+
+        // Pre-compute self/latency line (changes only on fetch result arrival)
+        let rss_str = self
+            .self_rss_mb
+            .map(|mb| format!("{:.0}MB", mb))
+            .unwrap_or_else(|| "N/A".into());
+        self.status_bar_self_line = format!(
+            "| self: {} | latency: {}ms",
+            rss_str, self.api_latency_ms
+        );
     }
 
     pub fn current_snapshot(&self) -> Option<&ClusterSnapshot> {
@@ -1682,8 +1756,11 @@ mod tests {
             needs_redraw: true,
             render_visible_indices: Vec::new(),
             ctx_label: "No cluster selected".to_string(),
+            ctx_title_span: "| No cluster selected ".to_string(),
             cached_row_count: None,
             status_bar_health_strings: Vec::new(),
+            status_bar_self_line: "| self: N/A | latency: 0ms".to_string(),
+            header_info: HeaderInfo::default(),
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -3836,6 +3913,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     app.cluster_connection_status
                         .insert(name.clone(), ConnectionStatus::Connected);
                     app.clusters.push(client);
+                    app.sync_header_info();
                     // Auto-select first connected cluster if none selected
                     if app.selected_cluster.is_none() {
                         app.selected_cluster = Some(name.clone());
@@ -3928,6 +4006,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             app.fetched_resources.insert(ActiveResource::Nodes);
             app.sync_tree_from_snapshots();
             app.sync_status_bar_strings();
+            app.sync_header_info();
             app.self_rss_mb = result.self_rss_mb;
             // Apply infra data loaded on worker thread
             if let Some(infra_snap) = result.infra {

@@ -19,9 +19,9 @@ pub enum ActiveResource {
 }
 
 /// Per-API-call timeout to prevent slow calls from blocking the entire fetch.
-/// Reduced from 2s to 1s — K8s API calls on a healthy cluster complete in <200ms;
-/// 1s is generous while halving worst-case fetch latency.
-const API_CALL_TIMEOUT: Duration = Duration::from_secs(1);
+/// Reduced from 1s to 500ms — K8s API calls on a healthy cluster complete in <200ms;
+/// 500ms is generous while halving worst-case fetch latency.
+const API_CALL_TIMEOUT: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
 // Data models
@@ -69,6 +69,8 @@ pub struct NodeInfo {
     pub mem_display: String,
     /// Kubelet version (e.g., "v1.33.1") from node.status.nodeInfo
     pub kubelet_version: String,
+    /// Pre-computed display string for Top tab: "  v1.33.1  CPU: 8/8  MEM: 7.5Gi/7.8Gi"
+    pub top_display: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -312,6 +314,11 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
                 .map(|ni| ni.kubelet_version.clone())
                 .unwrap_or_default();
 
+            let top_display = format!(
+                "  {}  CPU: {}  MEM: {}",
+                kubelet_version, cpu_display, mem_display
+            );
+
             NodeInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 status: node_status,
@@ -327,6 +334,7 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
                 cpu_display,
                 mem_display,
                 kubelet_version,
+                top_display,
             }
         })
         .collect())
