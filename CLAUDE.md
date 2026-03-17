@@ -218,6 +218,8 @@ The TUI header is k9s-style and responsive:
 - **Port forward**: `Shift+F` opens port-picker modal for pods/services. `PortForwardManager` tracks active kubectl subprocesses with monitored status (Starting→Active→Stopped/Failed).
 - **Modal overlay stacking**: Render order: help → port-picker → port-forward → yaml-modal → log-viewer → toasts. Event interception order matches render order (innermost modal gets priority). All modals close on ESC/q.
 - **Async request pattern**: `pending_*` fields on App queue one-shot requests consumed by `run_tui` event loop. Generation counters discard stale results. Channels: `log_line_tx/rx` (256 cap), `describe_tx/rx` (4 cap), `dyn_fetch_tx/rx` (8 cap).
+- **Shell exec**: `Shift+S` on pod row suspends TUI (`tui_suspend::suspend_tui`), spawns `kubectl exec -it pod -n ns -- /bin/sh` as child process, resumes TUI on exit (`tui_suspend::restore_tui`). `ShellExecRequest` queued via `pending_shell_exec`, consumed by `run_tui` synchronously. Non-pod views show toast.
+- **Cross-cluster mode**: `:resource --all` fetches resource from ALL connected clusters in parallel. `CommandMode` parses `--all` flag. CLUSTER column prepended to table. Objects tagged with `scalex.io/cluster` label during fetch. `cross_cluster_mode: bool` on App controls accumulation vs replacement of fetch results. `pending_cross_cluster_fetches: Vec<DynamicFetchRequest>` queues one request per cluster.
 
 ## Key Patterns
 

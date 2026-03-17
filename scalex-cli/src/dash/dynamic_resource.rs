@@ -73,6 +73,8 @@ pub enum ColumnExtractor {
     Restarts,
     /// Container ready count (for pods)
     ContainerReady,
+    /// Cluster name (for cross-cluster mode, from scalex.io/cluster label)
+    ClusterLabel,
 }
 
 /// Holds the fetched data for a dynamic resource view.
@@ -284,6 +286,13 @@ fn extract_column_value(obj: &DynamicObject, extractor: &ColumnExtractor) -> Str
                 })
                 .unwrap_or_else(|| "0/0".into())
         }
+        ColumnExtractor::ClusterLabel => obj
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get("scalex.io/cluster"))
+            .cloned()
+            .unwrap_or_default(),
     }
 }
 
