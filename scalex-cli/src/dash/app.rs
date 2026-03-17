@@ -120,6 +120,10 @@ pub struct FetchResult {
     pub latency_ms: u64,
     /// Generation counter to detect stale results
     pub generation: u64,
+    /// Self RSS measured on the worker thread (avoids blocking main thread)
+    pub self_rss_mb: Option<f64>,
+    /// Infrastructure snapshot loaded on worker thread (None = skip update)
+    pub infra: Option<InfraSnapshot>,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +238,10 @@ pub struct App {
     /// Dirty flag — when false, terminal.draw() is skipped to avoid unnecessary renders.
     /// Set true by: keyboard events, fetch results, discovery events, spinner ticks.
     pub needs_redraw: bool,
+
+    /// Pre-computed visible tree indices for the current frame. Populated before
+    /// `terminal.draw()` in `run_tui` so the render path can borrow without cloning.
+    pub render_visible_indices: Vec<usize>,
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -348,6 +356,7 @@ impl App {
             cached_visible_len: None,
             cached_visible_indices: None,
             needs_redraw: true,
+            render_visible_indices: Vec::new(),
         }
     }
 
@@ -441,6 +450,7 @@ impl App {
             cached_visible_len: None,
             cached_visible_indices: None,
             needs_redraw: true,
+            render_visible_indices: Vec::new(),
         }
     }
 
@@ -1121,7 +1131,8 @@ impl App {
     }
 
     /// Compute visible tree indices. Returns cached value if available.
-    /// Works with `&self` for render paths — cache is populated by `&mut self` callers.
+    /// Used by tests; render path uses `render_visible_indices` instead (pre-computed before draw).
+    #[allow(dead_code)]
     pub fn visible_tree_indices(&self) -> Vec<usize> {
         if let Some(ref cached) = self.cached_visible_indices {
             return cached.clone();
@@ -1251,25 +1262,24 @@ impl App {
 
     /// Populate namespace children for expanded clusters from snapshot data.
     /// Detects namespace list changes and re-populates if needed.
+    /// Uses index-based iteration to avoid cloning all snapshot data.
     pub fn sync_tree_from_snapshots(&mut self) {
-        // Collect snapshot data first to avoid borrow conflict
-        let snapshot_data: Vec<(String, Vec<String>)> = self
-            .snapshots
-            .iter()
-            .map(|s| (s.name.clone(), s.namespaces.clone()))
-            .collect();
+        // Index-based loop avoids cloning snapshot_data: only clone the name for tree lookup,
+        // and borrow namespaces via index after the mutable tree operations.
+        for si in 0..self.snapshots.len() {
+            let snap_name = self.snapshots[si].name.clone(); // small string clone for tree lookup
+            let ns_count = self.snapshots[si].namespaces.len();
 
-        for (snap_name, snap_namespaces) in &snapshot_data {
             // Find the cluster node
             let cluster_idx = self
                 .tree
                 .iter()
-                .position(|n| matches!(&n.node_type, NodeType::Cluster(name) if name == snap_name));
+                .position(|n| matches!(&n.node_type, NodeType::Cluster(name) if name == &snap_name));
 
             if let Some(idx) = cluster_idx {
                 // Always update namespace count label (used by render_sidebar)
                 self.tree[idx].ns_count_label =
-                    Some(format!("{} ({}ns)", snap_name, snap_namespaces.len()));
+                    Some(format!("{} ({}ns)", snap_name, ns_count));
 
                 if !self.tree[idx].expanded {
                     continue;
@@ -1277,20 +1287,33 @@ impl App {
 
                 // Check if namespace list changed (stale sidebar refresh)
                 if self.tree[idx].children_loaded {
-                    let existing_ns: Vec<String> = self.tree[(idx + 1)..]
+                    let parent_depth = self.tree[idx].depth;
+                    let mut changed = false;
+                    // Compare without allocating a Vec — iterate both lists in lockstep
+                    let existing_iter = self.tree[(idx + 1)..]
                         .iter()
-                        .take_while(|n| n.depth > self.tree[idx].depth)
+                        .take_while(|n| n.depth > parent_depth)
                         .filter_map(|n| match &n.node_type {
                             NodeType::Namespace { namespace, .. }
                                 if namespace != "All Namespaces" =>
                             {
-                                Some(namespace.clone())
+                                Some(namespace.as_str())
                             }
                             _ => None,
-                        })
-                        .collect();
+                        });
+                    let snap_ns = &self.snapshots[si].namespaces;
+                    let mut snap_iter = snap_ns.iter().map(|s| s.as_str());
+                    for existing in existing_iter {
+                        match snap_iter.next() {
+                            Some(sn) if sn == existing => {}
+                            _ => { changed = true; break; }
+                        }
+                    }
+                    if !changed && snap_iter.next().is_some() {
+                        changed = true; // snapshot has more namespaces
+                    }
 
-                    if existing_ns == *snap_namespaces {
+                    if !changed {
                         continue; // namespaces unchanged, skip
                     }
                     // Namespaces changed — remove old children and re-populate
@@ -1299,27 +1322,28 @@ impl App {
                 }
 
                 let depth = self.tree[idx].depth + 1;
-                let cluster_name = snap_name.clone();
+                // Clone namespaces from snapshot for tree node construction
+                let snap_namespaces = self.snapshots[si].namespaces.clone();
 
                 let mut children = vec![TreeNode {
                     label: "All Namespaces".to_string(),
                     depth,
                     expanded: false,
                     node_type: NodeType::Namespace {
-                        cluster: cluster_name.clone(),
+                        cluster: snap_name.clone(),
                         namespace: "All Namespaces".to_string(),
                     },
                     children_loaded: false,
                     ns_count_label: None,
                 }];
 
-                for ns in snap_namespaces {
+                for ns in &snap_namespaces {
                     children.push(TreeNode {
                         label: ns.clone(),
                         depth,
                         expanded: false,
                         node_type: NodeType::Namespace {
-                            cluster: cluster_name.clone(),
+                            cluster: snap_name.clone(),
                             namespace: ns.clone(),
                         },
                         children_loaded: false,
@@ -1556,6 +1580,7 @@ mod tests {
             cached_visible_len: None,
             cached_visible_indices: None,
             needs_redraw: true,
+            render_visible_indices: Vec::new(),
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -3656,6 +3681,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 }
             }
 
+            // Pre-compute visible indices once for the render pass (avoids Vec clone per caller)
+            app.render_visible_indices = app.visible_tree_indices_cached();
             terminal.draw(|f| ui::render(f, &app))?;
             app.needs_redraw = false;
         }
@@ -3788,7 +3815,21 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             app.fetched_resources.insert(ActiveResource::ConfigMaps);
             app.fetched_resources.insert(ActiveResource::Nodes);
             app.sync_tree_from_snapshots();
-            app.self_rss_mb = read_self_rss_mb();
+            app.self_rss_mb = result.self_rss_mb;
+            // Apply infra data loaded on worker thread
+            if let Some(infra_snap) = result.infra {
+                app.infra = infra_snap;
+                // Re-sync infra tree if header is expanded
+                if let Some(idx) = app.tree.iter().position(|n| matches!(&n.node_type, NodeType::InfraHeader)) {
+                    if app.tree[idx].children_loaded {
+                        app.remove_children(idx);
+                        app.tree[idx].children_loaded = false;
+                    }
+                    if app.tree[idx].expanded {
+                        app.sync_infra_tree();
+                    }
+                }
+            }
             app.is_fetching = false;
             app.fetch_started_at = None;
             app.fetch_timed_out = false;
@@ -3846,10 +3887,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
         let is_timer_refresh = last_refresh.elapsed() >= refresh_interval;
         let wants_refresh = app.needs_refresh || is_timer_refresh;
         if !app.is_fetching && !app.clusters.is_empty() && wants_refresh {
-            // Reload infra data only on manual refresh (r key) or timer, not view/namespace switch
-            if !app.refresh_selected_only || is_timer_refresh {
-                app.load_infra();
-            }
+            // Infra reload flag: only on manual refresh (r key) or timer, not view/namespace switch
+            let should_load_infra = !app.refresh_selected_only || is_timer_refresh;
             let selected_only = app.refresh_selected_only && !is_timer_refresh;
             app.needs_refresh = false;
             app.refresh_selected_only = false;
@@ -3888,6 +3927,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             // so is_fetching gets cleared (prevents 30s stall on task panic)
             let fetch_handle = tokio::spawn(async move {
                 let start = Instant::now();
+                // Load infra data on worker thread if requested (avoids blocking main event loop)
+                let infra = if should_load_infra {
+                    Some(infra::load_sdi_state(std::path::Path::new("_generated/sdi")))
+                } else {
+                    None
+                };
                 let mut handles = Vec::new();
                 for (name, client, active_res) in &cluster_refs {
                     let client = client.clone();
@@ -3920,11 +3965,15 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     }
                 }
                 let latency_ms = start.elapsed().as_millis() as u64;
+                // Read self RSS on worker thread (avoids blocking main event loop)
+                let self_rss_mb = read_self_rss_mb();
                 let _ = tx
                     .send(FetchResult {
                         snapshots,
                         latency_ms,
                         generation,
+                        self_rss_mb,
+                        infra,
                     })
                     .await;
             });
@@ -3937,6 +3986,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                             snapshots: Vec::new(),
                             latency_ms: 0,
                             generation,
+                            self_rss_mb: None,
+                            infra: None,
                         })
                         .await;
                 }
