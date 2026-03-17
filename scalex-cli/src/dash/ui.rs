@@ -509,14 +509,10 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, para_area);
 
     // Scroll indicator on dedicated line (never overlaps tree content)
+    // Uses pre-computed string from app.sync_sidebar_indicator() — no per-frame format!()
     if let Some(ind_area) = indicator_area {
-        let indicator = format!(
-            " {}/{} ",
-            (app.tree_cursor + 1).min(visible_len),
-            visible_len,
-        );
         let indicator_widget = Paragraph::new(Span::styled(
-            indicator,
+            app.sidebar_indicator.as_str(),
             Style::default().fg(theme::FG4).bg(theme::BG_HARD),
         ));
         f.render_widget(indicator_widget, ind_area);
@@ -537,18 +533,19 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
 
     // Resource shortcut indicator: p d s c n with active one highlighted
     // Static strings avoid per-frame format!() allocation for tab labels
-    const SHORTCUTS_ACTIVE: [&str; 5] = ["[p]Pods ", "[d]Deploy ", "[s]Svc ", "[c]CM ", "[n]Nodes "];
-    const SHORTCUTS_INACTIVE: [&str; 5] = ["p:Pods ", "d:Deploy ", "s:Svc ", "c:CM ", "n:Nodes "];
-    const SHORTCUT_VIEWS: [ResourceView; 5] = [
+    const SHORTCUTS_ACTIVE: [&str; 6] = ["[p]Pods ", "[d]Deploy ", "[s]Svc ", "[c]CM ", "[n]Nodes ", "[e]Events "];
+    const SHORTCUTS_INACTIVE: [&str; 6] = ["p:Pods ", "d:Deploy ", "s:Svc ", "c:CM ", "n:Nodes ", "e:Events "];
+    const SHORTCUT_VIEWS: [ResourceView; 6] = [
         ResourceView::Pods,
         ResourceView::Deployments,
         ResourceView::Services,
         ResourceView::ConfigMaps,
         ResourceView::Nodes,
+        ResourceView::Events,
     ];
     let mut title_spans: Vec<Span> = vec![Span::styled(" ", Style::default().fg(theme::FG))];
     if app.active_tab == 0 {
-        for i in 0..5 {
+        for i in 0..6 {
             if SHORTCUT_VIEWS[i] == app.resource_view {
                 title_spans.push(Span::styled(
                     SHORTCUTS_ACTIVE[i],
@@ -572,22 +569,13 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    if app.active_tab == 0 && app.is_view_stale(app.resource_view) {
+    // [cached] indicator removed — is_view_stale always returns false with full prefetch.
+    // Row count indicator — uses pre-computed string from app.sync_row_count_indicator()
+    if app.active_tab == 0 && !app.row_count_indicator.is_empty() {
         title_spans.push(Span::styled(
-            "[cached] ",
-            Style::default().fg(theme::BRIGHT_ORANGE),
+            app.row_count_indicator.as_str(),
+            Style::default().fg(theme::FG3),
         ));
-    }
-    // Row count indicator
-    if app.active_tab == 0 {
-        let row_count = app.current_row_count_readonly();
-        if row_count > 0 {
-            let pos = app.table_cursor.min(row_count.saturating_sub(1)) + 1;
-            title_spans.push(Span::styled(
-                format!("{}/{} ", pos, row_count),
-                Style::default().fg(theme::FG3),
-            ));
-        }
     }
     // Show active search filter indicator (after search submitted with Enter)
     if !app.search_active {
@@ -697,23 +685,46 @@ fn render_tab_preamble<'a>(
         }
     }
 
-    let spinner_chars = ['|', '/', '-', '\\'];
-    let spinner = spinner_chars[(app.tick_count as usize) % 4];
-    let msg = if !app.discover_complete {
-        format!("  {} Discovering clusters...", spinner)
+    // Static spinner strings — avoids per-frame format!() allocation
+    const PREAMBLE_DISCOVER: [&str; 4] = [
+        "  | Discovering clusters...",
+        "  / Discovering clusters...",
+        "  - Discovering clusters...",
+        "  \\ Discovering clusters...",
+    ];
+    const PREAMBLE_LOADING: [&str; 4] = [
+        "  | Loading cluster data...",
+        "  / Loading cluster data...",
+        "  - Loading cluster data...",
+        "  \\ Loading cluster data...",
+    ];
+    const PREAMBLE_GENERIC: [&str; 4] = [
+        "  | Loading...",
+        "  / Loading...",
+        "  - Loading...",
+        "  \\ Loading...",
+    ];
+    const PREAMBLE_WAITING: [&str; 4] = [
+        "  | Waiting for data...",
+        "  / Waiting for data...",
+        "  - Waiting for data...",
+        "  \\ Waiting for data...",
+    ];
+    let spin_idx = (app.tick_count as usize) % 4;
+    let msg: &str = if !app.discover_complete {
+        PREAMBLE_DISCOVER[spin_idx]
     } else if app.snapshots.is_empty() && app.is_fetching {
-        format!("  {} Loading cluster data...", spinner)
+        PREAMBLE_LOADING[spin_idx]
     } else if app.all_clusters_failed() {
         "  All clusters failed to connect. Check sidebar for details. Press 'r' to retry."
-            .to_string()
     } else if app.snapshots.is_empty() && app.clusters.is_empty() {
-        "  No clusters found. Run 'scalex cluster init' first.".to_string()
+        "  No clusters found. Run 'scalex cluster init' first."
     } else if app.is_fetching || (app.selected_cluster.is_some() && app.needs_refresh) {
-        format!("  {} Loading...", spinner)
+        PREAMBLE_GENERIC[spin_idx]
     } else if app.selected_cluster.is_some() {
-        format!("  {} Waiting for data...", spinner)
+        PREAMBLE_WAITING[spin_idx]
     } else {
-        "  Select a cluster and press Enter".to_string()
+        "  Select a cluster and press Enter"
     };
     let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
     f.render_widget(paragraph, area);
@@ -770,11 +781,25 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
         ResourceView::Services => snapshot.services.is_empty(),
         ResourceView::ConfigMaps => snapshot.configmaps.is_empty(),
         ResourceView::Nodes => snapshot.nodes.is_empty(),
+        ResourceView::Events => snapshot.events.is_empty(),
     };
     if is_empty && !app.fetched_resources.contains(&active) {
-        let spinner_chars = ['|', '/', '-', '\\'];
-        let spinner = spinner_chars[(app.tick_count as usize) % 4];
-        let msg = format!("  {} Loading {}...", spinner, app.resource_view.label());
+        // Static per-resource loading spinners — avoids per-frame format!()
+        const LOAD_PODS: [&str; 4] = ["  | Loading Pods...", "  / Loading Pods...", "  - Loading Pods...", "  \\ Loading Pods..."];
+        const LOAD_DEPLOY: [&str; 4] = ["  | Loading Deployments...", "  / Loading Deployments...", "  - Loading Deployments...", "  \\ Loading Deployments..."];
+        const LOAD_SVC: [&str; 4] = ["  | Loading Services...", "  / Loading Services...", "  - Loading Services...", "  \\ Loading Services..."];
+        const LOAD_CM: [&str; 4] = ["  | Loading ConfigMaps...", "  / Loading ConfigMaps...", "  - Loading ConfigMaps...", "  \\ Loading ConfigMaps..."];
+        const LOAD_NODES: [&str; 4] = ["  | Loading Nodes...", "  / Loading Nodes...", "  - Loading Nodes...", "  \\ Loading Nodes..."];
+        const LOAD_EVENTS: [&str; 4] = ["  | Loading Events...", "  / Loading Events...", "  - Loading Events...", "  \\ Loading Events..."];
+        let spin_idx = (app.tick_count as usize) % 4;
+        let msg = match app.resource_view {
+            ResourceView::Pods => LOAD_PODS[spin_idx],
+            ResourceView::Deployments => LOAD_DEPLOY[spin_idx],
+            ResourceView::Services => LOAD_SVC[spin_idx],
+            ResourceView::ConfigMaps => LOAD_CM[spin_idx],
+            ResourceView::Nodes => LOAD_NODES[spin_idx],
+            ResourceView::Events => LOAD_EVENTS[spin_idx],
+        };
         let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
         f.render_widget(paragraph, content_area);
         return;
@@ -790,6 +815,7 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
         ResourceView::ConfigMaps => {
             render_configmaps_table(f, app, &snapshot.configmaps, content_area)
         }
+        ResourceView::Events => render_events_table(f, app, &snapshot.events, content_area),
     }
 }
 
@@ -811,9 +837,9 @@ fn render_resource_table<'a, T, F, R>(
     F: Fn(&'a T) -> bool,
     R: Fn(usize, &'a T, bool) -> Row<'a>,
 {
-    // Count filtered items without collecting into intermediate Vec.
-    // For large resource lists this avoids O(n) Vec<&T> allocation.
-    let filtered_count = items.iter().filter(|item| filter_fn(item)).count();
+    // Use cached row count from App when available; fall back to compute.
+    // This avoids the previous double-iteration (count + render).
+    let filtered_count = app.current_row_count_readonly();
 
     if filtered_count == 0 {
         let msg = if app.search_query.as_ref().is_some_and(|q| !q.is_empty()) {
@@ -836,7 +862,7 @@ fn render_resource_table<'a, T, F, R>(
         .table_scroll_offset
         .min(filtered_count.saturating_sub(viewport_rows.max(1)));
     // Build Row objects only for viewport-visible items (skip+take on filtered iterator).
-    // Avoids constructing Row for off-screen items.
+    // Single-pass: filter + enumerate + skip/take + row construction.
     let rows: Vec<Row> = items
         .iter()
         .filter(|item| filter_fn(item))
@@ -1145,6 +1171,58 @@ fn render_configmaps_table(
     );
 }
 
+fn render_events_table(f: &mut Frame, app: &App, events: &[data::EventInfo], area: Rect) {
+    render_resource_table(
+        f,
+        app,
+        events,
+        area,
+        resource_header(vec![
+            "NAMESPACE",
+            "LAST SEEN",
+            "TYPE",
+            "REASON",
+            "OBJECT",
+            "MESSAGE",
+        ]),
+        &[
+            Constraint::Min(12),    // NAMESPACE
+            Constraint::Length(8),  // LAST SEEN
+            Constraint::Length(8),  // TYPE
+            Constraint::Length(16), // REASON
+            Constraint::Min(20),   // OBJECT
+            Constraint::Min(30),   // MESSAGE
+        ],
+        "No events",
+        |evt| {
+            app.matches_search_with_ns(&evt.reason, &evt.namespace)
+                || app.matches_search(&evt.object)
+                || app.matches_search(&evt.message)
+        },
+        |_i, evt, is_selected| {
+            let base = row_base_style(is_selected);
+            let is_warning = evt.event_type == "Warning";
+            let type_color = if is_warning {
+                theme::BRIGHT_YELLOW
+            } else {
+                theme::FG3
+            };
+            Row::new(vec![
+                Cell::from(evt.namespace.as_str()).style(base),
+                Cell::from(evt.last_seen.as_str()).style(base),
+                Cell::from(evt.event_type.as_str()).style(if is_selected {
+                    base
+                } else {
+                    Style::default().fg(type_color)
+                }),
+                Cell::from(evt.reason.as_str()).style(base),
+                Cell::from(evt.object.as_str()).style(base),
+                Cell::from(evt.message.as_str()).style(base),
+            ])
+        },
+    );
+}
+
 fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
     let snapshot = match render_tab_preamble(f, app, area) {
         Some(s) => s,
@@ -1234,6 +1312,22 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
 const BAR_FILL: &str = "===================="; // 20 chars max
 const BAR_EMPTY: &str = "--------------------"; // 20 chars max
 
+/// Static lookup table for "] XXX% " suffix strings (0-100).
+/// Avoids per-frame format!() allocation in render_usage_bar.
+const PERCENT_SUFFIXES: [&str; 101] = [
+    "]   0% ", "]   1% ", "]   2% ", "]   3% ", "]   4% ", "]   5% ", "]   6% ", "]   7% ", "]   8% ", "]   9% ",
+    "]  10% ", "]  11% ", "]  12% ", "]  13% ", "]  14% ", "]  15% ", "]  16% ", "]  17% ", "]  18% ", "]  19% ",
+    "]  20% ", "]  21% ", "]  22% ", "]  23% ", "]  24% ", "]  25% ", "]  26% ", "]  27% ", "]  28% ", "]  29% ",
+    "]  30% ", "]  31% ", "]  32% ", "]  33% ", "]  34% ", "]  35% ", "]  36% ", "]  37% ", "]  38% ", "]  39% ",
+    "]  40% ", "]  41% ", "]  42% ", "]  43% ", "]  44% ", "]  45% ", "]  46% ", "]  47% ", "]  48% ", "]  49% ",
+    "]  50% ", "]  51% ", "]  52% ", "]  53% ", "]  54% ", "]  55% ", "]  56% ", "]  57% ", "]  58% ", "]  59% ",
+    "]  60% ", "]  61% ", "]  62% ", "]  63% ", "]  64% ", "]  65% ", "]  66% ", "]  67% ", "]  68% ", "]  69% ",
+    "]  70% ", "]  71% ", "]  72% ", "]  73% ", "]  74% ", "]  75% ", "]  76% ", "]  77% ", "]  78% ", "]  79% ",
+    "]  80% ", "]  81% ", "]  82% ", "]  83% ", "]  84% ", "]  85% ", "]  86% ", "]  87% ", "]  88% ", "]  89% ",
+    "]  90% ", "]  91% ", "]  92% ", "]  93% ", "]  94% ", "]  95% ", "]  96% ", "]  97% ", "]  98% ", "]  99% ",
+    "] 100% ",
+];
+
 fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color) -> Vec<Span<'a>> {
     if percent < 0.0 {
         return vec![
@@ -1253,13 +1347,14 @@ fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color
         color
     };
 
+    let pct_idx = (percent.round() as usize).min(100);
     vec![
         Span::styled(label, Style::default().fg(theme::FG4)),
         Span::styled(" [", Style::default().fg(theme::FG4)),
         Span::styled(&BAR_FILL[..filled], Style::default().fg(bar_color)),
         Span::styled(&BAR_EMPTY[..empty], Style::default().fg(theme::FG4)),
         Span::styled(
-            format!("] {:>3.0}% ", percent),
+            PERCENT_SUFFIXES[pct_idx],
             Style::default().fg(theme::FG3),
         ),
     ]
@@ -1481,7 +1576,7 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
                     lines.push(key("j/k", "Scroll table rows"));
                     lines.push(key("PgUp/Dn", "Jump half page"));
                     lines.push(key("Home/End", "Jump to first/last"));
-                    lines.push(key("p d s c n", "Switch resource view"));
+                    lines.push(key("p d s c n e", "Switch resource view"));
                     lines.push(Line::from(vec![
                         Span::styled("            ".to_string(), Style::default().fg(theme::FG4)),
                         Span::styled(
