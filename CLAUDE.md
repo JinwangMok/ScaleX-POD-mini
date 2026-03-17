@@ -107,7 +107,7 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Node VERSION column**: `NodeInfo.kubelet_version` populated from `node.status.nodeInfo.kubeletVersion`. Shown in nodes table after ROLES column and in Top tab after node name. Useful for upgrade planning.
 - **Service EXTERNAL-IP column**: `ServiceInfo.external_ip` populated from `status.loadBalancer.ingress[].ip/hostname`. Shows `<none>` for non-LB services. Column appears between CLUSTER-IP and PORTS.
 - **Alphabetical resource sorting**: Deployments, services, configmaps, and nodes sorted by name after fetch. Pods retain severity-first sorting (CrashLoopBackOff first, then pending, running, completed).
-- **Reduced API timeouts**: `API_CALL_TIMEOUT` reduced from 2s to 1s, `DISCOVER_TIMEOUT` from 3s to 2s. Healthy clusters respond in <200ms; tighter timeouts halve worst-case fetch latency.
+- **Reduced API timeouts**: `API_CALL_TIMEOUT` reduced from 2s to 500ms, `DISCOVER_TIMEOUT` from 3s to 2s. Healthy clusters respond in <200ms; tighter timeouts minimize worst-case fetch latency.
 - **Zero-clone tree index lookups**: `tree_index_at_cursor()` reads from cached visible indices without cloning `Vec<usize>`. `ensure_visible_indices_cached()` populates cache; callers avoid `visible_tree_indices_cached()` clone where possible.
 - **Static sidebar padding**: `render_sidebar` uses static `SPACES` buffer for row padding instead of per-row `" ".repeat(pad)` heap allocation.
 - **Cached row count**: `cached_row_count: Option<usize>` avoids redundant O(n) filter iterations in `move_down`/`page_down`/`jump_end`/`render_center`. Invalidated per event cycle.
@@ -183,6 +183,12 @@ The TUI header is k9s-style and responsive:
 - **CF Tunnel SA token auth**: CF Tunnel cannot proxy mTLS client certs, so `build_client_with_endpoint()` strips kubeconfig CA + client cert and injects a ServiceAccount bearer token. SA `scalex-dash` in `scalex-system` namespace, bound to `view` ClusterRole. Token cached at `_generated/clusters/{name}/dash-token`. Auto-provisioned on first run via SSH through bastion if cached token absent. Module: `sa_provisioner.rs`. To re-provision: delete `dash-token` and relaunch.
 - **k9s attribution**: help overlay (`?` key) footer shows "Inspired by k9s (github.com/derailed/k9s)" in DarkGray.
 - **Cached data persistence**: `render_tab_preamble` returns cached snapshot even when `ConnectionStatus::Failed` — error shown as 1-line red banner via `render_connection_error_banner()`, not full-area replacement. Data stability: once displayed, data stays visible until next fetch result arrives.
+- **Cached header info**: `HeaderInfo` struct (cluster_name, endpoint, k8s_version, config_path) pre-computed via `sync_header_info()` on cluster selection change and discovery events. `render_header` reads cached struct instead of O(n) `clusters.iter().find()` + `display().to_string()` per frame.
+- **Pre-computed status bar self/latency**: `status_bar_self_line` caches `"| self: 42MB | latency: 150ms"` on fetch result arrival. Spinner appended dynamically only when fetching. Eliminates per-frame `format!()` for rss + latency.
+- **Pre-computed top tab node display**: `NodeInfo.top_display` pre-computed during fetch as `"  v1.33.1  CPU: 8/8  MEM: 7.5Gi/7.8Gi"`. `render_top_tab` borrows pre-computed string instead of per-node `format!()` per frame.
+- **Cached center panel title**: `ctx_title_span` pre-computed on cluster/namespace change via `sync_ctx_label()`. `render_center` borrows cached string instead of per-frame `format!("| {} ", ctx_label)`.
+- **Static usage bar labels**: `render_usage_bar` uses static `label` + `" ["` spans instead of `format!("{} [", label)`. Eliminates 2 format allocations per bar per frame.
+- **Headless parallel fetch**: `run_headless` uses `futures::future::join_all` instead of sequential `for handle in handles { handle.await }` for cluster data fetching.
 - **Per-resource fetch tracking**: `fetched_resources: HashSet<ActiveResource>` distinguishes "not yet fetched" (empty vec, not in set) from "fetched but truly empty" (empty vec, in set). Cleared on cluster/namespace change. View switch to unfetched resource shows "Loading {type}..." spinner instead of empty table.
 
 ## Key Patterns
