@@ -358,9 +358,11 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             // Check if this node is the actively selected context (US-005)
             let is_active_selection = match &node.node_type {
                 NodeType::Cluster(name) => {
+                    // Show ● on cluster node when selected with no namespace filter,
+                    // even when expanded (children may not yet be loaded).
+                    // When a specific namespace is selected, ● moves to the namespace node.
                     app.selected_cluster.as_ref() == Some(name)
                         && app.selected_namespace.is_none()
-                        && !node.expanded
                 }
                 NodeType::Namespace { cluster, namespace } => {
                     app.selected_cluster.as_ref() == Some(cluster)
@@ -535,11 +537,7 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
         theme::BG3
     };
 
-    let ctx_label = match (&app.selected_cluster, &app.selected_namespace) {
-        (Some(c), Some(ns)) => format!("{} > {}", c, ns),
-        (Some(c), None) => format!("{} > All Namespaces", c),
-        _ => "No cluster selected".to_string(),
-    };
+    let ctx_label = &app.ctx_label;
 
     // Resource shortcut indicator: p d s c n with active one highlighted
     let resource_shortcuts = [
@@ -988,16 +986,7 @@ fn render_deployments_table(
             let ready_style = if is_selected {
                 base
             } else {
-                // Parse "ready/desired" from dep.ready (e.g., "1/3")
-                let parts: Vec<&str> = dep.ready.split('/').collect();
-                let (ready, desired) = if parts.len() == 2 {
-                    (
-                        parts[0].trim().parse::<i32>().unwrap_or(0),
-                        parts[1].trim().parse::<i32>().unwrap_or(0),
-                    )
-                } else {
-                    (0, 0)
-                };
+                let (ready, desired) = (dep.ready_count, dep.desired_count);
                 let color = if desired == 0 {
                     theme::FG4 // scaled-to-zero: neutral/dim, not green
                 } else if ready >= desired {
@@ -1236,6 +1225,10 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
 // ---------------------------------------------------------------------------
 
 /// Render a compact utilization bar: `CPU [========--] 82%` or `CPU N/A`
+/// Static fill/empty bar strings — indexed by length to avoid per-frame String::repeat() allocation.
+const BAR_FILL: &str = "===================="; // 20 chars max
+const BAR_EMPTY: &str = "--------------------"; // 20 chars max
+
 fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color) -> Vec<Span<'a>> {
     if percent < 0.0 {
         return vec![
@@ -1243,6 +1236,7 @@ fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color
             Span::styled("N/A ", Style::default().fg(theme::FG4)),
         ];
     }
+    let width = width.min(BAR_FILL.len());
     let filled = ((percent / 100.0) * width as f64).round() as usize;
     let filled = filled.min(width);
     let empty = width - filled;
@@ -1256,8 +1250,8 @@ fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color
 
     vec![
         Span::styled(format!("{} [", label), Style::default().fg(theme::FG4)),
-        Span::styled("=".repeat(filled), Style::default().fg(bar_color)),
-        Span::styled("-".repeat(empty), Style::default().fg(theme::FG4)),
+        Span::styled(&BAR_FILL[..filled], Style::default().fg(bar_color)),
+        Span::styled(&BAR_EMPTY[..empty], Style::default().fg(theme::FG4)),
         Span::styled(
             format!("] {:>3.0}% ", percent),
             Style::default().fg(theme::FG3),

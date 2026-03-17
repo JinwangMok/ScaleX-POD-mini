@@ -85,6 +85,10 @@ pub struct DeploymentInfo {
     pub name: String,
     pub namespace: String,
     pub ready: String,
+    /// Ready replica count for render-path color coding (avoids parsing `ready` string per frame)
+    pub ready_count: i32,
+    /// Desired replica count for render-path color coding
+    pub desired_count: i32,
     pub up_to_date: i32,
     /// Pre-computed up_to_date.to_string() to avoid per-frame allocation
     pub up_to_date_display: String,
@@ -351,6 +355,8 @@ pub async fn fetch_deployments(
                 name: meta.name.clone().unwrap_or_default(),
                 namespace: meta.namespace.clone().unwrap_or_default(),
                 ready: format!("{}/{}", ready, replicas),
+                ready_count: ready,
+                desired_count: replicas,
                 up_to_date_display: up_to_date.to_string(),
                 up_to_date,
                 available_display: available.to_string(),

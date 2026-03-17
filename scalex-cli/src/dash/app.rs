@@ -242,6 +242,10 @@ pub struct App {
     /// Pre-computed visible tree indices for the current frame. Populated before
     /// `terminal.draw()` in `run_tui` so the render path can borrow without cloning.
     pub render_visible_indices: Vec<usize>,
+
+    /// Pre-computed context label (e.g., "tower > kube-system"). Updated on cluster/namespace change.
+    /// Eliminates per-frame `format!()` in render_center.
+    pub ctx_label: String,
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -357,6 +361,7 @@ impl App {
             cached_visible_indices: None,
             needs_redraw: true,
             render_visible_indices: Vec::new(),
+            ctx_label: "No cluster selected".to_string(),
         }
     }
 
@@ -451,6 +456,7 @@ impl App {
             cached_visible_indices: None,
             needs_redraw: true,
             render_visible_indices: Vec::new(),
+            ctx_label: "No cluster selected".to_string(),
         }
     }
 
@@ -701,6 +707,15 @@ impl App {
         }
         // Sync lowercased search cache once per event (avoids per-item to_lowercase on query)
         self.sync_search_lower();
+    }
+
+    /// Sync the context label cache. Called when selected_cluster or selected_namespace changes.
+    pub fn sync_ctx_label(&mut self) {
+        self.ctx_label = match (&self.selected_cluster, &self.selected_namespace) {
+            (Some(c), Some(ns)) => format!("{} > {}", c, ns),
+            (Some(c), None) => format!("{} > All Namespaces", c),
+            _ => "No cluster selected".to_string(),
+        };
     }
 
     /// Sync the pre-lowercased search query cache. Called once per event cycle.
@@ -989,6 +1004,7 @@ impl App {
                     self.fetch_generation += 1;
                     self.is_fetching = false;
                     self.fetched_resources.clear();
+                    self.sync_ctx_label();
                     // Immediately populate tree from cached snapshots
                     self.sync_tree_from_snapshots();
                 }
@@ -1004,6 +1020,7 @@ impl App {
                 self.search_query_lower = None;
                 self.table_cursor = 0;
                 self.table_scroll_offset = 0;
+                self.sync_ctx_label();
                 self.needs_refresh = true;
                 self.refresh_selected_only = true;
                 self.fetch_generation += 1;
@@ -1581,6 +1598,7 @@ mod tests {
             cached_visible_indices: None,
             needs_redraw: true,
             render_visible_indices: Vec::new(),
+            ctx_label: "No cluster selected".to_string(),
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -3731,6 +3749,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     // Auto-select first connected cluster if none selected
                     if app.selected_cluster.is_none() {
                         app.selected_cluster = Some(name.clone());
+                        app.sync_ctx_label();
                         // Expand the cluster node in sidebar
                         if let Some(idx) = app.tree.iter().position(
                             |n| matches!(&n.node_type, NodeType::Cluster(c) if c == &name),
