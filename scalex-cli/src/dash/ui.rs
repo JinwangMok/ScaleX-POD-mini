@@ -1026,6 +1026,7 @@ fn render_services_table(
             "NAMESPACE",
             "TYPE",
             "CLUSTER-IP",
+            "EXTERNAL-IP",
             "PORTS",
             "AGE",
         ]),
@@ -1033,6 +1034,7 @@ fn render_services_table(
             Constraint::Min(16),
             Constraint::Min(10),
             Constraint::Length(12),
+            Constraint::Length(16),
             Constraint::Length(16),
             Constraint::Min(12),
             Constraint::Length(6),
@@ -1046,6 +1048,7 @@ fn render_services_table(
                 Cell::from(svc.namespace.as_str()).style(base),
                 Cell::from(svc.svc_type.as_str()).style(base),
                 Cell::from(svc.cluster_ip.as_str()).style(base),
+                Cell::from(svc.external_ip.as_str()).style(base),
                 Cell::from(svc.ports.as_str()).style(base),
                 Cell::from(svc.age.as_str()).style(base),
             ])
@@ -1059,11 +1062,12 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
         app,
         nodes,
         area,
-        resource_header(vec!["NAME", "STATUS", "ROLES", "CPU", "MEMORY", "AGE"]),
+        resource_header(vec!["NAME", "STATUS", "ROLES", "VERSION", "CPU", "MEMORY", "AGE"]),
         &[
             Constraint::Min(16),
             Constraint::Length(10),
-            Constraint::Min(12),
+            Constraint::Min(10),
+            Constraint::Length(10),
             Constraint::Min(10),
             Constraint::Min(14),
             Constraint::Length(6),
@@ -1078,6 +1082,7 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                     Cell::from(node.name.as_str()).style(base),
                     Cell::from(node.status.as_str()).style(base),
                     Cell::from(node.roles_display.as_str()).style(base),
+                    Cell::from(node.kubelet_version.as_str()).style(base),
                     Cell::from(node.cpu_display.as_str()).style(base),
                     Cell::from(node.mem_display.as_str()).style(base),
                     Cell::from(node.age.as_str()).style(base),
@@ -1094,6 +1099,7 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                     Cell::from(node.name.as_str()).style(Style::default().fg(theme::FG)),
                     Cell::from(node.status.as_str()).style(Style::default().fg(status_color)),
                     Cell::from(node.roles_display.as_str()).style(Style::default().fg(theme::FG3)),
+                    Cell::from(node.kubelet_version.as_str()).style(Style::default().fg(theme::FG4)),
                     Cell::from(node.cpu_display.as_str()).style(Style::default().fg(theme::BRIGHT_AQUA)),
                     Cell::from(node.mem_display.as_str()).style(Style::default().fg(theme::BRIGHT_PURPLE)),
                     Cell::from(node.age.as_str()).style(Style::default().fg(theme::FG3)),
@@ -1191,8 +1197,8 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(
                 format!(
-                    "  CPU: {}  MEM: {}",
-                    node.cpu_display, node.mem_display
+                    "  {}  CPU: {}  MEM: {}",
+                    node.kubelet_version, node.cpu_display, node.mem_display
                 ),
                 Style::default().fg(theme::FG3),
             ),

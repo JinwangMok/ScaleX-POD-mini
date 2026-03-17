@@ -104,6 +104,9 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Active selection marker on expanded clusters**: `is_active_selection` for `NodeType::Cluster` no longer requires `!node.expanded`. Marker `●` stays visible on the cluster node when selected with no namespace filter, even when the cluster tree is expanded.
 - **Static usage bar strings**: `render_usage_bar` indexes into static `BAR_FILL`/`BAR_EMPTY` `&str` constants instead of `"=".repeat(filled)` / `"-".repeat(empty)`. Eliminates 2 heap allocations per cluster per frame in the status bar.
 - **Cached context label**: `App.ctx_label` pre-computed on cluster/namespace change via `sync_ctx_label()`. `render_center` borrows `&app.ctx_label` instead of `format!()` per frame.
+- **Node VERSION column**: `NodeInfo.kubelet_version` populated from `node.status.nodeInfo.kubeletVersion`. Shown in nodes table after ROLES column and in Top tab after node name. Useful for upgrade planning.
+- **Service EXTERNAL-IP column**: `ServiceInfo.external_ip` populated from `status.loadBalancer.ingress[].ip/hostname`. Shows `<none>` for non-LB services. Column appears between CLUSTER-IP and PORTS.
+- **Alphabetical resource sorting**: Deployments, services, configmaps, and nodes sorted by name after fetch. Pods retain severity-first sorting (CrashLoopBackOff first, then pending, running, completed).
 
 ### Header Layout
 
