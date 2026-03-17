@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Node, Pod, Service};
+use k8s_openapi::api::core::v1::{ConfigMap, Event, Namespace, Node, Pod, Service};
 use kube::api::ListParams;
 use kube::{Api, Client};
 use serde::Serialize;
@@ -16,6 +16,7 @@ pub enum ActiveResource {
     Services,
     ConfigMaps,
     Nodes,
+    Events,
 }
 
 /// Per-API-call timeout to prevent slow calls from blocking the entire fetch.
@@ -37,6 +38,7 @@ pub struct ClusterSnapshot {
     pub deployments: Vec<DeploymentInfo>,
     pub services: Vec<ServiceInfo>,
     pub configmaps: Vec<ConfigMapInfo>,
+    pub events: Vec<EventInfo>,
     pub resource_usage: ResourceUsage,
 }
 
@@ -123,6 +125,27 @@ pub struct ConfigMapInfo {
     pub data_keys_count: usize,
     /// Pre-computed data_keys_count.to_string() to avoid per-frame allocation
     pub data_keys_display: String,
+    pub age: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EventInfo {
+    pub namespace: String,
+    pub name: String,
+    /// Event type: "Normal" or "Warning"
+    pub event_type: String,
+    /// Reason string (e.g., "Pulled", "Scheduled", "FailedScheduling")
+    pub reason: String,
+    /// Involved object kind + name (e.g., "Pod/nginx-abc123")
+    pub object: String,
+    /// Human-readable event message
+    pub message: String,
+    /// Event count (how many times this event occurred)
+    pub count: i32,
+    /// Pre-computed count.to_string()
+    pub count_display: String,
+    /// Formatted age since last occurrence
+    pub last_seen: String,
     pub age: String,
 }
 
@@ -502,6 +525,80 @@ pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<
         .collect())
 }
 
+pub async fn fetch_events(client: &Client, namespace: Option<&str>) -> Result<Vec<EventInfo>> {
+    let api: Api<Event> = match namespace {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let event_list = tokio::time::timeout(API_CALL_TIMEOUT, api.list(&ListParams::default()))
+        .await
+        .map_err(|_| anyhow::anyhow!("event list timeout"))??;
+    let now = Utc::now();
+
+    let mut events: Vec<EventInfo> = event_list
+        .items
+        .iter()
+        .map(|evt| {
+            let meta = &evt.metadata;
+
+            let event_type = evt.type_.clone().unwrap_or_else(|| "Normal".into());
+            let reason = evt.reason.clone().unwrap_or_default();
+            let message = evt.message.clone().unwrap_or_default();
+            let count = evt.count.unwrap_or(1);
+
+            // Involved object: "Kind/name"
+            let object = {
+                let obj = &evt.involved_object;
+                let kind = obj.kind.as_deref().unwrap_or("");
+                let name = obj.name.as_deref().unwrap_or("");
+                if kind.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{}/{}", kind, name)
+                }
+            };
+
+            // Last seen: use last_timestamp, fall back to event_time, then creation_timestamp
+            let last_ts = evt
+                .last_timestamp
+                .as_ref()
+                .map(|t| t.0)
+                .or_else(|| evt.event_time.as_ref().map(|t| t.0))
+                .or_else(|| meta.creation_timestamp.as_ref().map(|t| t.0));
+
+            let last_seen = last_ts
+                .map(|ts| format_age(now, ts))
+                .unwrap_or_else(|| "<unknown>".into());
+
+            let age = meta
+                .creation_timestamp
+                .as_ref()
+                .map(|ts| format_age(now, ts.0))
+                .unwrap_or_else(|| "<unknown>".into());
+
+            EventInfo {
+                namespace: meta.namespace.clone().unwrap_or_default(),
+                name: meta.name.clone().unwrap_or_default(),
+                event_type,
+                reason,
+                object,
+                message,
+                count,
+                count_display: count.to_string(),
+                last_seen,
+                age,
+            }
+        })
+        .collect();
+
+    // Sort by last_seen ascending so most recent events appear first
+    // (last_seen is a formatted age string — shorter = more recent)
+    // Use reverse sort on the raw timestamp instead for correctness
+    events.sort_by(|a, b| a.last_seen.cmp(&b.last_seen));
+
+    Ok(events)
+}
+
 // ---------------------------------------------------------------------------
 // k9s-style pod sorting by status severity (errors first)
 // ---------------------------------------------------------------------------
@@ -556,10 +653,10 @@ pub async fn fetch_cluster_snapshot(
 ) -> Result<ClusterSnapshot> {
     // Single parallel join for ALL API calls — eliminates sequential latency
     // between the namespaces+nodes group and the resources group.
-    let (namespaces, nodes, pods, deployments, services, configmaps) = match active_resource {
+    let (namespaces, nodes, pods, deployments, services, configmaps, events) = match active_resource {
         None => {
-            // Full fetch: all 6 API calls in one parallel join
-            let (ns, n, p, d, s, c) = tokio::join!(
+            // Full fetch: all 7 API calls in one parallel join
+            let (ns, n, p, d, s, c, ev) = tokio::join!(
                 async { fetch_namespaces(client).await.unwrap_or_default() },
                 async { fetch_nodes(client).await.unwrap_or_default() },
                 async { fetch_pods(client, namespace).await.unwrap_or_default() },
@@ -574,8 +671,9 @@ pub async fn fetch_cluster_snapshot(
                         .await
                         .unwrap_or_default()
                 },
+                async { fetch_events(client, namespace).await.unwrap_or_default() },
             );
-            (ns, n, Some(p), Some(d), Some(s), Some(c))
+            (ns, n, Some(p), Some(d), Some(s), Some(c), Some(ev))
         }
         Some(ActiveResource::Pods) => {
             let (ns, n, p) = tokio::join!(
@@ -583,7 +681,7 @@ pub async fn fetch_cluster_snapshot(
                 async { fetch_nodes(client).await.unwrap_or_default() },
                 async { fetch_pods(client, namespace).await.unwrap_or_default() },
             );
-            (ns, n, Some(p), None, None, None)
+            (ns, n, Some(p), None, None, None, None)
         }
         Some(ActiveResource::Deployments) => {
             let (ns, n, d) = tokio::join!(
@@ -595,7 +693,7 @@ pub async fn fetch_cluster_snapshot(
                         .unwrap_or_default()
                 },
             );
-            (ns, n, None, Some(d), None, None)
+            (ns, n, None, Some(d), None, None, None)
         }
         Some(ActiveResource::Services) => {
             let (ns, n, s) = tokio::join!(
@@ -603,7 +701,7 @@ pub async fn fetch_cluster_snapshot(
                 async { fetch_nodes(client).await.unwrap_or_default() },
                 async { fetch_services(client, namespace).await.unwrap_or_default() },
             );
-            (ns, n, None, None, Some(s), None)
+            (ns, n, None, None, Some(s), None, None)
         }
         Some(ActiveResource::ConfigMaps) => {
             let (ns, n, c) = tokio::join!(
@@ -615,13 +713,21 @@ pub async fn fetch_cluster_snapshot(
                         .unwrap_or_default()
                 },
             );
-            (ns, n, None, None, None, Some(c))
+            (ns, n, None, None, None, Some(c), None)
+        }
+        Some(ActiveResource::Events) => {
+            let (ns, n, ev) = tokio::join!(
+                async { fetch_namespaces(client).await.unwrap_or_default() },
+                async { fetch_nodes(client).await.unwrap_or_default() },
+                async { fetch_events(client, namespace).await.unwrap_or_default() },
+            );
+            (ns, n, None, None, None, None, Some(ev))
         }
         Some(ActiveResource::Nodes) => {
             // Nodes-only fetch for non-selected clusters: skip namespace API call
             // (namespaces change rarely, preserved by merge logic in run_tui)
             let n = fetch_nodes(client).await.unwrap_or_default();
-            (Vec::new(), n, None, None, None, None)
+            (Vec::new(), n, None, None, None, None, None)
         }
     };
 
@@ -638,6 +744,7 @@ pub async fn fetch_cluster_snapshot(
     services_vec.sort_by(|a, b| a.name.cmp(&b.name));
     let mut configmaps_vec = configmaps.unwrap_or_default();
     configmaps_vec.sort_by(|a, b| a.name.cmp(&b.name));
+    let events_vec = events.unwrap_or_default();
 
     // For health computation, use pods if we have them, otherwise empty
     // (health will be recomputed on next full fetch)
@@ -653,6 +760,7 @@ pub async fn fetch_cluster_snapshot(
         deployments: deployments_vec,
         services: services_vec,
         configmaps: configmaps_vec,
+        events: events_vec,
         resource_usage,
     })
 }
@@ -680,6 +788,9 @@ pub fn filter_snapshot_by_resource(
                 }
                 "configmaps" => {
                     obj["configmaps"] = serde_json::to_value(&s.configmaps).unwrap_or_default();
+                }
+                "events" => {
+                    obj["events"] = serde_json::to_value(&s.events).unwrap_or_default();
                 }
                 _ => {
                     obj["error"] =
