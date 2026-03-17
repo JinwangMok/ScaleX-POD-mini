@@ -185,20 +185,19 @@ pub fn resource_categories(view_label: &str) -> Vec<KeyCategory> {
         KeyCategory::new(
             "Resource Actions",
             vec![
-                KeyEntry::new("Enter/d", "Describe resource (YAML)"),
-                KeyEntry::new("e", "Edit resource (YAML editor)"),
-                KeyEntry::new("Ctrl+d", "Delete resource"),
-                KeyEntry::new("l", "View logs (pods only)"),
-                KeyEntry::new("s", "Shell exec (pods only)"),
-                KeyEntry::new("Shift+f", "Port-forward (svc/pod)"),
+                KeyEntry::new("y", "Describe resource (YAML modal)"),
+                KeyEntry::new("Shift+L", "View logs (pods only)"),
+                KeyEntry::new("Shift+S", "Shell exec (pods only)"),
+                KeyEntry::new("Shift+F", "Port-forward (svc/pod)"),
             ],
         ),
         KeyCategory::new(
             "View Switching",
             vec![
                 KeyEntry::new(":", "Command mode (any resource)"),
+                KeyEntry::new(":res --all", "Cross-cluster view"),
                 KeyEntry::new("/", "Filter by name/namespace"),
-                KeyEntry::new("p d s c n e", "Legacy resource shortcuts"),
+                KeyEntry::new("p d s c n e", "Built-in resource shortcuts"),
             ],
         ),
         global_category(),
@@ -709,8 +708,8 @@ mod tests {
             "resource view should have Resource Actions category"
         );
         let entries = &action_cat.unwrap().entries;
-        // describe, edit, delete, logs, exec, port-forward
-        assert!(entries.len() >= 6, "Resource Actions should have ≥6 entries");
+        // describe, logs, shell, port-forward
+        assert!(entries.len() >= 4, "Resource Actions should have ≥4 entries");
     }
 
     #[test]

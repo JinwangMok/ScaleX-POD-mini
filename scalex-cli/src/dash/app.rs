@@ -8,6 +8,7 @@ use crate::dash::infra::{self, InfraSnapshot};
 use crate::dash::kube_client::{self, ClusterClient};
 use crate::dash::resource_registry::ResourceRegistry;
 use crate::dash::toast::ToastManager;
+use crate::dash::tui_suspend;
 use crate::dash::ui;
 use anyhow::Result;
 use crossterm::{
@@ -398,6 +399,15 @@ pub struct App {
 
     /// Set to true when leaving dynamic view — signals run_tui to cancel active watcher.
     pub cancel_watcher: bool,
+
+    /// Pending shell exec request — consumed by run_tui to suspend TUI and spawn kubectl.
+    pub pending_shell_exec: Option<crate::dash::tui_suspend::ShellExecRequest>,
+
+    /// Cross-cluster mode active (`:resource --all` command).
+    pub cross_cluster_mode: bool,
+
+    /// Pending cross-cluster fetch requests (one per cluster, consumed by run_tui).
+    pub pending_cross_cluster_fetches: Vec<DynamicFetchRequest>,
 }
 
 /// ASCII case-insensitive substring search without allocation.
@@ -535,6 +545,9 @@ impl App {
             pending_describe_fetch: None,
             describe_generation: 0,
             cancel_watcher: false,
+            pending_shell_exec: None,
+            cross_cluster_mode: false,
+            pending_cross_cluster_fetches: Vec::new(),
         }
     }
 
@@ -651,6 +664,9 @@ impl App {
             pending_describe_fetch: None,
             describe_generation: 0,
             cancel_watcher: false,
+            pending_shell_exec: None,
+            cross_cluster_mode: false,
+            pending_cross_cluster_fetches: Vec::new(),
         }
     }
 
@@ -1088,9 +1104,9 @@ impl App {
                 }
             }
             AppEvent::Shell => {
-                // Shift+S: open shell/exec for selected pod
+                // Shift+S: shell exec into selected pod
                 if self.active_panel == ActivePanel::Center && self.active_tab == 0 {
-                    self.toasts.warn("Shell exec not yet implemented".to_string());
+                    self.open_shell_for_selected();
                 }
             }
             AppEvent::Help => {
@@ -1392,6 +1408,42 @@ impl App {
         }
     }
 
+    /// Open shell exec for the currently selected pod.
+    fn open_shell_for_selected(&mut self) {
+        if self.active_tab != 0 { return; }
+        if self.resource_view != ResourceView::Pods {
+            self.toasts.warn("Shell exec is only available for Pods");
+            return;
+        }
+        let pod_data = {
+            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let search_lower = self.search_query_lower.clone();
+            let filtered: Vec<_> = snapshot.pods.iter()
+                .filter(|p| match &search_lower {
+                    Some(q) => contains_ignore_ascii_case(&p.name, q)
+                        || contains_ignore_ascii_case(&p.namespace, q),
+                    None => true,
+                }).collect();
+            filtered.get(self.table_cursor).map(|pod| {
+                (pod.name.clone(), pod.namespace.clone(), pod.containers.clone())
+            })
+        };
+        if let Some((pod_name, namespace, containers)) = pod_data {
+            let container = if containers.len() > 1 {
+                Some(containers[0].clone())
+            } else {
+                None
+            };
+            let desc = format!("Shell into {}/{}", namespace, pod_name);
+            self.pending_shell_exec = Some(crate::dash::tui_suspend::ShellExecRequest {
+                pod_name,
+                namespace,
+                container,
+                description: desc,
+            });
+        }
+    }
+
     fn handle_command_submit(&mut self) {
         if let Some(cmd) = self.command_mode.take_submitted() {
             let input = cmd.trim().to_ascii_lowercase();
@@ -1407,9 +1459,16 @@ impl App {
                 }
                 _ => {}
             }
-            if let Some(entry) = self.resource_registry.lookup(&input).cloned() {
+            // Parse --all flag for cross-cluster mode
+            let (resource_part, all_clusters) = if input.contains("--all") {
+                (input.replace("--all", "").trim().to_string(), true)
+            } else {
+                (input.clone(), false)
+            };
+            let lookup_input = if all_clusters { &resource_part } else { &input };
+            if let Some(entry) = self.resource_registry.lookup(lookup_input).cloned() {
                 let ar = entry.to_kube_api_resource();
-                let resolved = ResolvedResource {
+                let mut resolved = ResolvedResource {
                     api_resource: ar,
                     namespaced: entry.namespaced,
                     display_name: entry.kind.clone(),
@@ -1419,24 +1478,52 @@ impl App {
                         entry.namespaced,
                     ),
                 };
+                // Add CLUSTER column for cross-cluster mode
+                if all_clusters {
+                    let cluster_col = dynamic_resource::DynColumn {
+                        header: "CLUSTER".to_string(),
+                        extractor: dynamic_resource::ColumnExtractor::ClusterLabel,
+                        width_percent: 15,
+                    };
+                    let mut cols = vec![cluster_col];
+                    cols.extend(resolved.columns.clone());
+                    resolved.columns = cols;
+                }
                 self.active_view = ActiveView::Dynamic;
                 self.dynamic_resource_data = Some(DynamicResourceData::new(resolved));
+                self.cross_cluster_mode = all_clusters;
                 self.table_cursor = 0;
                 self.table_scroll_offset = 0;
                 self.active_panel = ActivePanel::Center;
                 self.fetch_generation += 1;
-                // Queue a one-shot fetch (watch integration comes later)
-                if let Some(cluster_name) = &self.selected_cluster {
-                    self.pending_dynamic_fetch = Some(DynamicFetchRequest {
-                        cluster_name: cluster_name.clone(),
-                        namespace: self.selected_namespace.clone(),
-                        generation: self.fetch_generation,
-                    });
+                if all_clusters {
+                    // Queue fetches for ALL connected clusters
+                    self.pending_cross_cluster_fetches.clear();
+                    for cluster in &self.clusters {
+                        self.pending_cross_cluster_fetches.push(DynamicFetchRequest {
+                            cluster_name: cluster.name.clone(),
+                            namespace: None, // All namespaces for cross-cluster
+                            generation: self.fetch_generation,
+                        });
+                    }
                     self.is_fetching = true;
                     self.fetch_started_at = Some(Instant::now());
+                    self.toasts
+                        .info(format!("{} --all (cross-cluster)", entry.kind));
+                } else {
+                    // Queue a one-shot fetch for selected cluster
+                    if let Some(cluster_name) = &self.selected_cluster {
+                        self.pending_dynamic_fetch = Some(DynamicFetchRequest {
+                            cluster_name: cluster_name.clone(),
+                            namespace: self.selected_namespace.clone(),
+                            generation: self.fetch_generation,
+                        });
+                        self.is_fetching = true;
+                        self.fetch_started_at = Some(Instant::now());
+                    }
+                    self.toasts
+                        .info(format!("Switched to {}", entry.kind));
                 }
-                self.toasts
-                    .info(format!("Switched to {}", entry.kind));
             } else {
                 self.toasts
                     .error(format!("Unknown resource type: {}", input));
@@ -2617,6 +2704,9 @@ mod tests {
             pending_describe_fetch: None,
             describe_generation: 0,
             cancel_watcher: false,
+            pending_shell_exec: None,
+            cross_cluster_mode: false,
+            pending_cross_cluster_fetches: Vec::new(),
         };
         // Move cursor to first cluster (tower)
         app.tree_cursor = 1;
@@ -5041,7 +5131,21 @@ mod tests {
     }
 
     #[test]
-    fn shift_s_shows_not_implemented_toast() {
+    fn shift_s_on_non_pod_view_shows_toast() {
+        let mut app = test_app();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.resource_view = ResourceView::Deployments;
+
+        app.handle_event(AppEvent::Shell);
+
+        assert!(app.toasts.visible().next().is_some(),
+            "Shift+S on non-pod view should show toast");
+        assert!(app.pending_shell_exec.is_none());
+    }
+
+    #[test]
+    fn shift_s_on_pods_sets_pending_shell_exec() {
         let mut app = test_app();
         app.active_panel = ActivePanel::Center;
         app.active_tab = 0;
@@ -5049,8 +5153,8 @@ mod tests {
 
         app.handle_event(AppEvent::Shell);
 
-        assert!(app.toasts.visible().next().is_some(),
-            "Shift+S should show not-implemented toast");
+        // No pods in test snapshot, so pending_shell_exec stays None
+        assert!(app.pending_shell_exec.is_none());
     }
 }
 
@@ -5367,7 +5471,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 continue; // Stale result
             }
             if let Some(ref mut data) = app.dynamic_resource_data {
-                data.objects = objects;
+                if app.cross_cluster_mode {
+                    // Accumulate results from multiple clusters
+                    data.objects.extend(objects);
+                } else {
+                    data.objects = objects;
+                }
                 data.extract_rows();
                 data.fetched = true;
             }
@@ -5482,6 +5591,56 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
         while let Ok((gen, line)) = log_line_rx.try_recv() {
             if gen == app.log_stream_generation && app.log_viewer.visible {
                 app.log_viewer.push_line(line);
+                app.needs_redraw = true;
+            }
+        }
+
+        // --- Handle shell exec (synchronous: suspends TUI) ---
+        if let Some(req) = app.pending_shell_exec.take() {
+            // Find kubeconfig path for the selected cluster
+            let kubeconfig = app
+                .selected_cluster
+                .as_ref()
+                .and_then(|name| app.clusters.iter().find(|c| &c.name == name))
+                .map(|c| c.kubeconfig_path.clone());
+
+            if let Err(e) = tui_suspend::suspend_tui(&mut terminal) {
+                app.toasts.warn(format!("Failed to suspend TUI: {e}"));
+            } else {
+                // Print banner so user knows what's happening
+                eprintln!("\n--- {} ---\n", req.description);
+
+                // Build kubectl exec command
+                let mut cmd = std::process::Command::new("kubectl");
+                cmd.arg("exec").arg("-it");
+                cmd.arg(&req.pod_name);
+                cmd.arg("-n").arg(&req.namespace);
+                if let Some(ref container) = req.container {
+                    cmd.arg("-c").arg(container);
+                }
+                if let Some(ref kc) = kubeconfig {
+                    cmd.arg("--kubeconfig").arg(kc);
+                }
+                cmd.arg("--").arg("/bin/sh");
+
+                // Run kubectl synchronously — it owns the terminal
+                match cmd.status() {
+                    Ok(status) => {
+                        eprintln!("\n--- Shell exited ({}) ---", status);
+                    }
+                    Err(e) => {
+                        eprintln!("\n--- Failed to exec: {e} ---");
+                    }
+                }
+
+                // Small pause so user can read the exit message
+                std::thread::sleep(std::time::Duration::from_millis(500));
+
+                // Restore TUI
+                if let Err(e) = tui_suspend::restore_tui(&mut terminal) {
+                    // Fatal: can't restore TUI
+                    anyhow::bail!("Failed to restore TUI after shell exec: {e}");
+                }
                 app.needs_redraw = true;
             }
         }
@@ -5709,6 +5868,52 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                             }
                         }
                     });
+                }
+            }
+        }
+
+        // --- Dispatch cross-cluster fetch requests ---
+        if !app.pending_cross_cluster_fetches.is_empty() {
+            if let Some(ref data) = app.dynamic_resource_data {
+                let resource = data.resource.clone();
+                let reqs: Vec<_> = app.pending_cross_cluster_fetches.drain(..).collect();
+                for req in reqs {
+                    if let Some(client) = app
+                        .clusters
+                        .iter()
+                        .find(|c| c.name == req.cluster_name)
+                        .map(|c| c.client.clone())
+                    {
+                        let res = resource.clone();
+                        let ns = req.namespace.clone();
+                        let gen = req.generation;
+                        let tx = dyn_fetch_tx.clone();
+                        let cluster_name = req.cluster_name.clone();
+                        let is_cross = app.cross_cluster_mode;
+                        tokio::spawn(async move {
+                            match dynamic_resource::fetch_dynamic_resources(
+                                &client,
+                                &res,
+                                ns.as_deref(),
+                            )
+                            .await
+                            {
+                                Ok(mut objects) => {
+                                    // Tag objects with cluster name for cross-cluster mode
+                                    if is_cross {
+                                        for obj in &mut objects {
+                                            obj.metadata.labels.get_or_insert_with(Default::default)
+                                                .insert("scalex.io/cluster".to_string(), cluster_name.clone());
+                                        }
+                                    }
+                                    let _ = tx.send((gen, objects)).await;
+                                }
+                                Err(_e) => {
+                                    let _ = tx.send((gen, Vec::new())).await;
+                                }
+                            }
+                        });
+                    }
                 }
             }
         }
