@@ -1,12 +1,38 @@
 pub mod app;
+#[allow(dead_code)]
+pub mod command_mode;
+pub mod container_selector;
 pub mod data;
+#[allow(dead_code)]
+pub mod dynamic_resource;
 pub mod event;
+pub mod filter;
+#[allow(dead_code)]
+pub mod help_overlay;
 pub mod infra;
+#[allow(dead_code)]
+pub mod keybinding_registry;
 pub mod kube_client;
+pub mod pod_exec;
+pub mod port_detect;
+pub mod port_forward;
+#[allow(dead_code)]
+pub mod port_picker;
+#[allow(dead_code)]
+pub mod resource_registry;
+#[allow(dead_code)]
+pub mod resource_watcher;
 pub mod sa_provisioner;
 #[allow(dead_code)]
 pub mod theme;
+#[allow(dead_code)]
+pub mod toast;
+pub mod tui_suspend;
 pub mod ui;
+#[allow(dead_code)]
+pub mod yaml_modal;
+#[allow(dead_code)]
+pub mod log_viewer;
 
 use crate::commands::dash::DashArgs;
 

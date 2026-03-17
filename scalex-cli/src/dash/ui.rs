@@ -1,6 +1,8 @@
-use crate::dash::app::{ActivePanel, App, ConnectionStatus, NodeType, ResourceView};
+use crate::dash::app::{ActivePanel, ActiveView, App, ConnectionStatus, NodeType, ResourceView};
 use crate::dash::data::{self, HealthStatus};
+use crate::dash::filter;
 use crate::dash::theme;
+use crate::dash::toast;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -69,6 +71,19 @@ pub fn render(f: &mut Frame, app: &App) {
     if app.show_help {
         render_help_overlay(f, app, size);
     }
+
+    // Port-picker modal overlay
+    if app.port_picker.visible {
+        app.port_picker.render(f, size);
+    }
+
+    // Port-forward manager overlay
+    if app.port_forward_manager.visible {
+        app.port_forward_manager.render(f, size);
+    }
+
+    // Toast notifications (overlay, rendered last — always on top)
+    toast::render_toasts(f, &app.toasts, size);
 }
 
 // ---------------------------------------------------------------------------
@@ -563,8 +578,9 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Split inner area for search bar if active
-    let (content_area, search_area) = if app.search_active {
+    // Split inner area for search bar or command bar if active
+    let bottom_bar_active = app.search_active || app.command_mode.is_active();
+    let (content_area, bottom_bar_area) = if bottom_bar_active {
         let split = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(3), Constraint::Length(1)])
@@ -584,21 +600,30 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    // Render search bar
-    if let Some(area) = search_area {
-        let query = app.search_query.as_deref().unwrap_or("");
-        let search_line = Line::from(vec![
-            Span::styled(
-                "/ ",
-                Style::default()
-                    .fg(theme::BRIGHT_YELLOW)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(query, Style::default().fg(theme::FG)),
-            Span::styled("_", Style::default().fg(theme::BRIGHT_YELLOW)),
-        ]);
-        let bar = Paragraph::new(search_line).style(Style::default().bg(theme::BG1));
-        f.render_widget(bar, area);
+    // Render bottom bar: command mode or search mode
+    if let Some(bar_area) = bottom_bar_area {
+        if app.command_mode.is_active() {
+            render_command_bar(f, app, bar_area);
+        } else if app.search_active {
+            let query = app.search_query.as_deref().unwrap_or("");
+            let search_line = Line::from(vec![
+                Span::styled(
+                    "/ ",
+                    Style::default()
+                        .fg(theme::BRIGHT_YELLOW)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(query, Style::default().fg(theme::FG)),
+                Span::styled("_", Style::default().fg(theme::BRIGHT_YELLOW)),
+            ]);
+            let bar = Paragraph::new(search_line).style(Style::default().bg(theme::BG1));
+            f.render_widget(bar, bar_area);
+        }
+    }
+
+    // Render command-mode autocomplete dropdown above the bar
+    if app.command_mode.is_active() && !app.command_mode.suggestions.is_empty() {
+        render_command_suggestions(f, app, inner);
     }
 }
 
@@ -608,6 +633,287 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
 /// Priority: cached snapshot data > connection failure > loading/discovery states.
 /// When cached data exists, it is always returned even if the cluster connection
 /// has since failed — the caller renders data with a separate error banner.
+// ---------------------------------------------------------------------------
+// Command bar rendering
+// ---------------------------------------------------------------------------
+
+/// Render the command mode input bar (`:` prefix + input + ghost text + cursor).
+fn render_command_bar(f: &mut Frame, app: &App, area: Rect) {
+    let input = app.command_mode.input();
+    let mut spans = vec![
+        Span::styled(
+            ": ",
+            Style::default()
+                .fg(theme::BRIGHT_AQUA)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(input, Style::default().fg(theme::FG)),
+    ];
+    // Ghost text (dimmed suffix of top suggestion)
+    if let Some(ghost) = app.command_mode.ghost_text() {
+        spans.push(Span::styled(ghost, Style::default().fg(theme::FG4)));
+    }
+    // Cursor
+    spans.push(Span::styled("_", Style::default().fg(theme::BRIGHT_YELLOW)));
+    let line = Line::from(spans);
+    let bar = Paragraph::new(line).style(Style::default().bg(theme::BG1));
+    f.render_widget(bar, area);
+}
+
+/// Render the autocomplete suggestion dropdown above the command bar.
+fn render_command_suggestions(f: &mut Frame, app: &App, inner: Rect) {
+    let suggestions = &app.command_mode.suggestions;
+    let count = suggestions.len().min(crate::dash::command_mode::MAX_SUGGESTIONS);
+    if count == 0 {
+        return;
+    }
+
+    // Position: bottom of inner area, above the command bar (which is last row)
+    let dropdown_height = count as u16 + 2; // +2 for borders
+    let dropdown_y = inner
+        .height
+        .saturating_sub(1) // command bar row
+        .saturating_sub(dropdown_height);
+    let dropdown_width = inner.width.min(50);
+
+    let dropdown_area = Rect::new(
+        inner.x + 1,
+        inner.y + dropdown_y,
+        dropdown_width,
+        dropdown_height,
+    );
+
+    // Clear the area under the dropdown
+    f.render_widget(Clear, dropdown_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::BG3))
+        .style(Style::default().bg(theme::BG_HARD));
+
+    let inner_area = block.inner(dropdown_area);
+    f.render_widget(block, dropdown_area);
+
+    let selected = app.command_mode.selected_suggestion;
+    for (i, suggestion) in suggestions.iter().take(count).enumerate() {
+        if i as u16 >= inner_area.height {
+            break;
+        }
+        let is_selected = selected == Some(i);
+        let row_area = Rect::new(
+            inner_area.x,
+            inner_area.y + i as u16,
+            inner_area.width,
+            1,
+        );
+
+        let (fg, bg) = if is_selected {
+            (theme::BG_HARD, theme::BRIGHT_AQUA)
+        } else {
+            (theme::FG, theme::BG_HARD)
+        };
+
+        // Format: "  resource_name    (shortname)  group"
+        let name_width = 24.min(inner_area.width as usize);
+        let padded_name = format!(" {:<width$}", suggestion.display, width = name_width - 1);
+        let hint = if suggestion.hint.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", suggestion.hint)
+        };
+        let group = if suggestion.api_group == "core" {
+            String::new()
+        } else {
+            format!("  {}", suggestion.api_group)
+        };
+
+        let line = Line::from(vec![
+            Span::styled(padded_name, Style::default().fg(fg).bg(bg)),
+            Span::styled(hint, Style::default().fg(theme::FG4).bg(bg)),
+            Span::styled(group, Style::default().fg(theme::FG4).bg(bg)),
+        ]);
+        let paragraph = Paragraph::new(line);
+        f.render_widget(paragraph, row_area);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic resource table rendering
+// ---------------------------------------------------------------------------
+
+/// Create a `Cell` with matched substring ranges highlighted in BRIGHT_ORANGE.
+///
+/// `ranges` are byte-offset pairs `(start, end)` from `filter::find_match_ranges`.
+/// When `is_selected` is true, highlighting is suppressed (selection row uses inverted colors).
+fn highlight_cell<'a>(
+    text: &'a str,
+    ranges: &[(usize, usize)],
+    base_style: Style,
+    is_selected: bool,
+) -> Cell<'a> {
+    if is_selected || ranges.is_empty() {
+        return Cell::from(text).style(base_style);
+    }
+
+    let highlight_style = base_style
+        .fg(theme::BRIGHT_ORANGE)
+        .add_modifier(Modifier::BOLD);
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(ranges.len() * 2 + 1);
+    let mut pos = 0;
+
+    for &(start, end) in ranges {
+        let start = start.min(text.len());
+        let end = end.min(text.len());
+        if start > pos {
+            spans.push(Span::styled(&text[pos..start], base_style));
+        }
+        if end > start {
+            spans.push(Span::styled(&text[start..end], highlight_style));
+        }
+        pos = end;
+    }
+    if pos < text.len() {
+        spans.push(Span::styled(&text[pos..], base_style));
+    }
+
+    Cell::from(Line::from(spans))
+}
+
+/// Render a dynamic resource table with fuzzy filtering and match highlighting.
+///
+/// Uses `filter::filter_and_rank` for fuzzy matching (scoring + ranking) and
+/// `filter::find_match_ranges` to highlight matched substrings in each cell.
+/// Rows are ranked by match quality — best matches appear first.
+fn render_dynamic_resource_table(f: &mut Frame, app: &App, area: Rect) {
+    let dyn_data = match &app.dynamic_resource_data {
+        Some(d) => d,
+        None => return,
+    };
+
+    if !dyn_data.fetched {
+        // Show loading spinner
+        const LOAD_DYN: [&str; 4] = [
+            "  | Loading...",
+            "  / Loading...",
+            "  - Loading...",
+            "  \\ Loading...",
+        ];
+        let spin_idx = (app.tick_count as usize) % 4;
+        let paragraph =
+            Paragraph::new(LOAD_DYN[spin_idx]).style(Style::default().fg(theme::FG4));
+        f.render_widget(paragraph, area);
+        return;
+    }
+
+    // Fuzzy filter + rank rows by match quality
+    let search_query = app
+        .search_query
+        .as_ref()
+        .filter(|q| !q.is_empty())
+        .map(|q| q.as_str());
+
+    let filtered = match search_query {
+        Some(q) => filter::filter_and_rank(&dyn_data.rows, q),
+        None => dyn_data
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                (
+                    i,
+                    filter::FuzzyScore {
+                        score: 0,
+                        is_exact: true,
+                    },
+                )
+            })
+            .collect(),
+    };
+
+    let filtered_count = filtered.len();
+
+    if filtered_count == 0 {
+        let msg = if search_query.is_some() {
+            format!(
+                "  No results for \"{}\"",
+                app.search_query.as_deref().unwrap_or("")
+            )
+        } else {
+            format!("  No {} found", dyn_data.resource.display_name)
+        };
+        let paragraph = Paragraph::new(msg).style(Style::default().fg(theme::FG4));
+        f.render_widget(paragraph, area);
+        return;
+    }
+
+    // Build header row from column definitions
+    let header_cols: Vec<&str> = dyn_data
+        .resource
+        .columns
+        .iter()
+        .map(|c| c.header.as_str())
+        .collect();
+    let header = Row::new(header_cols).style(
+        Style::default()
+            .fg(theme::BRIGHT_YELLOW)
+            .bg(theme::BG1)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    // Build width constraints from column definitions
+    let widths: Vec<Constraint> = dyn_data
+        .resource
+        .columns
+        .iter()
+        .map(|c| {
+            if c.width_percent > 0 {
+                Constraint::Min(c.width_percent)
+            } else {
+                Constraint::Min(10)
+            }
+        })
+        .collect();
+
+    let clamped_cursor = app.table_cursor.min(filtered_count.saturating_sub(1));
+    let viewport_rows = area.height.saturating_sub(1) as usize;
+    let clamped_scroll = app
+        .table_scroll_offset
+        .min(filtered_count.saturating_sub(viewport_rows.max(1)));
+
+    // Build rows for viewport-visible items with fuzzy highlight
+    let rows: Vec<Row> = filtered
+        .iter()
+        .enumerate()
+        .skip(clamped_scroll)
+        .take(viewport_rows)
+        .map(|(vis_idx, (orig_idx, _score))| {
+            let is_selected =
+                vis_idx == clamped_cursor && app.active_panel == ActivePanel::Center;
+            let base = row_base_style(is_selected);
+
+            let row_data = &dyn_data.rows[*orig_idx];
+            let cells: Vec<Cell> = row_data
+                .iter()
+                .map(|val| {
+                    if let Some(q) = search_query {
+                        let ranges = filter::find_match_ranges(val, q);
+                        highlight_cell(val, &ranges, base, is_selected)
+                    } else {
+                        Cell::from(val.as_str()).style(base)
+                    }
+                })
+                .collect();
+
+            Row::new(cells)
+        })
+        .collect();
+
+    let table = Table::new(rows, &widths)
+        .header(header)
+        .style(Style::default().bg(theme::BG));
+    f.render_widget(table, area);
+}
+
 fn render_tab_preamble<'a>(
     f: &mut Frame,
     app: &'a App,
@@ -726,6 +1032,12 @@ fn render_connection_error_banner(f: &mut Frame, app: &App, area: Rect) -> Rect 
 }
 
 fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
+    // Dynamic resource view: render from DynamicResourceData instead of static snapshot
+    if app.active_view == ActiveView::Dynamic {
+        render_dynamic_resource_table(f, app, area);
+        return;
+    }
+
     let snapshot = match render_tab_preamble(f, app, area) {
         Some(s) => s,
         None => return,

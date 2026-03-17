@@ -86,6 +86,8 @@ pub struct PodInfo {
     pub restarts_display: String,
     pub age: String,
     pub node: String,
+    /// Container names in the pod (for log viewer container selector).
+    pub containers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -232,6 +234,22 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
                 .map(|ts| format_age(now, ts.0))
                 .unwrap_or_else(|| "<unknown>".into());
 
+            // Extract container names for log viewer container selector
+            let containers: Vec<String> = spec
+                .map(|s| {
+                    let mut names: Vec<String> = Vec::new();
+                    if let Some(init_cs) = &s.init_containers {
+                        for ic in init_cs {
+                            names.push(format!("init:{}", ic.name));
+                        }
+                    }
+                    for c in &s.containers {
+                        names.push(c.name.clone());
+                    }
+                    names
+                })
+                .unwrap_or_default();
+
             PodInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 namespace: meta.namespace.clone().unwrap_or_default(),
@@ -241,6 +259,7 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
                 restarts,
                 age,
                 node: spec.and_then(|s| s.node_name.clone()).unwrap_or_default(),
+                containers,
             }
         })
         .collect())
@@ -1165,6 +1184,7 @@ mod tests {
             restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
+            containers: vec![],
         }];
         assert_eq!(compute_health(&nodes, &pods), HealthStatus::Green);
     }
@@ -1205,6 +1225,7 @@ mod tests {
             restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
+            containers: vec![],
         }];
         assert_eq!(compute_health(&nodes, &pods), HealthStatus::Yellow);
     }
@@ -1230,6 +1251,7 @@ mod tests {
             restarts_display: "1".into(),
             age: "1h".into(),
             node: "n1".into(),
+            containers: vec![],
         }];
         assert_eq!(compute_health(&nodes, &pods), HealthStatus::Yellow);
     }
@@ -1255,6 +1277,7 @@ mod tests {
             restarts_display: "0".into(),
             age: "5m".into(),
             node: "n1".into(),
+            containers: vec![],
         }];
         assert_eq!(compute_health(&nodes, &pods), HealthStatus::Yellow);
     }
@@ -1428,6 +1451,7 @@ mod tests {
             restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
+            containers: vec![],
         }];
         let usage = compute_resource_usage(&nodes, &pods, None);
         assert!((usage.cpu_percent - (-1.0)).abs() < 1e-9); // sentinel: no metrics → -1.0
@@ -1604,6 +1628,7 @@ mod tests {
             restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
+            containers: vec![],
         }];
         assert_eq!(compute_health(&nodes, &pods), HealthStatus::Yellow);
     }
@@ -1621,6 +1646,7 @@ mod tests {
             restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
+            containers: vec![],
         };
         let mut pods = vec![
             make_pod("running-1", "Running"),
@@ -1665,6 +1691,7 @@ mod tests {
             restarts_display: "0".into(),
             age: "1h".into(),
             node: "n1".into(),
+            containers: vec![],
         };
         let mut pods = vec![make_pod("b-pod"), make_pod("a-pod"), make_pod("c-pod")];
         sort_pods_by_severity(&mut pods);
