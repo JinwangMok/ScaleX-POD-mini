@@ -41,6 +41,12 @@ pub enum AppEvent {
     End,
     // Port-forward (Shift+F)
     PortForward,
+    // Describe / YAML view (y)
+    Describe,
+    // Log viewer (Shift+L)
+    Logs,
+    // Shell / exec (Shift+S)
+    Shell,
     // Character input (unmapped printable chars — used by search mode)
     CharInput(char),
     // Tick (periodic refresh)
@@ -125,6 +131,15 @@ pub fn map_key_event(key: KeyEvent) -> AppEvent {
 
         // Port-forward (Shift+F)
         KeyCode::Char('F') if shift && !ctrl => AppEvent::PortForward,
+
+        // Describe / YAML view (y)
+        KeyCode::Char('y') if !ctrl => AppEvent::Describe,
+
+        // Log viewer (Shift+L)
+        KeyCode::Char('L') if shift && !ctrl => AppEvent::Logs,
+
+        // Shell / exec (Shift+S)
+        KeyCode::Char('S') if shift && !ctrl => AppEvent::Shell,
 
         // Any other printable character (for search mode input)
         KeyCode::Char(c) if !ctrl => AppEvent::CharInput(c),
@@ -227,7 +242,7 @@ mod tests {
     #[test]
     fn unmapped_chars_various() {
         for c in [
-            'b', 'f', 'g', 'i', 'm', 'o', 't', 'u', 'w', 'x', 'y', 'z',
+            'b', 'f', 'g', 'i', 'm', 'o', 't', 'u', 'w', 'x', 'z',
         ] {
             assert_eq!(
                 map_key_event(key(KeyCode::Char(c), KeyModifiers::NONE)),
@@ -273,6 +288,30 @@ mod tests {
         assert_eq!(
             map_key_event(key(KeyCode::Char('F'), KeyModifiers::SHIFT)),
             AppEvent::PortForward
+        );
+    }
+
+    #[test]
+    fn y_maps_to_describe() {
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('y'), KeyModifiers::NONE)),
+            AppEvent::Describe
+        );
+    }
+
+    #[test]
+    fn shift_l_maps_to_logs() {
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('L'), KeyModifiers::SHIFT)),
+            AppEvent::Logs
+        );
+    }
+
+    #[test]
+    fn shift_s_maps_to_shell() {
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('S'), KeyModifiers::SHIFT)),
+            AppEvent::Shell
         );
     }
 

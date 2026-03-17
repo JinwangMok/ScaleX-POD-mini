@@ -140,10 +140,15 @@ The TUI header is k9s-style and responsive:
 | `Tab`/`Shift+Tab` | Cycle between Sidebar and Center panel |
 | `1` `2` | Switch to tab (1=Resources, 2=Top) |
 | `p` `d` `s` `c` `n` `e` | Switch resource view (works from both panels; from Sidebar also switches to Center) |
+| `y` | Describe / YAML view for selected resource |
+| `Shift+F` | Port forward selected pod/service |
+| `Shift+L` | View pod logs (Pods view only) |
+| `Shift+S` | Shell exec into pod (Pods view only) |
+| `:` | Command mode (k9s-style resource navigation) |
 | `/` | Enter search mode (filter by name and namespace) |
 | `r` | Force data refresh + retry failed cluster connections |
 | `?` | Toggle help overlay (context-sensitive: shows keys for current panel/view) |
-| `ESC` | Close help overlay / Cancel search |
+| `ESC` | Close help overlay / Cancel search / Close modal |
 | `q`/`Ctrl+C` | Quit |
 
 ### UX Design Invariants
@@ -207,6 +212,12 @@ The TUI header is k9s-style and responsive:
 - **Pre-computed sidebar indicator**: `App.sidebar_indicator` caches `" pos/total "` string, synced before each draw via `sync_sidebar_indicator()`. `render_sidebar` borrows cached string instead of per-frame `format!()`.
 - **Pre-computed row count indicator**: `App.row_count_indicator` caches `"pos/total "` string, synced before each draw via `sync_row_count_indicator()`. `render_center` borrows cached string instead of per-frame `format!()`.
 - **Pre-computed header display strings**: `HeaderInfo.version_display`, `cluster_count_full`, `cluster_count_compact`, `version_compact` computed in `sync_header_info()`. `render_header_full` and `render_header_compact` borrow pre-computed strings instead of per-frame `format!()` for version and cluster count.
+- **YAML/describe modal**: `y` key opens describe overlay for any resource. Shows cached summary instantly, then async-fetches full API describe via `describe_resource_yaml()` (3s timeout). Modal intercepts all navigation keys (j/k, PgUp/PgDn, Home/End). ESC closes and cancels in-flight fetch via generation counter.
+- **Log viewer modal**: `Shift+L` opens pod log streaming overlay. Uses `kube::Api<Pod>::log_stream()` with `follow=true, tail_lines=100` via `futures::AsyncBufReadExt::lines()`. Lines delivered via `mpsc` channel with generation-based stale filtering. `f` toggles auto-follow. ESC closes and increments generation to cancel stream.
+- **Command mode**: `:` activates k9s-style command bar with tab-autocomplete, history, fuzzy match. `ResourceRegistry` resolves aliases to API resources. Submission triggers dynamic resource fetch via `pending_dynamic_fetch` channel.
+- **Port forward**: `Shift+F` opens port-picker modal for pods/services. `PortForwardManager` tracks active kubectl subprocesses with monitored status (Starting→Active→Stopped/Failed).
+- **Modal overlay stacking**: Render order: help → port-picker → port-forward → yaml-modal → log-viewer → toasts. Event interception order matches render order (innermost modal gets priority). All modals close on ESC/q.
+- **Async request pattern**: `pending_*` fields on App queue one-shot requests consumed by `run_tui` event loop. Generation counters discard stale results. Channels: `log_line_tx/rx` (256 cap), `describe_tx/rx` (4 cap), `dyn_fetch_tx/rx` (8 cap).
 
 ## Key Patterns
 

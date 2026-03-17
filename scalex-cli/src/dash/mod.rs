@@ -1,6 +1,7 @@
 pub mod app;
 #[allow(dead_code)]
 pub mod command_mode;
+#[allow(dead_code)]
 pub mod container_selector;
 pub mod data;
 #[allow(dead_code)]
@@ -13,7 +14,9 @@ pub mod infra;
 #[allow(dead_code)]
 pub mod keybinding_registry;
 pub mod kube_client;
+#[allow(dead_code, clippy::too_many_arguments, clippy::single_match)]
 pub mod pod_exec;
+#[allow(dead_code)]
 pub mod port_detect;
 pub mod port_forward;
 #[allow(dead_code)]
@@ -27,11 +30,10 @@ pub mod sa_provisioner;
 pub mod theme;
 #[allow(dead_code)]
 pub mod toast;
+#[allow(dead_code)]
 pub mod tui_suspend;
 pub mod ui;
-#[allow(dead_code)]
 pub mod yaml_modal;
-#[allow(dead_code)]
 pub mod log_viewer;
 
 use crate::commands::dash::DashArgs;

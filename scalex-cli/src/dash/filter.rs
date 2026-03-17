@@ -1,14 +1,17 @@
 /// Fuzzy filtering and match highlighting for dynamic resource tables.
-
 /// Score from fuzzy matching a row against a query.
 #[derive(Debug, Clone)]
 pub struct FuzzyScore {
     pub score: i32,
+    #[allow(dead_code)]
     pub is_exact: bool,
 }
 
 /// Filter rows by query, returning (original_index, score) pairs sorted by relevance.
 pub fn filter_and_rank(rows: &[Vec<String>], query: &str) -> Vec<(usize, FuzzyScore)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
     let query_lower = query.to_ascii_lowercase();
     let mut results: Vec<(usize, FuzzyScore)> = Vec::new();
     for (i, row) in rows.iter().enumerate() {
@@ -40,6 +43,9 @@ pub fn filter_and_rank(rows: &[Vec<String>], query: &str) -> Vec<(usize, FuzzySc
 
 /// Find byte-offset ranges in `text` that match `query` (case-insensitive substring).
 pub fn find_match_ranges(text: &str, query: &str) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
     let text_lower = text.to_ascii_lowercase();
     let query_lower = query.to_ascii_lowercase();
     let mut ranges = Vec::new();

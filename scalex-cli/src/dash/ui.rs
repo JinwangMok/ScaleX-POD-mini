@@ -82,6 +82,16 @@ pub fn render(f: &mut Frame, app: &App) {
         app.port_forward_manager.render(f, size);
     }
 
+    // YAML/describe modal overlay
+    if app.yaml_modal.visible {
+        render_yaml_modal(f, &app.yaml_modal, size);
+    }
+
+    // Log viewer modal overlay
+    if app.log_viewer.visible {
+        app.log_viewer.render(f, size);
+    }
+
     // Toast notifications (overlay, rendered last — always on top)
     toast::render_toasts(f, &app.toasts, size);
 }
@@ -627,12 +637,13 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// Render connection error or empty/loading state for a tab.
-/// Returns `Some(snapshot)` if data is available, `None` if a placeholder was rendered.
-///
-/// Priority: cached snapshot data > connection failure > loading/discovery states.
-/// When cached data exists, it is always returned even if the cluster connection
-/// has since failed — the caller renders data with a separate error banner.
+// Render connection error or empty/loading state for a tab.
+// Returns `Some(snapshot)` if data is available, `None` if a placeholder was rendered.
+//
+// Priority: cached snapshot data > connection failure > loading/discovery states.
+// When cached data exists, it is always returned even if the cluster connection
+// has since failed — the caller renders data with a separate error banner.
+
 // ---------------------------------------------------------------------------
 // Command bar rendering
 // ---------------------------------------------------------------------------
@@ -1778,6 +1789,94 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
 /// Render context-sensitive help overlay.
 /// Reads: app.active_panel, app.active_tab, app.resource_view, app.search_active
+/// Render YAML/describe modal as immutable borrow (avoids clone of YamlModal).
+/// Duplicates the layout logic from YamlModal::render but takes &self.
+fn render_yaml_modal(f: &mut Frame, modal: &crate::dash::yaml_modal::YamlModal, area: Rect) {
+    if !modal.visible { return; }
+
+    let popup_width = (area.width * 80 / 100).max(40).min(area.width.saturating_sub(4));
+    let popup_height = (area.height * 80 / 100).max(10).min(area.height.saturating_sub(2));
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(modal.title.as_str())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::BRIGHT_AQUA))
+        .style(Style::default().bg(theme::BG_HARD));
+
+    let _inner = block.inner(popup_area);
+
+    let lines: Vec<Line<'_>> = modal.content
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.is_empty()
+                && trimmed.ends_with(':')
+                && !trimmed.contains("  ")
+                && trimmed.chars().next().is_some_and(|c| c.is_alphabetic())
+            {
+                Line::from(Span::styled(
+                    line,
+                    Style::default()
+                        .fg(theme::BRIGHT_YELLOW)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else if let Some(colon_pos) = trimmed.find(':') {
+                let key_part = &trimmed[..colon_pos];
+                if !key_part.is_empty()
+                    && !key_part.contains(' ')
+                    && colon_pos < trimmed.len() - 1
+                {
+                    let indent = line.len() - line.trim_start().len();
+                    let indent_str = &line[..indent];
+                    let value_part = &trimmed[colon_pos + 1..];
+                    Line::from(vec![
+                        Span::raw(indent_str),
+                        Span::styled(key_part, Style::default().fg(theme::BRIGHT_AQUA)),
+                        Span::styled(":", Style::default().fg(theme::FG4)),
+                        Span::styled(value_part, Style::default().fg(theme::FG)),
+                    ])
+                } else {
+                    Line::from(Span::styled(line, Style::default().fg(theme::FG)))
+                }
+            } else {
+                Line::from(Span::styled(line, Style::default().fg(theme::FG)))
+            }
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .style(Style::default().bg(theme::BG_HARD))
+        .scroll((modal.scroll_offset, 0));
+
+    f.render_widget(paragraph, popup_area);
+
+    // Footer with scroll info
+    let footer_area = Rect::new(
+        popup_area.x + 1,
+        popup_area.y + popup_height.saturating_sub(1),
+        popup_width.saturating_sub(2),
+        1,
+    );
+    let scroll_info = format!(" {}/{} ", modal.scroll_offset + 1, modal.line_count.max(1));
+    let footer = Line::from(vec![
+        Span::styled(
+            " ↑↓/jk: scroll  PgUp/PgDn  Home/End  ESC: close",
+            Style::default().fg(theme::FG4),
+        ),
+        Span::styled(
+            scroll_info,
+            Style::default().fg(theme::BRIGHT_AQUA).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(footer).style(Style::default().bg(theme::BG_HARD)), footer_area);
+}
+
 fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
     // -- Determine context title --
     let context_label = if app.search_active {
@@ -1854,10 +1953,18 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
                     lines.push(Line::from(vec![
                         Span::styled("            ".to_string(), Style::default().fg(theme::FG4)),
                         Span::styled(
-                            "p=Pods d=Deploy s=Svc c=CM n=Nodes".to_string(),
+                            "p=Pods d=Deploy s=Svc c=CM n=Nodes e=Events".to_string(),
                             Style::default().fg(theme::FG4),
                         ),
                     ]));
+                    lines.push(Line::from(""));
+                    lines.push(section("Actions"));
+                    lines.push(Line::from(""));
+                    lines.push(key("y", "Describe / YAML view"));
+                    lines.push(key("Shift+F", "Port forward"));
+                    lines.push(key("Shift+L", "View pod logs (Pods only)"));
+                    lines.push(key("Shift+S", "Shell exec (Pods only)"));
+                    lines.push(key(":", "Command mode (k9s-style)"));
                 }
             }
         }
