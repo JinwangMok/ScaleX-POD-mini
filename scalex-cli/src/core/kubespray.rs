@@ -114,12 +114,23 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
         vars.push_str("helm_enabled: true\n");
     }
 
-    // Firewall / kube-vip
+    // Firewall
     vars.push_str(&format!(
         "firewalld_enabled: {}\n",
         common.firewalld_enabled
     ));
-    vars.push_str(&format!("kube_vip_enabled: {}\n", common.kube_vip_enabled));
+
+    // kube-vip: only emit the common default if extra_vars doesn't override it
+    // (avoids duplicate YAML keys which are technically invalid)
+    let extra_has_kube_vip = cluster
+        .kubespray_extra_vars
+        .as_ref()
+        .and_then(|v| v.as_mapping())
+        .map(|m| m.contains_key("kube_vip_enabled"))
+        .unwrap_or(false);
+    if !extra_has_kube_vip {
+        vars.push_str(&format!("kube_vip_enabled: {}\n", common.kube_vip_enabled));
+    }
 
     // Gateway API
     if common.gateway_api_enabled {
@@ -258,20 +269,29 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
 
     // Auto-derive supplementary SANs from api_endpoint so the API server cert
     // includes the external domain (required for TLS hostname verification via CF Tunnel).
-    if let Some(ref endpoint) = cluster.api_endpoint {
-        // Extract host from "https://host:port" or "https://host" without url crate
-        let host = endpoint
-            .strip_prefix("https://")
-            .or_else(|| endpoint.strip_prefix("http://"))
-            .unwrap_or(endpoint)
-            .split(':')
-            .next()
-            .unwrap_or("");
-        // Only add DNS names, not bare IPs (IPs are already covered by Kubespray)
-        if !host.is_empty() && host.parse::<std::net::IpAddr>().is_err() {
-            vars.push_str("\n# Auto-derived from api_endpoint for external TLS access\n");
-            vars.push_str("supplementary_addresses_in_ssl_keys:\n");
-            vars.push_str(&format!("  - \"{host}\"\n"));
+    // Skip if extra_vars already provides supplementary_addresses_in_ssl_keys (avoid duplicate keys).
+    let extra_has_ssl_keys = cluster
+        .kubespray_extra_vars
+        .as_ref()
+        .and_then(|v| v.as_mapping())
+        .map(|m| m.contains_key("supplementary_addresses_in_ssl_keys"))
+        .unwrap_or(false);
+    if !extra_has_ssl_keys {
+        if let Some(ref endpoint) = cluster.api_endpoint {
+            // Extract host from "https://host:port" or "https://host" without url crate
+            let host = endpoint
+                .strip_prefix("https://")
+                .or_else(|| endpoint.strip_prefix("http://"))
+                .unwrap_or(endpoint)
+                .split(':')
+                .next()
+                .unwrap_or("");
+            // Only add DNS names, not bare IPs (IPs are already covered by Kubespray)
+            if !host.is_empty() && host.parse::<std::net::IpAddr>().is_err() {
+                vars.push_str("\n# Auto-derived from api_endpoint for external TLS access\n");
+                vars.push_str("supplementary_addresses_in_ssl_keys:\n");
+                vars.push_str(&format!("  - \"{host}\"\n"));
+            }
         }
     }
 
@@ -729,6 +749,53 @@ mod tests {
         assert!(vars.contains("graceful_node_shutdown_sec: 120"));
         assert!(vars.contains("kubelet_custom_flags:"));
         assert!(vars.contains("--node-ip={{ ip }}"));
+    }
+
+    #[test]
+    fn test_generate_cluster_vars_kube_vip_no_duplicate_keys() {
+        // When kubespray_extra_vars contains kube_vip_enabled and
+        // supplementary_addresses_in_ssl_keys, the common defaults must NOT
+        // emit those keys — otherwise the generated YAML has duplicate keys.
+        let mut common = make_common();
+        common.kube_vip_enabled = false; // common default
+
+        let mut cluster = make_cluster_def("sandbox", "sandbox");
+        cluster.api_endpoint = Some("https://sandbox-api.jinwang.dev".to_string());
+
+        // Build extra_vars with kube-vip overrides (mimics real config)
+        let extra: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+kube_vip_enabled: true
+kube_vip_controlplane_enabled: true
+kube_vip_address: "192.168.88.109"
+kube_vip_arp_enabled: true
+supplementary_addresses_in_ssl_keys:
+  - "192.168.88.109"
+  - "100.64.0.1"
+"#,
+        )
+        .unwrap();
+        cluster.kubespray_extra_vars = Some(extra);
+
+        let vars = generate_cluster_vars(&cluster, &common);
+
+        // Must NOT contain the common default "kube_vip_enabled: false"
+        assert!(
+            !vars.contains("kube_vip_enabled: false"),
+            "common kube_vip_enabled: false should be suppressed when extra_vars overrides it"
+        );
+        // Must contain the extra_vars override
+        assert!(vars.contains("kube_vip_enabled: true"));
+        assert!(vars.contains("kube_vip_arp_enabled: true"));
+        assert!(vars.contains("kube_vip_address"));
+        assert!(vars.contains("192.168.88.109"));
+
+        // supplementary_addresses_in_ssl_keys should appear exactly once
+        let ssl_count = vars.matches("supplementary_addresses_in_ssl_keys").count();
+        assert_eq!(
+            ssl_count, 1,
+            "supplementary_addresses_in_ssl_keys should appear exactly once, got {ssl_count}"
+        );
     }
 
     #[test]

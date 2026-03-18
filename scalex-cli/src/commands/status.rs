@@ -105,6 +105,64 @@ pub fn compute_cluster_status(clusters: &[(String, u32, bool)]) -> LayerStatus {
     }
 }
 
+/// Compute cluster layer status with node readiness detail.
+/// clusters: Vec<(name, total_nodes, ready_nodes, has_kubeconfig)>
+pub fn compute_cluster_status_with_readiness(
+    clusters: &[(String, u32, u32, bool)],
+) -> LayerStatus {
+    if clusters.is_empty() {
+        return LayerStatus {
+            name: "Clusters".to_string(),
+            health: LayerHealth::NotReady(
+                "No clusters. Run `scalex cluster init <config>`.".to_string(),
+            ),
+            details: vec![],
+        };
+    }
+
+    let mut details = Vec::new();
+    let mut all_ready = true;
+
+    for (name, total, ready, has_kc) in clusters {
+        let kc_str = if *has_kc {
+            "kubeconfig OK"
+        } else {
+            "no kubeconfig"
+        };
+        details.push(format!(
+            "{}: {}/{} node(s) Ready, {}",
+            name, ready, total, kc_str
+        ));
+        if !has_kc || *total == 0 || *ready != *total {
+            all_ready = false;
+        }
+    }
+
+    let health = if all_ready {
+        LayerHealth::Ready
+    } else {
+        let total_nodes: u32 = clusters.iter().map(|(_, t, _, _)| t).sum();
+        let ready_nodes: u32 = clusters.iter().map(|(_, _, r, _)| r).sum();
+        if ready_nodes == 0 && total_nodes > 0 {
+            LayerHealth::NotReady(format!(
+                "0/{} nodes Ready across all clusters.",
+                total_nodes
+            ))
+        } else {
+            LayerHealth::Partial(format!(
+                "{}/{} nodes Ready across all clusters.",
+                ready_nodes, total_nodes
+            ))
+        }
+    };
+
+    LayerStatus {
+        name: "Clusters".to_string(),
+        health,
+        details,
+    }
+}
+
 /// Compute config files status from presence checks
 pub fn compute_config_status(required_present: usize, required_total: usize) -> LayerStatus {
     let health = if required_present == required_total {
@@ -377,6 +435,51 @@ mod tests {
     fn test_cluster_status_partial_zero_nodes() {
         let clusters = vec![("tower".to_string(), 0, true)];
         let status = compute_cluster_status(&clusters);
+        assert!(matches!(status.health, LayerHealth::Partial(_)));
+    }
+
+    // ── Cluster layer with readiness ──
+
+    #[test]
+    fn test_cluster_status_with_readiness_all_ready() {
+        let clusters = vec![
+            ("tower".to_string(), 3, 3, true),
+            ("sandbox".to_string(), 3, 3, true),
+        ];
+        let status = compute_cluster_status_with_readiness(&clusters);
+        assert_eq!(status.health, LayerHealth::Ready);
+        assert!(status.details[0].contains("3/3"));
+        assert!(status.details[0].contains("tower"));
+    }
+
+    #[test]
+    fn test_cluster_status_with_readiness_partial() {
+        let clusters = vec![
+            ("tower".to_string(), 3, 3, true),
+            ("sandbox".to_string(), 3, 1, true),
+        ];
+        let status = compute_cluster_status_with_readiness(&clusters);
+        assert!(matches!(status.health, LayerHealth::Partial(_)));
+        assert!(status.details[1].contains("1/3"));
+    }
+
+    #[test]
+    fn test_cluster_status_with_readiness_none_ready() {
+        let clusters = vec![("tower".to_string(), 3, 0, true)];
+        let status = compute_cluster_status_with_readiness(&clusters);
+        assert!(matches!(status.health, LayerHealth::NotReady(_)));
+    }
+
+    #[test]
+    fn test_cluster_status_with_readiness_empty() {
+        let status = compute_cluster_status_with_readiness(&[]);
+        assert!(matches!(status.health, LayerHealth::NotReady(_)));
+    }
+
+    #[test]
+    fn test_cluster_status_with_readiness_no_kubeconfig() {
+        let clusters = vec![("tower".to_string(), 3, 3, false)];
+        let status = compute_cluster_status_with_readiness(&clusters);
         assert!(matches!(status.health, LayerHealth::Partial(_)));
     }
 

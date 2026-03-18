@@ -1281,4 +1281,79 @@ mod tests {
         let (_, _, port) = result.unwrap();
         assert_eq!(port, 6443u16, "default port should be 6443");
     }
+
+    // -------------------------------------------------------------------------
+    // AC-7 Sub-AC 1: Multi-cluster kubeconfig discovery → selector panel
+    // -------------------------------------------------------------------------
+
+    /// scan_kubeconfig_names feeds directly into App::new_with_names to populate
+    /// the cluster selector sidebar. Verify the full pipeline produces correct
+    /// cluster names that match the directory structure.
+    #[test]
+    fn scan_kubeconfig_names_feeds_cluster_selector() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create tower and sandbox cluster dirs (matching real layout)
+        for name in &["tower", "sandbox"] {
+            let d = dir.path().join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("kubeconfig.yaml"), "apiVersion: v1").unwrap();
+        }
+
+        let names = scan_kubeconfig_names(dir.path());
+
+        // Sorted alphabetically: sandbox, tower
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0], "sandbox");
+        assert_eq!(names[1], "tower");
+
+        // These names are passed to App::new_with_names which builds the selector tree
+        // Verify they are non-empty strings suitable for tree node labels
+        for name in &names {
+            assert!(!name.is_empty());
+            assert!(!name.contains('/'));
+        }
+    }
+
+    /// Directories without kubeconfig.yaml are excluded from the selector.
+    #[test]
+    fn scan_kubeconfig_names_excludes_dirs_without_kubeconfig() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Valid cluster
+        let tower = dir.path().join("tower");
+        std::fs::create_dir_all(&tower).unwrap();
+        std::fs::write(tower.join("kubeconfig.yaml"), "test").unwrap();
+
+        // Dir with wrong file name
+        let bad = dir.path().join("bad-cluster");
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::write(bad.join("config.yaml"), "test").unwrap();
+
+        // Regular file (not a directory)
+        std::fs::write(dir.path().join("not-a-dir"), "test").unwrap();
+
+        let names = scan_kubeconfig_names(dir.path());
+        assert_eq!(names, vec!["tower".to_string()]);
+    }
+
+    /// Four clusters (matching 4 bare-metal node topology) all appear in scan.
+    #[test]
+    fn scan_kubeconfig_names_four_clusters() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for name in &["tower", "sandbox", "staging", "prod"] {
+            let d = dir.path().join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("kubeconfig.yaml"), "test").unwrap();
+        }
+
+        let names = scan_kubeconfig_names(dir.path());
+        assert_eq!(names.len(), 4);
+        // All four present (sorted)
+        assert!(names.contains(&"tower".to_string()));
+        assert!(names.contains(&"sandbox".to_string()));
+        assert!(names.contains(&"staging".to_string()));
+        assert!(names.contains(&"prod".to_string()));
+    }
 }

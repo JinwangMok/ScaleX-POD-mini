@@ -250,16 +250,25 @@ ensure_sudo() {
 # Usage: new_pid=$(_ssh_tunnel_start LOCAL_PORT SERVER_IP SERVER_PORT BASTION)
 # Tries up to 3 times with ConnectTimeout=10; waits up to 5s per attempt for process stability.
 # Emits PID on stdout on success; exits non-zero after all attempts exhausted.
-# SSH stderr is captured per-attempt and emitted as actionable error on final failure.
+# SSH stderr is captured per-attempt into a temp file.
+# Each retry attempt is logged with structured key=value fields to stderr (via log_warn/log_info)
+# and to the installer log file. On final failure, the last captured stderr and a classified
+# error reason are recorded.
 _ssh_tunnel_start() {
   local local_port="$1" server_ip="$2" server_port="$3" bastion="$4"
   local max_attempts=3 attempt=0 tpid="" stable=false
   local err_file; err_file=$(mktemp /tmp/scalex-ssh-err.XXXXXX 2>/dev/null || echo "/tmp/scalex-ssh-err.$$")
   local last_ssh_err=""
+  local tunnel_spec="localhost:${local_port}->${server_ip}:${server_port}@${bastion}"
+
+  log_info "$(i18n "Starting SSH tunnel: ${tunnel_spec} (max_attempts=${max_attempts})" \
+    "SSH 터널 시작: ${tunnel_spec} (최대 시도=${max_attempts})")"
 
   while (( attempt < max_attempts )); do
     attempt=$((attempt + 1))
     : > "$err_file"
+    log_info "$(i18n "Tunnel retry_start: attempt=${attempt}/${max_attempts} tunnel=${tunnel_spec}" \
+      "터널 retry_start: attempt=${attempt}/${max_attempts} tunnel=${tunnel_spec}")"
     ssh -N \
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
@@ -279,10 +288,9 @@ _ssh_tunnel_start() {
     while (( w < 5 )); do
       sleep 1; w=$((w+1))
       if ! kill -0 "$tpid" 2>/dev/null; then
-        last_ssh_err=$(cat "$err_file" 2>/dev/null | head -5 | tr '\n' ' ')
-        log_warn "$(i18n "Tunnel attempt ${attempt}/${max_attempts}: SSH process exited early (bind/connect failed)" \
-          "터널 시도 ${attempt}/${max_attempts}: SSH 프로세스 조기 종료 (바인드/연결 실패)")"
-        [[ -n "$last_ssh_err" ]] && log_warn "$(i18n "SSH error: ${last_ssh_err}" "SSH 오류: ${last_ssh_err}")"
+        last_ssh_err=$(head -5 "$err_file" 2>/dev/null | tr '\n' ' ')
+        log_warn "$(i18n "Tunnel retry_failed: attempt=${attempt}/${max_attempts} tunnel=${tunnel_spec} reason=early_exit stderr=\"${last_ssh_err:-none}\"" \
+          "터널 retry_failed: attempt=${attempt}/${max_attempts} tunnel=${tunnel_spec} reason=early_exit stderr=\"${last_ssh_err:-none}\"")"
         tpid=""
         break
       fi
@@ -295,7 +303,8 @@ _ssh_tunnel_start() {
 
     if (( attempt < max_attempts )); then
       local backoff=$(( attempt * 3 ))
-      log_info "$(i18n "Retrying SSH tunnel in ${backoff}s..." "SSH 터널 ${backoff}초 후 재시도...")"
+      log_info "$(i18n "Tunnel retry_backoff: seconds=${backoff} tunnel=${tunnel_spec}" \
+        "터널 retry_backoff: seconds=${backoff} tunnel=${tunnel_spec}")"
       sleep "$backoff"
     fi
   done
@@ -303,24 +312,38 @@ _ssh_tunnel_start() {
   rm -f "$err_file"
 
   if $stable && [[ -n "$tpid" ]]; then
+    log_info "$(i18n "Tunnel retry_success: attempt=${attempt}/${max_attempts} tunnel=${tunnel_spec} pid=${tpid}" \
+      "터널 retry_success: attempt=${attempt}/${max_attempts} tunnel=${tunnel_spec} pid=${tpid}")"
     echo "$tpid"
     return 0
   fi
 
-  # Emit actionable error based on captured SSH output
+  # Log structured final failure with classified error reason
+  local failure_class="unknown"
   if echo "$last_ssh_err" | grep -qi "permission denied\|publickey\|authentication"; then
+    failure_class="auth_failure"
+  elif echo "$last_ssh_err" | grep -qi "connection refused\|no route\|network unreachable\|timed out"; then
+    failure_class="network_failure"
+  elif [[ -n "$last_ssh_err" ]]; then
+    failure_class="ssh_error"
+  fi
+  log_error "$(i18n "Tunnel retry_exhausted: attempts=${max_attempts} tunnel=${tunnel_spec} failure_class=${failure_class} final_stderr=\"${last_ssh_err:-none}\"" \
+    "터널 retry_exhausted: attempts=${max_attempts} tunnel=${tunnel_spec} failure_class=${failure_class} final_stderr=\"${last_ssh_err:-none}\"")"
+
+  # Emit actionable error based on captured SSH output
+  if [[ "$failure_class" == "auth_failure" ]]; then
     error_msg \
       "$(i18n "SSH authentication failed to bastion '${bastion}'" "bastion '${bastion}'에 SSH 인증 실패")" \
       "$(i18n "SSH key not authorized or wrong key path — last error: ${last_ssh_err}" "SSH 키가 승인되지 않았거나 키 경로가 잘못됨 — 마지막 오류: ${last_ssh_err}")" \
       "$(i18n "Check SSH_KEY_PATH in credentials/.env and ensure the key is in ${bastion}:~/.ssh/authorized_keys" \
          "credentials/.env의 SSH_KEY_PATH를 확인하고 키가 ${bastion}:~/.ssh/authorized_keys에 있는지 확인하세요")"
-  elif echo "$last_ssh_err" | grep -qi "connection refused\|no route\|network unreachable\|timed out"; then
+  elif [[ "$failure_class" == "network_failure" ]]; then
     error_msg \
       "$(i18n "Cannot reach bastion '${bastion}' on SSH port" "SSH 포트로 bastion '${bastion}'에 접근할 수 없음")" \
       "$(i18n "Network unreachable or SSH port closed — last error: ${last_ssh_err}" "네트워크에 접근할 수 없거나 SSH 포트가 닫혀 있음 — 마지막 오류: ${last_ssh_err}")" \
       "$(i18n "Verify bastion IP in credentials/.baremetal-init.yaml and check network connectivity" \
          "credentials/.baremetal-init.yaml의 bastion IP를 확인하고 네트워크 연결을 점검하세요")"
-  elif [[ -n "$last_ssh_err" ]]; then
+  elif [[ "$failure_class" == "ssh_error" ]]; then
     error_msg \
       "$(i18n "SSH tunnel to '${bastion}' failed (localhost:${local_port} → ${server_ip}:${server_port})" \
          "SSH 터널 실패 '${bastion}' (localhost:${local_port} → ${server_ip}:${server_port})")" \
@@ -334,42 +357,101 @@ _ssh_tunnel_start() {
 # start_tunnel_watchdog: Background watchdog that monitors tunnel processes and auto-restarts
 # any that have died. Reads per-tunnel conf files from TUNNEL_CONF_DIR.
 # Conf file format: LOCAL_PORT:SERVER_IP:SERVER_PORT:BASTION:PID  (one tunnel per file)
+#
+# Retry behaviour (configurable via TUNNEL_WATCHDOG_MAX_RETRIES, default 3):
+#   - Each dead tunnel gets up to max_retries restart attempts
+#   - Exponential backoff between attempts: attempt*3 seconds (3s, 6s, 9s)
+#   - SSH stderr is captured per-attempt and recorded in structured log
+#   - Each retry attempt and final failure reason are logged with key=value fields
+#   - A single tunnel failure does NOT abort the watchdog loop (no fail-fast)
+#   - Failed tunnels will be retried again on the next watchdog cycle
+#   - Dedicated watchdog log: $LOG_DIR/tunnel-watchdog.log
 start_tunnel_watchdog() {
   [[ -z "$TUNNEL_CONF_DIR" || ! -d "$TUNNEL_CONF_DIR" ]] && return 0
   local parent_pid=$$
+  local wd_max_retries="${TUNNEL_WATCHDOG_MAX_RETRIES:-3}"
+  local watchdog_log="${LOG_DIR}/tunnel-watchdog.log"
   (
+    # ── Structured logger for watchdog subprocess ──
+    # Writes timestamped key=value entries to both a dedicated log file and stderr.
+    # Format: ISO-8601 level=LEVEL component=tunnel-watchdog event=EVENT key=val ...
+    _wd_log() {
+      local level="$1" event="$2"; shift 2
+      local ts; ts="$(date '+%Y-%m-%dT%H:%M:%S%z')"
+      local line="${ts} level=${level} component=tunnel-watchdog event=${event} $*"
+      printf '%s\n' "$line" >> "$watchdog_log" 2>/dev/null
+      printf '%s\n' "$line" >&2
+    }
+    _wd_log INFO watchdog_started "parent_pid=${parent_pid} conf_dir=${TUNNEL_CONF_DIR} max_retries=${wd_max_retries}"
     while true; do
       sleep 10
       # Exit watchdog when parent installer exits
-      kill -0 "$parent_pid" 2>/dev/null || exit 0
+      if ! kill -0 "$parent_pid" 2>/dev/null; then
+        _wd_log INFO watchdog_exit "reason=parent_gone parent_pid=${parent_pid}"
+        exit 0
+      fi
       for conf_file in "$TUNNEL_CONF_DIR"/*.conf; do
         [[ -f "$conf_file" ]] || continue
         IFS=: read -r lp sip sp bt tpid < "$conf_file" 2>/dev/null || continue
         [[ -z "$tpid" || -z "$lp" ]] && continue
         if ! kill -0 "$tpid" 2>/dev/null; then
-          # Tunnel process gone — restart non-interactively (no known_hosts prompt)
-          ssh -N \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o BatchMode=yes \
-            -o ExitOnForwardFailure=yes \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=4 \
-            -o ConnectTimeout=10 \
-            -L "${lp}:${sip}:${sp}" \
-            "$bt" >/dev/null 2>/dev/null &
-          local new_pid=$!
-          sleep 3
-          if kill -0 "$new_pid" 2>/dev/null; then
-            printf '%s:%s:%s:%s:%s\n' "$lp" "$sip" "$sp" "$bt" "$new_pid" > "$conf_file"
+          local cluster_label; cluster_label=$(basename "$conf_file" .conf)
+          local tunnel_spec="localhost:${lp}->${sip}:${sp}@${bt}"
+          _wd_log WARN tunnel_dead "cluster=${cluster_label} tunnel=${tunnel_spec} old_pid=${tpid}"
+          # Retry up to max_retries with stderr capture; no fail-fast abort
+          local wd_attempt=0 wd_ok=false wd_new_pid=""
+          local wd_err_file; wd_err_file=$(mktemp /tmp/scalex-wd-err.XXXXXX 2>/dev/null || echo "/tmp/scalex-wd-err.$$.$RANDOM")
+          local wd_final_reason=""
+          while (( wd_attempt < wd_max_retries )); do
+            wd_attempt=$((wd_attempt + 1))
+            : > "$wd_err_file"
+            _wd_log INFO retry_start "cluster=${cluster_label} attempt=${wd_attempt}/${wd_max_retries} tunnel=${tunnel_spec}"
+            ssh -N \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o BatchMode=yes \
+              -o ExitOnForwardFailure=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=4 \
+              -o ConnectTimeout=10 \
+              -L "${lp}:${sip}:${sp}" \
+              "$bt" >/dev/null 2>"$wd_err_file" &
+            wd_new_pid=$!
+            # Wait up to 3s for tunnel to stabilise; detect early SSH exit
+            local wd_w=0
+            while (( wd_w < 3 )); do
+              sleep 1; wd_w=$((wd_w + 1))
+              kill -0 "$wd_new_pid" 2>/dev/null || break
+            done
+            if kill -0 "$wd_new_pid" 2>/dev/null; then
+              wd_ok=true
+              break
+            fi
+            # Capture SSH stderr from this attempt — no fail-fast, continue to next
+            local wd_ssh_err
+            wd_ssh_err=$(head -5 "$wd_err_file" 2>/dev/null | tr '\n' ' ')
+            wd_final_reason="${wd_ssh_err:-process exited immediately with no stderr}"
+            _wd_log ERROR retry_failed "cluster=${cluster_label} attempt=${wd_attempt}/${wd_max_retries} tunnel=${tunnel_spec} stderr=\"${wd_final_reason}\""
+            if (( wd_attempt < wd_max_retries )); then
+              local wd_backoff=$(( wd_attempt * 3 ))
+              _wd_log INFO retry_backoff "cluster=${cluster_label} seconds=${wd_backoff}"
+              sleep "$wd_backoff"
+            fi
+          done
+          rm -f "$wd_err_file"
+          if $wd_ok && [[ -n "$wd_new_pid" ]]; then
+            printf '%s:%s:%s:%s:%s\n' "$lp" "$sip" "$sp" "$bt" "$wd_new_pid" > "$conf_file"
+            _wd_log INFO retry_success "cluster=${cluster_label} attempt=${wd_attempt}/${wd_max_retries} tunnel=${tunnel_spec} new_pid=${wd_new_pid}"
+          else
+            _wd_log ERROR retry_exhausted "cluster=${cluster_label} attempts=${wd_max_retries} tunnel=${tunnel_spec} final_reason=\"${wd_final_reason}\""
           fi
         fi
       done
     done
   ) &
   TUNNEL_WATCHDOG_PID=$!
-  log_info "$(i18n "Tunnel watchdog started (PID: $TUNNEL_WATCHDOG_PID)" \
-    "터널 watchdog 시작 (PID: $TUNNEL_WATCHDOG_PID)")"
+  log_info "$(i18n "Tunnel watchdog started (PID: $TUNNEL_WATCHDOG_PID, max_retries: $wd_max_retries, log: $watchdog_log)" \
+    "터널 watchdog 시작 (PID: $TUNNEL_WATCHDOG_PID, 최대 재시도: $wd_max_retries, 로그: $watchdog_log)")"
 }
 
 # stop_tunnel_watchdog: Stop the background watchdog and clean up conf files.

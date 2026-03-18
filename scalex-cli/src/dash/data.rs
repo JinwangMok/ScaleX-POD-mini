@@ -947,6 +947,10 @@ pub fn filter_snapshot_by_resource(
                     // Return namespace list for each connected cluster
                     obj["namespaces"] = serde_json::to_value(&s.namespaces).unwrap_or_default();
                 }
+                // "checks" is handled separately in run_e2e_checks — should not reach here
+                "checks" => {
+                    obj["error"] = serde_json::json!("use run_e2e_checks() for checks mode");
+                }
                 _ => {
                     obj["error"] =
                         serde_json::json!(format!("Unknown resource type: {}", resource));
@@ -956,6 +960,368 @@ pub fn filter_snapshot_by_resource(
         })
         .collect();
     serde_json::json!({ "clusters": filtered })
+}
+
+// ---------------------------------------------------------------------------
+// Headless checks — 5 E2E health checks for `scalex dash --headless`
+// ---------------------------------------------------------------------------
+
+/// Result of a single E2E health check.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckResult {
+    pub name: String,
+    pub status: CheckStatus,
+    pub message: String,
+    /// Per-cluster detail (optional, included when check spans multiple clusters)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub details: Vec<CheckDetail>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckDetail {
+    pub cluster: String,
+    pub passed: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckStatus {
+    Pass,
+    Fail,
+    Warn,
+    Skip,
+}
+
+/// Full report from all 5 E2E checks.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckReport {
+    pub overall: CheckStatus,
+    pub passed: usize,
+    pub failed: usize,
+    pub total: usize,
+    pub checks: Vec<CheckResult>,
+}
+
+/// Run all 5 E2E health checks against the fetched cluster snapshots.
+///
+/// The 5 checks are:
+/// 1. cluster_api_reachable  — both clusters discovered and API connectable
+/// 2. all_nodes_ready        — every node in every cluster reports Ready
+/// 3. namespaces_listed      — namespace listing non-empty on both clusters
+/// 4. argocd_synced          — ArgoCD server deployment available in tower
+/// 5. cf_tunnel_running      — cloudflared pod Running in tower cluster
+pub fn run_e2e_checks(
+    snapshots: &[ClusterSnapshot],
+    expected_clusters: &[&str],
+) -> CheckReport {
+    let checks = vec![
+        check_cluster_api_reachable(snapshots, expected_clusters),
+        check_all_nodes_ready(snapshots),
+        check_namespaces_listed(snapshots),
+        check_argocd_synced(snapshots),
+        check_cf_tunnel_running(snapshots),
+    ];
+    let passed = checks.iter().filter(|c| c.status == CheckStatus::Pass).count();
+    let failed = checks
+        .iter()
+        .filter(|c| c.status == CheckStatus::Fail)
+        .count();
+    let total = checks.len();
+    let overall = if failed > 0 {
+        CheckStatus::Fail
+    } else if checks.iter().any(|c| c.status == CheckStatus::Warn) {
+        CheckStatus::Warn
+    } else {
+        CheckStatus::Pass
+    };
+    CheckReport {
+        overall,
+        passed,
+        failed,
+        total,
+        checks,
+    }
+}
+
+/// Check 1: All expected clusters were discovered and API is reachable.
+fn check_cluster_api_reachable(
+    snapshots: &[ClusterSnapshot],
+    expected_clusters: &[&str],
+) -> CheckResult {
+    let discovered: Vec<&str> = snapshots.iter().map(|s| s.name.as_str()).collect();
+    let mut details = Vec::new();
+    let mut all_ok = true;
+    for &expected in expected_clusters {
+        let found = discovered.contains(&expected);
+        if !found {
+            all_ok = false;
+        }
+        details.push(CheckDetail {
+            cluster: expected.to_string(),
+            passed: found,
+            message: if found {
+                "API reachable".to_string()
+            } else {
+                "cluster not discovered — API unreachable".to_string()
+            },
+        });
+    }
+    CheckResult {
+        name: "cluster_api_reachable".to_string(),
+        status: if all_ok {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        message: if all_ok {
+            format!(
+                "All {} cluster(s) API reachable",
+                expected_clusters.len()
+            )
+        } else {
+            let missing: Vec<&&str> = expected_clusters
+                .iter()
+                .filter(|&&c| !discovered.contains(&c))
+                .collect();
+            format!("Cluster(s) unreachable: {}", missing.iter().map(|c| **c).collect::<Vec<_>>().join(", "))
+        },
+        details,
+    }
+}
+
+/// Check 2: All nodes in all clusters report Ready status.
+fn check_all_nodes_ready(snapshots: &[ClusterSnapshot]) -> CheckResult {
+    let mut details = Vec::new();
+    let mut all_ok = true;
+    for snap in snapshots {
+        let not_ready: Vec<&str> = snap
+            .nodes
+            .iter()
+            .filter(|n| !n.status.starts_with("Ready"))
+            .map(|n| n.name.as_str())
+            .collect();
+        let passed = not_ready.is_empty() && !snap.nodes.is_empty();
+        if !passed {
+            all_ok = false;
+        }
+        details.push(CheckDetail {
+            cluster: snap.name.clone(),
+            passed,
+            message: if snap.nodes.is_empty() {
+                "no nodes found".to_string()
+            } else if not_ready.is_empty() {
+                format!("{}/{} nodes Ready", snap.nodes.len(), snap.nodes.len())
+            } else {
+                format!(
+                    "{}/{} nodes not Ready: {}",
+                    not_ready.len(),
+                    snap.nodes.len(),
+                    not_ready.join(", ")
+                )
+            },
+        });
+    }
+    CheckResult {
+        name: "all_nodes_ready".to_string(),
+        status: if all_ok {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        message: if all_ok {
+            let total: usize = snapshots.iter().map(|s| s.nodes.len()).sum();
+            format!("All {} nodes Ready across {} cluster(s)", total, snapshots.len())
+        } else {
+            "Some nodes not Ready".to_string()
+        },
+        details,
+    }
+}
+
+/// Check 3: Namespace listing succeeds (non-empty) on all clusters.
+fn check_namespaces_listed(snapshots: &[ClusterSnapshot]) -> CheckResult {
+    let mut details = Vec::new();
+    let mut all_ok = true;
+    for snap in snapshots {
+        let passed = !snap.namespaces.is_empty();
+        if !passed {
+            all_ok = false;
+        }
+        details.push(CheckDetail {
+            cluster: snap.name.clone(),
+            passed,
+            message: if passed {
+                format!("{} namespaces listed", snap.namespaces.len())
+            } else {
+                "namespace listing empty".to_string()
+            },
+        });
+    }
+    CheckResult {
+        name: "namespaces_listed".to_string(),
+        status: if all_ok {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        message: if all_ok {
+            format!(
+                "Namespace listing OK on {} cluster(s)",
+                snapshots.len()
+            )
+        } else {
+            "Namespace listing failed on some cluster(s)".to_string()
+        },
+        details,
+    }
+}
+
+/// Check 4: ArgoCD server deployment is available in tower cluster.
+/// We verify by looking for deployments matching "argocd" in the argocd namespace.
+fn check_argocd_synced(snapshots: &[ClusterSnapshot]) -> CheckResult {
+    // Find the tower (management) cluster — ArgoCD runs there
+    let tower = snapshots.iter().find(|s| s.name == "tower");
+    match tower {
+        None => CheckResult {
+            name: "argocd_synced".to_string(),
+            status: CheckStatus::Skip,
+            message: "tower cluster not available — cannot check ArgoCD".to_string(),
+            details: vec![],
+        },
+        Some(snap) => {
+            // Look for argocd-server deployment in argocd namespace
+            let argocd_deploys: Vec<&DeploymentInfo> = snap
+                .deployments
+                .iter()
+                .filter(|d| d.namespace == "argocd")
+                .collect();
+            let argocd_server = argocd_deploys
+                .iter()
+                .find(|d| d.name.contains("argocd-server"));
+
+            // Check that argocd-server exists and has ready replicas
+            let passed = match argocd_server {
+                Some(d) => {
+                    // Parse "N/M" ready format to check availability
+                    d.ready.split('/').next().and_then(|n| n.parse::<i32>().ok()).unwrap_or(0) > 0
+                }
+                None => false,
+            };
+
+            // Also check overall ArgoCD deployment health
+            let all_argocd_healthy = !argocd_deploys.is_empty()
+                && argocd_deploys.iter().all(|d| {
+                    d.ready
+                        .split('/')
+                        .next()
+                        .and_then(|n| n.parse::<i32>().ok())
+                        .unwrap_or(0)
+                        > 0
+                });
+
+            let status = if passed && all_argocd_healthy {
+                CheckStatus::Pass
+            } else if passed {
+                CheckStatus::Warn
+            } else {
+                CheckStatus::Fail
+            };
+
+            let detail_msg = if argocd_deploys.is_empty() {
+                "no ArgoCD deployments found in argocd namespace".to_string()
+            } else {
+                let summary: Vec<String> = argocd_deploys
+                    .iter()
+                    .map(|d| format!("{}={}", d.name, d.ready))
+                    .collect();
+                format!("ArgoCD deployments: {}", summary.join(", "))
+            };
+
+            CheckResult {
+                name: "argocd_synced".to_string(),
+                status,
+                message: if status == CheckStatus::Pass {
+                    format!(
+                        "ArgoCD healthy — {} deployments in argocd namespace",
+                        argocd_deploys.len()
+                    )
+                } else {
+                    "ArgoCD not fully healthy".to_string()
+                },
+                details: vec![CheckDetail {
+                    cluster: "tower".to_string(),
+                    passed: status == CheckStatus::Pass,
+                    message: detail_msg,
+                }],
+            }
+        }
+    }
+}
+
+/// Check 5: Cloudflare Tunnel pod is Running in tower cluster.
+/// Looks for pods with "cloudflared" in their name in any namespace.
+fn check_cf_tunnel_running(snapshots: &[ClusterSnapshot]) -> CheckResult {
+    let tower = snapshots.iter().find(|s| s.name == "tower");
+    match tower {
+        None => CheckResult {
+            name: "cf_tunnel_running".to_string(),
+            status: CheckStatus::Skip,
+            message: "tower cluster not available — cannot check CF Tunnel".to_string(),
+            details: vec![],
+        },
+        Some(snap) => {
+            let cf_pods: Vec<&PodInfo> = snap
+                .pods
+                .iter()
+                .filter(|p| {
+                    p.name.contains("cloudflared")
+                        || p.name.contains("cf-tunnel")
+                        || p.namespace == "kube-tunnel"
+                })
+                .collect();
+
+            let running = cf_pods
+                .iter()
+                .filter(|p| p.status == "Running")
+                .count();
+            let total = cf_pods.len();
+
+            let passed = running > 0;
+            let status = if passed {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Fail
+            };
+
+            let detail_msg = if cf_pods.is_empty() {
+                "no cloudflared pods found".to_string()
+            } else {
+                let summary: Vec<String> = cf_pods
+                    .iter()
+                    .map(|p| format!("{}={} ({})", p.name, p.status, p.namespace))
+                    .collect();
+                format!("{}/{} Running: {}", running, total, summary.join(", "))
+            };
+
+            CheckResult {
+                name: "cf_tunnel_running".to_string(),
+                status,
+                message: if passed {
+                    format!("CF Tunnel running — {}/{} pod(s) healthy", running, total)
+                } else if cf_pods.is_empty() {
+                    "CF Tunnel pod not found in tower cluster".to_string()
+                } else {
+                    format!("CF Tunnel not running — {}/{} pod(s) healthy", running, total)
+                },
+                details: vec![CheckDetail {
+                    cluster: "tower".to_string(),
+                    passed,
+                    message: detail_msg,
+                }],
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1855,5 +2221,440 @@ mod tests {
         // All same severity → original order preserved (stable sort)
         let names: Vec<&str> = pods.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["b-pod", "a-pod", "c-pod"]);
+    }
+
+    // ── Sub-AC 7.3: Cross-cluster namespace-scoped resource browsing tests ──
+
+    /// Helper: create a ClusterSnapshot with pods, deployments, and services
+    /// spread across multiple namespaces for testing namespace-scoped browsing.
+    fn make_multi_ns_snapshot(cluster_name: &str) -> ClusterSnapshot {
+        let make_pod = |name: &str, ns: &str, status: &str| PodInfo {
+            name: name.into(),
+            namespace: ns.into(),
+            status: status.into(),
+            ready: "1/1".into(),
+            restarts: 0,
+            restarts_display: "0".into(),
+            age: "1h".into(),
+            node: "node-0".into(),
+            containers: vec!["app".into()],
+        };
+        let make_deploy = |name: &str, ns: &str| DeploymentInfo {
+            name: name.into(),
+            namespace: ns.into(),
+            ready: "1/1".into(),
+            ready_count: 1,
+            desired_count: 1,
+            up_to_date: 1,
+            up_to_date_display: "1".into(),
+            available: 1,
+            available_display: "1".into(),
+            age: "2h".into(),
+        };
+        let make_svc = |name: &str, ns: &str, stype: &str| ServiceInfo {
+            name: name.into(),
+            namespace: ns.into(),
+            svc_type: stype.into(),
+            cluster_ip: "10.96.0.1".into(),
+            external_ip: "<none>".into(),
+            ports: "80/TCP".into(),
+            age: "3h".into(),
+        };
+
+        ClusterSnapshot {
+            name: cluster_name.into(),
+            health: HealthStatus::Green,
+            namespaces: vec![
+                "default".into(),
+                "kube-system".into(),
+                "monitoring".into(),
+            ],
+            nodes: vec![NodeInfo {
+                name: "node-0".into(),
+                status: "Ready".into(),
+                roles: vec!["control-plane".into()],
+                cpu_capacity: "8".into(),
+                mem_capacity: "16Gi".into(),
+                cpu_allocatable: "8".into(),
+                mem_allocatable: "16Gi".into(),
+                age: "7d".into(),
+                ..Default::default()
+            }],
+            pods: vec![
+                make_pod("nginx-abc", "default", "Running"),
+                make_pod("coredns-xyz", "kube-system", "Running"),
+                make_pod("prometheus-0", "monitoring", "Running"),
+            ],
+            deployments: vec![
+                make_deploy("nginx", "default"),
+                make_deploy("coredns", "kube-system"),
+                make_deploy("prometheus", "monitoring"),
+            ],
+            services: vec![
+                make_svc("kubernetes", "default", "ClusterIP"),
+                make_svc("kube-dns", "kube-system", "ClusterIP"),
+                make_svc("prometheus-svc", "monitoring", "ClusterIP"),
+            ],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: ResourceUsage::default(),
+        }
+    }
+
+    #[test]
+    fn filter_snapshot_pods_returns_all_namespaces() {
+        let tower = make_multi_ns_snapshot("tower");
+        let sandbox = make_multi_ns_snapshot("sandbox");
+        let snapshots = vec![tower, sandbox];
+
+        let result = filter_snapshot_by_resource(&snapshots, "pods");
+        let clusters = result["clusters"].as_array().unwrap();
+        assert_eq!(clusters.len(), 2, "should contain both clusters");
+
+        // Each cluster should have 3 pods (one per namespace)
+        for cluster in clusters {
+            let pods = cluster["pods"].as_array().unwrap();
+            assert_eq!(pods.len(), 3, "each cluster has 3 pods across namespaces");
+        }
+    }
+
+    #[test]
+    fn filter_snapshot_deployments_cross_cluster() {
+        let tower = make_multi_ns_snapshot("tower");
+        let sandbox = make_multi_ns_snapshot("sandbox");
+        let snapshots = vec![tower, sandbox];
+
+        let result = filter_snapshot_by_resource(&snapshots, "deployments");
+        let clusters = result["clusters"].as_array().unwrap();
+
+        // Verify cluster names
+        let names: Vec<&str> = clusters
+            .iter()
+            .map(|c| c["cluster"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"tower"), "tower cluster present");
+        assert!(names.contains(&"sandbox"), "sandbox cluster present");
+
+        // Verify deployments are present in both clusters
+        for cluster in clusters {
+            let deploys = cluster["deployments"].as_array().unwrap();
+            assert_eq!(deploys.len(), 3);
+            let deploy_names: Vec<&str> = deploys
+                .iter()
+                .map(|d| d["name"].as_str().unwrap())
+                .collect();
+            assert!(deploy_names.contains(&"nginx"));
+            assert!(deploy_names.contains(&"coredns"));
+            assert!(deploy_names.contains(&"prometheus"));
+        }
+    }
+
+    #[test]
+    fn filter_snapshot_services_cross_cluster() {
+        let tower = make_multi_ns_snapshot("tower");
+        let sandbox = make_multi_ns_snapshot("sandbox");
+        let snapshots = vec![tower, sandbox];
+
+        let result = filter_snapshot_by_resource(&snapshots, "services");
+        let clusters = result["clusters"].as_array().unwrap();
+        assert_eq!(clusters.len(), 2);
+
+        for cluster in clusters {
+            let svcs = cluster["services"].as_array().unwrap();
+            assert_eq!(svcs.len(), 3);
+            let svc_namespaces: Vec<&str> = svcs
+                .iter()
+                .map(|s| s["namespace"].as_str().unwrap())
+                .collect();
+            assert!(svc_namespaces.contains(&"default"));
+            assert!(svc_namespaces.contains(&"kube-system"));
+            assert!(svc_namespaces.contains(&"monitoring"));
+        }
+    }
+
+    #[test]
+    fn filter_snapshot_namespaces_cross_cluster() {
+        let tower = make_multi_ns_snapshot("tower");
+        let sandbox = make_multi_ns_snapshot("sandbox");
+        let snapshots = vec![tower, sandbox];
+
+        let result = filter_snapshot_by_resource(&snapshots, "namespaces");
+        let clusters = result["clusters"].as_array().unwrap();
+
+        for cluster in clusters {
+            let ns = cluster["namespaces"].as_array().unwrap();
+            assert_eq!(ns.len(), 3);
+            let ns_names: Vec<&str> = ns.iter().map(|n| n.as_str().unwrap()).collect();
+            assert!(ns_names.contains(&"default"));
+            assert!(ns_names.contains(&"kube-system"));
+            assert!(ns_names.contains(&"monitoring"));
+        }
+    }
+
+    #[test]
+    fn filter_snapshot_unknown_resource_returns_error() {
+        let snap = make_multi_ns_snapshot("tower");
+        let result = filter_snapshot_by_resource(&[snap], "foobar");
+        let clusters = result["clusters"].as_array().unwrap();
+        assert_eq!(clusters.len(), 1);
+        assert!(
+            clusters[0]["error"].as_str().unwrap().contains("Unknown"),
+            "unknown resource type should return error"
+        );
+    }
+
+    #[test]
+    fn filter_snapshot_health_included_with_resources() {
+        let tower = make_multi_ns_snapshot("tower");
+        let result = filter_snapshot_by_resource(&[tower], "pods");
+        let cluster = &result["clusters"].as_array().unwrap()[0];
+        assert_eq!(cluster["health"].as_str().unwrap(), "green");
+        assert_eq!(cluster["cluster"].as_str().unwrap(), "tower");
+    }
+
+    #[test]
+    fn snapshot_pods_have_namespace_field() {
+        let snap = make_multi_ns_snapshot("tower");
+        // Verify each pod carries its namespace — required for TUI namespace filtering
+        for pod in &snap.pods {
+            assert!(
+                !pod.namespace.is_empty(),
+                "pod {} must have namespace field set",
+                pod.name
+            );
+        }
+        // Verify namespace diversity
+        let unique_ns: std::collections::HashSet<&str> =
+            snap.pods.iter().map(|p| p.namespace.as_str()).collect();
+        assert!(
+            unique_ns.len() >= 2,
+            "pods should span multiple namespaces for cross-ns browsing"
+        );
+    }
+
+    #[test]
+    fn snapshot_deployments_have_namespace_field() {
+        let snap = make_multi_ns_snapshot("tower");
+        for deploy in &snap.deployments {
+            assert!(
+                !deploy.namespace.is_empty(),
+                "deployment {} must have namespace field",
+                deploy.name
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_services_have_namespace_field() {
+        let snap = make_multi_ns_snapshot("tower");
+        for svc in &snap.services {
+            assert!(
+                !svc.namespace.is_empty(),
+                "service {} must have namespace field",
+                svc.name
+            );
+        }
+    }
+
+    // --- E2E checks tests ---
+
+    fn make_check_snapshot(name: &str, nodes_ready: bool, with_argocd: bool, with_cf_tunnel: bool) -> ClusterSnapshot {
+        let nodes = vec![
+            NodeInfo {
+                name: format!("{}-cp-0", name),
+                status: if nodes_ready { "Ready".into() } else { "NotReady".into() },
+                roles: vec!["control-plane".into()],
+                ..Default::default()
+            },
+            NodeInfo {
+                name: format!("{}-cp-1", name),
+                status: "Ready".into(),
+                roles: vec!["control-plane".into()],
+                ..Default::default()
+            },
+        ];
+
+        let mut deployments = vec![];
+        if with_argocd {
+            deployments.push(DeploymentInfo {
+                name: "argocd-server".into(),
+                namespace: "argocd".into(),
+                ready: "1/1".into(),
+                ready_count: 1,
+                desired_count: 1,
+                up_to_date: 1,
+                up_to_date_display: "1".into(),
+                available: 1,
+                available_display: "1".into(),
+                age: "1h".into(),
+            });
+            deployments.push(DeploymentInfo {
+                name: "argocd-repo-server".into(),
+                namespace: "argocd".into(),
+                ready: "1/1".into(),
+                ready_count: 1,
+                desired_count: 1,
+                up_to_date: 1,
+                up_to_date_display: "1".into(),
+                available: 1,
+                available_display: "1".into(),
+                age: "1h".into(),
+            });
+        }
+
+        let mut pods = vec![
+            PodInfo {
+                name: "coredns-abc".into(),
+                namespace: "kube-system".into(),
+                status: "Running".into(),
+                ready: "1/1".into(),
+                restarts: 0,
+                restarts_display: "0".into(),
+                age: "1d".into(),
+                node: format!("{}-cp-0", name),
+                containers: vec!["coredns".into()],
+            },
+        ];
+        if with_cf_tunnel {
+            pods.push(PodInfo {
+                name: "cloudflared-tunnel-xyz".into(),
+                namespace: "kube-tunnel".into(),
+                status: "Running".into(),
+                ready: "1/1".into(),
+                restarts: 0,
+                restarts_display: "0".into(),
+                age: "1h".into(),
+                node: format!("{}-cp-0", name),
+                containers: vec!["cloudflared".into()],
+            });
+        }
+
+        ClusterSnapshot {
+            name: name.into(),
+            health: if nodes_ready { HealthStatus::Green } else { HealthStatus::Red },
+            namespaces: vec!["default".into(), "kube-system".into(), "argocd".into()],
+            nodes,
+            pods,
+            deployments,
+            services: vec![],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: ResourceUsage::default(),
+        }
+    }
+
+    #[test]
+    fn e2e_checks_all_pass() {
+        let tower = make_check_snapshot("tower", true, true, true);
+        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let snapshots = vec![tower, sandbox];
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        assert_eq!(report.overall, CheckStatus::Pass);
+        assert_eq!(report.passed, 5);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.total, 5);
+        for check in &report.checks {
+            assert_eq!(
+                check.status, CheckStatus::Pass,
+                "check '{}' should pass: {}",
+                check.name, check.message
+            );
+        }
+    }
+
+    #[test]
+    fn e2e_checks_cluster_unreachable() {
+        // Only tower available, sandbox expected but missing
+        let tower = make_check_snapshot("tower", true, true, true);
+        let snapshots = vec![tower];
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        assert_eq!(report.overall, CheckStatus::Fail);
+        let api_check = &report.checks[0];
+        assert_eq!(api_check.name, "cluster_api_reachable");
+        assert_eq!(api_check.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn e2e_checks_nodes_not_ready() {
+        let tower = make_check_snapshot("tower", false, true, true);
+        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let snapshots = vec![tower, sandbox];
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let node_check = &report.checks[1];
+        assert_eq!(node_check.name, "all_nodes_ready");
+        assert_eq!(node_check.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn e2e_checks_no_argocd() {
+        let tower = make_check_snapshot("tower", true, false, true);
+        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let snapshots = vec![tower, sandbox];
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let argocd_check = &report.checks[3];
+        assert_eq!(argocd_check.name, "argocd_synced");
+        assert_eq!(argocd_check.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn e2e_checks_no_cf_tunnel() {
+        let tower = make_check_snapshot("tower", true, true, false);
+        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let snapshots = vec![tower, sandbox];
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let cf_check = &report.checks[4];
+        assert_eq!(cf_check.name, "cf_tunnel_running");
+        assert_eq!(cf_check.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn e2e_checks_serializes_to_json() {
+        let tower = make_check_snapshot("tower", true, true, true);
+        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let snapshots = vec![tower, sandbox];
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let json = serde_json::to_string_pretty(&report).unwrap();
+        // Verify it's valid JSON with expected fields
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["overall"].as_str().unwrap(), "pass");
+        assert_eq!(parsed["passed"].as_u64().unwrap(), 5);
+        assert_eq!(parsed["total"].as_u64().unwrap(), 5);
+        let checks = parsed["checks"].as_array().unwrap();
+        assert_eq!(checks.len(), 5);
+        // Verify check names
+        let names: Vec<&str> = checks.iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "cluster_api_reachable",
+                "all_nodes_ready",
+                "namespaces_listed",
+                "argocd_synced",
+                "cf_tunnel_running",
+            ]
+        );
+    }
+
+    #[test]
+    fn e2e_checks_empty_namespaces_fails() {
+        let mut tower = make_check_snapshot("tower", true, true, true);
+        tower.namespaces.clear();
+        let snapshots = vec![tower];
+        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let ns_check = &report.checks[2];
+        assert_eq!(ns_check.name, "namespaces_listed");
+        assert_eq!(ns_check.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn e2e_checks_tower_missing_skips_argocd_and_cf() {
+        // Only sandbox available — ArgoCD and CF Tunnel checks should skip (tower-only)
+        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let snapshots = vec![sandbox];
+        let report = run_e2e_checks(&snapshots, &["sandbox"]);
+        let argocd_check = &report.checks[3];
+        assert_eq!(argocd_check.status, CheckStatus::Skip);
+        let cf_check = &report.checks[4];
+        assert_eq!(cf_check.status, CheckStatus::Skip);
     }
 }

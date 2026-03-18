@@ -4,4 +4,5 @@ kind: Kustomization
 namespace: kube-tunnel
 
 resources:
+  - config.yaml
   - deployment.yaml

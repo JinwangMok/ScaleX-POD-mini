@@ -5314,6 +5314,966 @@ mod tests {
         // No pods in test snapshot, so pending_shell_exec stays None
         assert!(app.pending_shell_exec.is_none());
     }
+
+    // --- AC-7 Sub-AC 1: Multi-cluster kubeconfig connection & cluster selector panel ---
+
+    #[test]
+    fn new_with_names_populates_cluster_selector_tree() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let app = App::new_with_names(&names, 1);
+
+        // Root node + 2 cluster nodes + Infrastructure node = 4 nodes
+        assert_eq!(app.tree.len(), 4);
+
+        // Root node
+        assert_eq!(app.tree[0].node_type, NodeType::Root);
+        assert!(app.tree[0].expanded);
+
+        // Cluster nodes listed in order
+        assert_eq!(
+            app.tree[1].node_type,
+            NodeType::Cluster("tower".to_string())
+        );
+        assert_eq!(app.tree[1].label, "tower");
+        assert_eq!(app.tree[1].depth, 1);
+
+        assert_eq!(
+            app.tree[2].node_type,
+            NodeType::Cluster("sandbox".to_string())
+        );
+        assert_eq!(app.tree[2].label, "sandbox");
+        assert_eq!(app.tree[2].depth, 1);
+
+        // Infrastructure footer
+        assert_eq!(app.tree[3].node_type, NodeType::InfraHeader);
+    }
+
+    #[test]
+    fn new_with_names_sets_all_clusters_to_discovering() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let app = App::new_with_names(&names, 1);
+
+        assert_eq!(app.cluster_connection_status.len(), 2);
+        assert!(matches!(
+            app.cluster_connection_status.get("tower"),
+            Some(ConnectionStatus::Discovering)
+        ));
+        assert!(matches!(
+            app.cluster_connection_status.get("sandbox"),
+            Some(ConnectionStatus::Discovering)
+        ));
+    }
+
+    #[test]
+    fn new_with_names_no_cluster_selected_initially() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let app = App::new_with_names(&names, 1);
+
+        assert!(app.selected_cluster.is_none());
+        assert!(app.selected_namespace.is_none());
+    }
+
+    #[test]
+    fn new_with_names_single_cluster() {
+        let names = vec!["tower".to_string()];
+        let app = App::new_with_names(&names, 1);
+
+        // Root + 1 cluster + Infrastructure = 3
+        assert_eq!(app.tree.len(), 3);
+        assert_eq!(
+            app.tree[1].node_type,
+            NodeType::Cluster("tower".to_string())
+        );
+        assert_eq!(app.cluster_connection_status.len(), 1);
+    }
+
+    #[test]
+    fn new_with_names_empty_clusters() {
+        let names: Vec<String> = vec![];
+        let app = App::new_with_names(&names, 1);
+
+        // Root + Infrastructure = 2 (no cluster nodes)
+        assert_eq!(app.tree.len(), 2);
+        assert_eq!(app.tree[0].node_type, NodeType::Root);
+        assert_eq!(app.tree[1].node_type, NodeType::InfraHeader);
+        assert!(app.cluster_connection_status.is_empty());
+    }
+
+    #[test]
+    fn cluster_selector_lists_all_available_clusters() {
+        let names = vec![
+            "tower".to_string(),
+            "sandbox".to_string(),
+            "dev".to_string(),
+        ];
+        let app = App::new_with_names(&names, 1);
+
+        // Extract cluster names from tree
+        let cluster_nodes: Vec<&str> = app
+            .tree
+            .iter()
+            .filter_map(|n| match &n.node_type {
+                NodeType::Cluster(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(cluster_nodes, vec!["tower", "sandbox", "dev"]);
+    }
+
+    #[test]
+    fn enter_on_cluster_selects_and_triggers_refresh() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let mut app = App::new_with_names(&names, 1);
+        app.tree_cursor = 2; // sandbox
+
+        app.handle_event(AppEvent::Enter);
+
+        assert_eq!(app.selected_cluster, Some("sandbox".to_string()));
+        assert!(app.needs_refresh);
+    }
+
+    #[test]
+    fn switching_between_clusters_updates_selection() {
+        let mut app = test_app();
+
+        // Select tower
+        app.tree_cursor = 1;
+        app.handle_event(AppEvent::Enter);
+        assert_eq!(app.selected_cluster, Some("tower".to_string()));
+
+        // Navigate to sandbox and select
+        app.tree_cursor = 2;
+        app.handle_event(AppEvent::Enter);
+        assert_eq!(app.selected_cluster, Some("sandbox".to_string()));
+    }
+
+    #[test]
+    fn cluster_nodes_start_collapsed() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let app = App::new_with_names(&names, 1);
+
+        for node in &app.tree {
+            if matches!(node.node_type, NodeType::Cluster(_)) {
+                assert!(!node.expanded, "Cluster nodes should start collapsed");
+                assert!(!node.children_loaded, "Children not loaded until expanded");
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_index_tracks_multi_cluster_data() {
+        let mut app = test_app();
+
+        // Simulate receiving snapshots for both clusters
+        app.snapshots = vec![
+            ClusterSnapshot {
+                name: "tower".into(),
+                health: HealthStatus::Green,
+                namespaces: vec!["default".into(), "kube-system".into()],
+                nodes: vec![],
+                pods: vec![],
+                deployments: vec![],
+                services: vec![],
+                configmaps: vec![],
+                events: vec![],
+                resource_usage: Default::default(),
+            },
+            ClusterSnapshot {
+                name: "sandbox".into(),
+                health: HealthStatus::Yellow,
+                namespaces: vec!["default".into()],
+                nodes: vec![],
+                pods: vec![],
+                deployments: vec![],
+                services: vec![],
+                configmaps: vec![],
+                events: vec![],
+                resource_usage: Default::default(),
+            },
+        ];
+        app.snapshot_index.insert("tower".into(), 0);
+        app.snapshot_index.insert("sandbox".into(), 1);
+
+        // Verify O(1) lookup by cluster name
+        assert_eq!(app.snapshots[app.snapshot_index["tower"]].name, "tower");
+        assert_eq!(app.snapshots[app.snapshot_index["sandbox"]].name, "sandbox");
+        assert_eq!(
+            app.snapshots[app.snapshot_index["tower"]].health,
+            HealthStatus::Green
+        );
+        assert_eq!(
+            app.snapshots[app.snapshot_index["sandbox"]].health,
+            HealthStatus::Yellow
+        );
+    }
+
+    #[test]
+    fn discover_complete_flag_starts_false_for_streaming() {
+        let names = vec!["tower".to_string()];
+        let app = App::new_with_names(&names, 1);
+
+        assert!(!app.discover_complete, "Discovery not yet complete on init");
+    }
+
+    // --- AC-7 Sub-AC 2: Namespace display and switching ---
+
+    /// Helper: create an App with tower expanded and namespaces populated in the sidebar tree
+    fn test_app_with_namespaces() -> App {
+        let mut app = test_app();
+        // Add snapshot with namespaces for tower
+        app.snapshots.push(ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![
+                "default".into(),
+                "kube-system".into(),
+                "argocd".into(),
+            ],
+            nodes: vec![],
+            pods: vec![],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: Default::default(),
+        });
+        app.snapshot_index.insert("tower".into(), 0);
+        // Expand tower cluster
+        app.tree[1].expanded = true;
+        app.tree[1].children_loaded = true;
+        // Insert "All Namespaces" + individual namespace children after tower (index 1)
+        let ns_children = vec![
+            TreeNode {
+                label: "All Namespaces".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "All Namespaces".into(),
+                },
+                children_loaded: false,
+                ns_count_label: None,
+            },
+            TreeNode {
+                label: "default".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "default".into(),
+                },
+                children_loaded: false,
+                ns_count_label: None,
+            },
+            TreeNode {
+                label: "kube-system".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "kube-system".into(),
+                },
+                children_loaded: false,
+                ns_count_label: None,
+            },
+            TreeNode {
+                label: "argocd".into(),
+                depth: 2,
+                expanded: false,
+                node_type: NodeType::Namespace {
+                    cluster: "tower".into(),
+                    namespace: "argocd".into(),
+                },
+                children_loaded: false,
+                ns_count_label: None,
+            },
+        ];
+        // Insert after tower (index 1), before sandbox (currently index 2)
+        for (i, child) in ns_children.into_iter().enumerate() {
+            app.tree.insert(2 + i, child);
+        }
+        // tree layout: [0:Root, 1:tower, 2:AllNS, 3:default, 4:kube-system, 5:argocd, 6:sandbox, 7:Infra]
+        app
+    }
+
+    #[test]
+    fn expanded_cluster_displays_all_namespaces_in_tree() {
+        let app = test_app_with_namespaces();
+        // tree: [Root, tower, AllNS, default, kube-system, argocd, sandbox, Infra]
+        assert_eq!(app.tree.len(), 8);
+
+        // Verify namespace nodes present with correct labels
+        let ns_labels: Vec<&str> = app.tree[2..6]
+            .iter()
+            .map(|n| n.label.as_str())
+            .collect();
+        assert_eq!(
+            ns_labels,
+            vec!["All Namespaces", "default", "kube-system", "argocd"]
+        );
+
+        // All namespace nodes reference the correct cluster
+        for node in &app.tree[2..6] {
+            match &node.node_type {
+                NodeType::Namespace { cluster, .. } => {
+                    assert_eq!(cluster, "tower");
+                }
+                other => panic!("expected Namespace node, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn select_namespace_updates_ctx_label() {
+        let mut app = test_app_with_namespaces();
+        app.tree_cursor = 4; // kube-system namespace
+        app.active_panel = ActivePanel::Sidebar;
+
+        app.handle_event(AppEvent::Enter);
+
+        assert_eq!(app.selected_cluster, Some("tower".into()));
+        assert_eq!(app.selected_namespace, Some("kube-system".into()));
+        assert_eq!(app.ctx_label, "tower > kube-system");
+    }
+
+    #[test]
+    fn switch_between_namespaces_updates_selection() {
+        let mut app = test_app_with_namespaces();
+        app.active_panel = ActivePanel::Sidebar;
+
+        // First select kube-system
+        app.tree_cursor = 4;
+        app.handle_event(AppEvent::Enter);
+        assert_eq!(app.selected_namespace, Some("kube-system".into()));
+        assert_eq!(app.ctx_label, "tower > kube-system");
+        let gen_after_first = app.fetch_generation;
+
+        // Now switch to argocd
+        app.tree_cursor = 5;
+        app.handle_event(AppEvent::Enter);
+        assert_eq!(app.selected_namespace, Some("argocd".into()));
+        assert_eq!(app.ctx_label, "tower > argocd");
+        // Fetch generation incremented on each switch
+        assert!(
+            app.fetch_generation > gen_after_first,
+            "fetch_generation should increment on namespace switch"
+        );
+    }
+
+    #[test]
+    fn select_all_namespaces_clears_namespace_filter() {
+        let mut app = test_app_with_namespaces();
+        app.active_panel = ActivePanel::Sidebar;
+
+        // First select a specific namespace
+        app.tree_cursor = 3; // "default"
+        app.handle_event(AppEvent::Enter);
+        assert_eq!(app.selected_namespace, Some("default".into()));
+
+        // Now select "All Namespaces"
+        app.tree_cursor = 2;
+        app.handle_event(AppEvent::Enter);
+        assert_eq!(
+            app.selected_namespace, None,
+            "All Namespaces should set selected_namespace to None"
+        );
+        assert_eq!(app.ctx_label, "tower > All Namespaces");
+        assert_eq!(app.selected_cluster, Some("tower".into()));
+    }
+
+    #[test]
+    fn namespace_switch_triggers_refresh() {
+        let mut app = test_app_with_namespaces();
+        app.active_panel = ActivePanel::Sidebar;
+        app.needs_refresh = false;
+
+        app.tree_cursor = 4; // kube-system
+        app.handle_event(AppEvent::Enter);
+
+        assert!(app.needs_refresh, "namespace selection should trigger refresh");
+        assert!(
+            app.refresh_selected_only,
+            "namespace switch should set refresh_selected_only"
+        );
+    }
+
+    #[test]
+    fn namespace_switch_resets_table_cursor() {
+        let mut app = test_app_with_namespaces();
+        app.active_panel = ActivePanel::Sidebar;
+        app.table_cursor = 10;
+        app.table_scroll_offset = 5;
+
+        app.tree_cursor = 4; // kube-system
+        app.handle_event(AppEvent::Enter);
+
+        assert_eq!(app.table_cursor, 0, "table cursor should reset on namespace switch");
+        assert_eq!(
+            app.table_scroll_offset, 0,
+            "table scroll offset should reset on namespace switch"
+        );
+    }
+
+    #[test]
+    fn namespace_switch_clears_fetched_resources() {
+        let mut app = test_app_with_namespaces();
+        app.active_panel = ActivePanel::Sidebar;
+        app.fetched_resources.insert(ActiveResource::Pods);
+        app.fetched_resources.insert(ActiveResource::Services);
+
+        app.tree_cursor = 4; // kube-system
+        app.handle_event(AppEvent::Enter);
+
+        assert!(
+            app.fetched_resources.is_empty(),
+            "fetched_resources should be cleared on namespace switch"
+        );
+    }
+
+    #[test]
+    fn ctx_title_span_matches_ctx_label() {
+        let mut app = test_app_with_namespaces();
+        app.active_panel = ActivePanel::Sidebar;
+
+        // Select a namespace and verify title span wraps label
+        app.tree_cursor = 5; // argocd
+        app.handle_event(AppEvent::Enter);
+
+        assert_eq!(app.ctx_label, "tower > argocd");
+        assert_eq!(app.ctx_title_span, "| tower > argocd ");
+    }
+
+    #[test]
+    fn namespace_nodes_are_leaves_in_tree() {
+        let app = test_app_with_namespaces();
+        // Namespace nodes should not be expandable (they're leaf nodes)
+        for node in &app.tree[2..6] {
+            assert!(!node.expanded, "namespace nodes should not be expanded");
+            assert!(
+                !node.children_loaded,
+                "namespace nodes have no children to load"
+            );
+        }
+    }
+
+    #[test]
+    fn left_on_namespace_navigates_to_parent_cluster() {
+        let mut app = test_app_with_namespaces();
+        app.active_panel = ActivePanel::Sidebar;
+        app.tree_cursor = 4; // kube-system (inside tower)
+
+        app.handle_event(AppEvent::Left);
+
+        // Should navigate to tower (parent cluster at index 1)
+        assert_eq!(app.tree_cursor, 1);
+    }
+
+    // --- AC-7 Sub-AC 3: Resource browsing (pods, services, deployments) within namespace across clusters ---
+
+    /// Helper: create App with two clusters containing pods, deployments, services
+    /// spread across multiple namespaces — for testing cross-cluster namespace-scoped browsing.
+    fn test_app_with_cross_cluster_resources() -> App {
+        use crate::dash::data::*;
+        let mut app = test_app();
+
+        let tower_snap = ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec![
+                "default".into(),
+                "kube-system".into(),
+                "argocd".into(),
+            ],
+            nodes: vec![NodeInfo {
+                name: "tower-cp-0".into(),
+                status: "Ready".into(),
+                roles: vec!["control-plane".into()],
+                cpu_capacity: "8".into(),
+                mem_capacity: "16Gi".into(),
+                cpu_allocatable: "8".into(),
+                mem_allocatable: "16Gi".into(),
+                age: "7d".into(),
+                ..Default::default()
+            }],
+            pods: vec![
+                PodInfo {
+                    name: "nginx-tower".into(),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "1h".into(),
+                    node: "tower-cp-0".into(),
+                    containers: vec!["nginx".into()],
+                },
+                PodInfo {
+                    name: "coredns-tower-a".into(),
+                    namespace: "kube-system".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "2h".into(),
+                    node: "tower-cp-0".into(),
+                    containers: vec!["coredns".into()],
+                },
+                PodInfo {
+                    name: "coredns-tower-b".into(),
+                    namespace: "kube-system".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "2h".into(),
+                    node: "tower-cp-0".into(),
+                    containers: vec!["coredns".into()],
+                },
+                PodInfo {
+                    name: "argocd-server-0".into(),
+                    namespace: "argocd".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "3h".into(),
+                    node: "tower-cp-0".into(),
+                    containers: vec!["argocd-server".into()],
+                },
+            ],
+            deployments: vec![
+                DeploymentInfo {
+                    name: "nginx".into(),
+                    namespace: "default".into(),
+                    ready: "1/1".into(),
+                    ready_count: 1,
+                    desired_count: 1,
+                    up_to_date: 1,
+                    up_to_date_display: "1".into(),
+                    available: 1,
+                    available_display: "1".into(),
+                    age: "1h".into(),
+                },
+                DeploymentInfo {
+                    name: "coredns".into(),
+                    namespace: "kube-system".into(),
+                    ready: "2/2".into(),
+                    ready_count: 2,
+                    desired_count: 2,
+                    up_to_date: 2,
+                    up_to_date_display: "2".into(),
+                    available: 2,
+                    available_display: "2".into(),
+                    age: "7d".into(),
+                },
+                DeploymentInfo {
+                    name: "argocd-server".into(),
+                    namespace: "argocd".into(),
+                    ready: "1/1".into(),
+                    ready_count: 1,
+                    desired_count: 1,
+                    up_to_date: 1,
+                    up_to_date_display: "1".into(),
+                    available: 1,
+                    available_display: "1".into(),
+                    age: "3h".into(),
+                },
+            ],
+            services: vec![
+                ServiceInfo {
+                    name: "kubernetes".into(),
+                    namespace: "default".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.1".into(),
+                    external_ip: "<none>".into(),
+                    ports: "443/TCP".into(),
+                    age: "7d".into(),
+                },
+                ServiceInfo {
+                    name: "kube-dns".into(),
+                    namespace: "kube-system".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.10".into(),
+                    external_ip: "<none>".into(),
+                    ports: "53/UDP,53/TCP".into(),
+                    age: "7d".into(),
+                },
+                ServiceInfo {
+                    name: "argocd-server".into(),
+                    namespace: "argocd".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.50".into(),
+                    external_ip: "<none>".into(),
+                    ports: "443/TCP".into(),
+                    age: "3h".into(),
+                },
+            ],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: ResourceUsage::default(),
+        };
+
+        let sandbox_snap = ClusterSnapshot {
+            name: "sandbox".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into(), "kube-system".into()],
+            nodes: vec![NodeInfo {
+                name: "sandbox-cp-0".into(),
+                status: "Ready".into(),
+                roles: vec!["control-plane".into()],
+                cpu_capacity: "4".into(),
+                mem_capacity: "8Gi".into(),
+                cpu_allocatable: "4".into(),
+                mem_allocatable: "8Gi".into(),
+                age: "5d".into(),
+                ..Default::default()
+            }],
+            pods: vec![
+                PodInfo {
+                    name: "nginx-sandbox".into(),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "4h".into(),
+                    node: "sandbox-cp-0".into(),
+                    containers: vec!["nginx".into()],
+                },
+                PodInfo {
+                    name: "coredns-sandbox".into(),
+                    namespace: "kube-system".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "5h".into(),
+                    node: "sandbox-cp-0".into(),
+                    containers: vec!["coredns".into()],
+                },
+            ],
+            deployments: vec![
+                DeploymentInfo {
+                    name: "nginx".into(),
+                    namespace: "default".into(),
+                    ready: "1/1".into(),
+                    ready_count: 1,
+                    desired_count: 1,
+                    up_to_date: 1,
+                    up_to_date_display: "1".into(),
+                    available: 1,
+                    available_display: "1".into(),
+                    age: "4h".into(),
+                },
+                DeploymentInfo {
+                    name: "coredns".into(),
+                    namespace: "kube-system".into(),
+                    ready: "1/1".into(),
+                    ready_count: 1,
+                    desired_count: 1,
+                    up_to_date: 1,
+                    up_to_date_display: "1".into(),
+                    available: 1,
+                    available_display: "1".into(),
+                    age: "5d".into(),
+                },
+            ],
+            services: vec![
+                ServiceInfo {
+                    name: "kubernetes".into(),
+                    namespace: "default".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.1".into(),
+                    external_ip: "<none>".into(),
+                    ports: "443/TCP".into(),
+                    age: "5d".into(),
+                },
+                ServiceInfo {
+                    name: "kube-dns".into(),
+                    namespace: "kube-system".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.10".into(),
+                    external_ip: "<none>".into(),
+                    ports: "53/UDP,53/TCP".into(),
+                    age: "5d".into(),
+                },
+            ],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: ResourceUsage::default(),
+        };
+
+        app.snapshots = vec![tower_snap, sandbox_snap];
+        app.rebuild_snapshot_index();
+        app
+    }
+
+    #[test]
+    fn browse_pods_in_namespace_across_clusters() {
+        let app = test_app_with_cross_cluster_resources();
+
+        // Browse tower kube-system pods
+        let tower_snap = &app.snapshots[app.snapshot_index["tower"]];
+        let tower_ks_pods: Vec<_> = tower_snap
+            .pods
+            .iter()
+            .filter(|p| p.namespace == "kube-system")
+            .collect();
+        assert_eq!(tower_ks_pods.len(), 2, "tower has 2 kube-system pods");
+        assert!(tower_ks_pods.iter().any(|p| p.name == "coredns-tower-a"));
+        assert!(tower_ks_pods.iter().any(|p| p.name == "coredns-tower-b"));
+
+        // Browse sandbox kube-system pods
+        let sandbox_snap = &app.snapshots[app.snapshot_index["sandbox"]];
+        let sandbox_ks_pods: Vec<_> = sandbox_snap
+            .pods
+            .iter()
+            .filter(|p| p.namespace == "kube-system")
+            .collect();
+        assert_eq!(sandbox_ks_pods.len(), 1, "sandbox has 1 kube-system pod");
+        assert_eq!(sandbox_ks_pods[0].name, "coredns-sandbox");
+    }
+
+    #[test]
+    fn browse_deployments_in_namespace_across_clusters() {
+        let app = test_app_with_cross_cluster_resources();
+
+        // Tower default namespace: nginx deployment
+        let tower_snap = &app.snapshots[app.snapshot_index["tower"]];
+        let tower_default_deploys: Vec<_> = tower_snap
+            .deployments
+            .iter()
+            .filter(|d| d.namespace == "default")
+            .collect();
+        assert_eq!(tower_default_deploys.len(), 1);
+        assert_eq!(tower_default_deploys[0].name, "nginx");
+        assert_eq!(tower_default_deploys[0].ready_count, 1);
+
+        // Sandbox default namespace: also has nginx deployment
+        let sandbox_snap = &app.snapshots[app.snapshot_index["sandbox"]];
+        let sandbox_default_deploys: Vec<_> = sandbox_snap
+            .deployments
+            .iter()
+            .filter(|d| d.namespace == "default")
+            .collect();
+        assert_eq!(sandbox_default_deploys.len(), 1);
+        assert_eq!(sandbox_default_deploys[0].name, "nginx");
+
+        // Tower argocd namespace: argocd-server deployment (not present in sandbox)
+        let tower_argocd_deploys: Vec<_> = tower_snap
+            .deployments
+            .iter()
+            .filter(|d| d.namespace == "argocd")
+            .collect();
+        assert_eq!(tower_argocd_deploys.len(), 1);
+        assert_eq!(tower_argocd_deploys[0].name, "argocd-server");
+    }
+
+    #[test]
+    fn browse_services_in_namespace_across_clusters() {
+        let app = test_app_with_cross_cluster_resources();
+
+        // Tower has 3 services across 3 namespaces
+        let tower_snap = &app.snapshots[app.snapshot_index["tower"]];
+        assert_eq!(tower_snap.services.len(), 3);
+        let tower_ns: std::collections::HashSet<&str> = tower_snap
+            .services
+            .iter()
+            .map(|s| s.namespace.as_str())
+            .collect();
+        assert!(tower_ns.contains("default"));
+        assert!(tower_ns.contains("kube-system"));
+        assert!(tower_ns.contains("argocd"));
+
+        // Sandbox has 2 services across 2 namespaces
+        let sandbox_snap = &app.snapshots[app.snapshot_index["sandbox"]];
+        assert_eq!(sandbox_snap.services.len(), 2);
+        let sandbox_ns: std::collections::HashSet<&str> = sandbox_snap
+            .services
+            .iter()
+            .map(|s| s.namespace.as_str())
+            .collect();
+        assert!(sandbox_ns.contains("default"));
+        assert!(sandbox_ns.contains("kube-system"));
+    }
+
+    #[test]
+    fn switch_cluster_shows_different_resource_sets() {
+        let mut app = test_app_with_cross_cluster_resources();
+        app.resource_view = ResourceView::Pods;
+
+        // Select tower: 4 pods total
+        app.selected_cluster = Some("tower".into());
+        let tower_snap = app.current_snapshot().unwrap();
+        assert_eq!(tower_snap.pods.len(), 4);
+
+        // Switch to sandbox: 2 pods total
+        app.selected_cluster = Some("sandbox".into());
+        let sandbox_snap = app.current_snapshot().unwrap();
+        assert_eq!(sandbox_snap.pods.len(), 2);
+    }
+
+    #[test]
+    fn switch_resource_type_within_same_namespace_context() {
+        let mut app = test_app_with_cross_cluster_resources();
+        app.selected_cluster = Some("tower".into());
+        app.selected_namespace = Some("kube-system".into());
+        app.active_panel = ActivePanel::Center;
+
+        // Start with Pods
+        app.resource_view = ResourceView::Pods;
+        let snap = app.current_snapshot().unwrap();
+        let ks_pods: Vec<_> = snap
+            .pods
+            .iter()
+            .filter(|p| p.namespace == "kube-system")
+            .collect();
+        assert_eq!(ks_pods.len(), 2);
+
+        // Switch to Deployments (p -> d)
+        app.handle_event(AppEvent::ResourceType('d'));
+        assert_eq!(app.resource_view, ResourceView::Deployments);
+        // namespace context preserved
+        assert_eq!(app.selected_namespace, Some("kube-system".into()));
+        let snap = app.current_snapshot().unwrap();
+        let ks_deploys: Vec<_> = snap
+            .deployments
+            .iter()
+            .filter(|d| d.namespace == "kube-system")
+            .collect();
+        assert_eq!(ks_deploys.len(), 1);
+        assert_eq!(ks_deploys[0].name, "coredns");
+
+        // Switch to Services (d -> s)
+        app.handle_event(AppEvent::ResourceType('s'));
+        assert_eq!(app.resource_view, ResourceView::Services);
+        assert_eq!(app.selected_namespace, Some("kube-system".into()));
+        let snap = app.current_snapshot().unwrap();
+        let ks_svcs: Vec<_> = snap
+            .services
+            .iter()
+            .filter(|s| s.namespace == "kube-system")
+            .collect();
+        assert_eq!(ks_svcs.len(), 1);
+        assert_eq!(ks_svcs[0].name, "kube-dns");
+    }
+
+    #[test]
+    fn all_namespaces_shows_full_resource_set() {
+        let mut app = test_app_with_cross_cluster_resources();
+        app.selected_cluster = Some("tower".into());
+        app.selected_namespace = None; // all namespaces
+
+        let snap = app.current_snapshot().unwrap();
+        assert_eq!(snap.pods.len(), 4, "all pods visible in all-namespaces mode");
+        assert_eq!(snap.deployments.len(), 3, "all deploys visible");
+        assert_eq!(snap.services.len(), 3, "all services visible");
+    }
+
+    #[test]
+    fn resource_view_keyboard_shortcuts_cycle_through_types() {
+        let mut app = test_app_with_cross_cluster_resources();
+        app.selected_cluster = Some("tower".into());
+        app.active_panel = ActivePanel::Center;
+
+        // p -> Pods
+        app.handle_event(AppEvent::ResourceType('p'));
+        assert_eq!(app.resource_view, ResourceView::Pods);
+
+        // d -> Deployments
+        app.handle_event(AppEvent::ResourceType('d'));
+        assert_eq!(app.resource_view, ResourceView::Deployments);
+
+        // s -> Services
+        app.handle_event(AppEvent::ResourceType('s'));
+        assert_eq!(app.resource_view, ResourceView::Services);
+
+        // All operations kept the cluster selected
+        assert_eq!(app.selected_cluster, Some("tower".into()));
+    }
+
+    #[test]
+    fn namespace_unique_resources_only_in_one_cluster() {
+        let app = test_app_with_cross_cluster_resources();
+
+        // argocd namespace only exists in tower
+        let tower_snap = &app.snapshots[app.snapshot_index["tower"]];
+        assert!(tower_snap.namespaces.contains(&"argocd".to_string()));
+
+        let sandbox_snap = &app.snapshots[app.snapshot_index["sandbox"]];
+        assert!(
+            !sandbox_snap.namespaces.contains(&"argocd".to_string()),
+            "argocd should only be in tower"
+        );
+
+        // argocd resources only in tower
+        let tower_argocd_pods: Vec<_> = tower_snap
+            .pods
+            .iter()
+            .filter(|p| p.namespace == "argocd")
+            .collect();
+        assert_eq!(tower_argocd_pods.len(), 1);
+
+        let sandbox_argocd_pods: Vec<_> = sandbox_snap
+            .pods
+            .iter()
+            .filter(|p| p.namespace == "argocd")
+            .collect();
+        assert_eq!(sandbox_argocd_pods.len(), 0);
+    }
+
+    #[test]
+    fn headless_filter_pods_preserves_namespace_field() {
+        use crate::dash::data::*;
+        let snap = ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into(), "kube-system".into()],
+            nodes: vec![],
+            pods: vec![
+                PodInfo {
+                    name: "app-1".into(),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "1h".into(),
+                    node: "n1".into(),
+                    containers: vec![],
+                },
+                PodInfo {
+                    name: "dns-1".into(),
+                    namespace: "kube-system".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "2h".into(),
+                    node: "n1".into(),
+                    containers: vec![],
+                },
+            ],
+            deployments: vec![],
+            services: vec![],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: ResourceUsage::default(),
+        };
+
+        let result = filter_snapshot_by_resource(&[snap], "pods");
+        let pods = result["clusters"][0]["pods"].as_array().unwrap();
+        assert_eq!(pods.len(), 2);
+
+        // Each pod retains its namespace field in JSON output
+        let ns_values: Vec<&str> = pods
+            .iter()
+            .map(|p| p["namespace"].as_str().unwrap())
+            .collect();
+        assert!(ns_values.contains(&"default"));
+        assert!(ns_values.contains(&"kube-system"));
+    }
 }
 
 // ---------------------------------------------------------------------------

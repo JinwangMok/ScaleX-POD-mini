@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+  labels:
+    app: cloudflared-tunnel
+data:
+  config.yaml: |
+    # Cloudflared tunnel ingress rules
+    # All API endpoints point to kube-vip VIP addresses (not individual node IPs)
+    # to ensure HA failover works transparently through the tunnel.
+    tunnel: scalex-pod-mini
+    no-autoupdate: true
+    protocol: http2
+    ingress:
+      # Tower cluster API via kube-vip VIP (192.168.88.99)
+      - hostname: tower-api.jinwang.dev
+        service: https://192.168.88.99:6443
+        originRequest:
+          noTLSVerify: true
+      # Sandbox cluster API via kube-vip VIP (192.168.88.109)
+      - hostname: sandbox-api.jinwang.dev
+        service: https://192.168.88.109:6443
+        originRequest:
+          noTLSVerify: true
+      # ArgoCD dashboard (in-cluster service)
+      - hostname: cd.jinwang.dev
+        service: http://argocd-server.argocd.svc.cluster.local:80
+      # Keycloak auth (in-cluster service)
+      - hostname: auth.jinwang.dev
+        service: http://keycloak.keycloak.svc.cluster.local:80
+      # Catch-all: return 404
+      - service: http_status:404
