@@ -505,7 +505,7 @@ mod tests {
             enable_nodelocaldns: true,
             kube_network_node_prefix: 24,
             ntp_enabled: true,
-            etcd_deployment_type: "host".to_string(),
+            etcd_deployment_type: "kubeadm".to_string(),
             dns_mode: "coredns".to_string(),
         }
     }
@@ -1597,7 +1597,7 @@ supplementary_addresses_in_ssl_keys:
     }
 
     /// etcd_deployment_type must be explicitly set for production clusters.
-    /// Default: "host" (recommended for production — avoids container orchestration overhead)
+    /// Default: "kubeadm" (etcd runs as static pod — no /etc/ssl/etcd/ssl directory needed)
     #[test]
     fn test_cluster_vars_etcd_deployment_type() {
         let common = make_common();
@@ -1606,11 +1606,11 @@ supplementary_addresses_in_ssl_keys:
 
         assert!(
             vars.contains("etcd_deployment_type:"),
-            "missing etcd_deployment_type — required for production (DataX uses 'host')"
+            "missing etcd_deployment_type — required for production"
         );
         assert!(
-            vars.contains("etcd_deployment_type: host"),
-            "etcd_deployment_type should default to 'host'"
+            vars.contains("etcd_deployment_type: kubeadm"),
+            "etcd_deployment_type should default to 'kubeadm'"
         );
     }
 
@@ -2080,7 +2080,7 @@ supplementary_addresses_in_ssl_keys:
             enable_nodelocaldns: true,
             kube_network_node_prefix: 24,
             ntp_enabled: true,
-            etcd_deployment_type: "host".to_string(),
+            etcd_deployment_type: "kubeadm".to_string(),
             dns_mode: "coredns".to_string(),
         };
 

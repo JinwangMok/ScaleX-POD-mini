@@ -92,7 +92,7 @@ fn default_node_prefix() -> u32 {
 }
 
 fn default_etcd_deployment_type() -> String {
-    "host".to_string()
+    "kubeadm".to_string()
 }
 
 fn default_dns_mode() -> String {

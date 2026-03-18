@@ -1191,8 +1191,8 @@ mod tests {
 
         // DataX-critical production settings must all be present in CommonConfig
         assert_eq!(
-            common.etcd_deployment_type, "host",
-            "etcd must use host deployment"
+            common.etcd_deployment_type, "kubeadm",
+            "etcd must use kubeadm deployment (static pod)"
         );
         assert_eq!(common.dns_mode, "coredns", "DNS must use coredns");
         assert!(
@@ -3631,7 +3631,7 @@ spec:
                     enable_nodelocaldns: true,
                     kube_network_node_prefix: 24,
                     ntp_enabled: true,
-                    etcd_deployment_type: "host".to_string(),
+                    etcd_deployment_type: "kubeadm".to_string(),
                     dns_mode: "coredns".to_string(),
                 },
                 clusters: vec![
@@ -3928,7 +3928,7 @@ spec:
                     enable_nodelocaldns: true,
                     kube_network_node_prefix: 24,
                     ntp_enabled: true,
-                    etcd_deployment_type: "host".to_string(),
+                    etcd_deployment_type: "kubeadm".to_string(),
                     dns_mode: "coredns".to_string(),
                 },
                 clusters: vec![
@@ -4262,7 +4262,7 @@ spec:
             enable_nodelocaldns: true,
             kube_network_node_prefix: 24,
             ntp_enabled: true,
-            etcd_deployment_type: "host".to_string(),
+            etcd_deployment_type: "kubeadm".to_string(),
             dns_mode: "coredns".to_string(),
         };
 
@@ -5675,10 +5675,10 @@ config:
             "Container runtime must be containerd"
         );
 
-        // etcd must be host deployment (production recommendation)
+        // etcd must use kubeadm deployment (static pod, no /etc/ssl/etcd/ssl needed)
         assert!(
-            k8s_clusters.contains("etcd_deployment_type: \"host\""),
-            "etcd deployment must be 'host' for production"
+            k8s_clusters.contains("etcd_deployment_type: \"kubeadm\""),
+            "etcd deployment must be 'kubeadm' for production"
         );
     }
 
@@ -6501,7 +6501,7 @@ config:
     enable_nodelocaldns: true
     kube_network_node_prefix: 24
     ntp_enabled: true
-    etcd_deployment_type: "host"
+    etcd_deployment_type: "kubeadm"
     dns_mode: "coredns"
   clusters:
     - cluster_name: "tower"
@@ -6614,7 +6614,7 @@ config:
     enable_nodelocaldns: true
     kube_network_node_prefix: 24
     ntp_enabled: true
-    etcd_deployment_type: "host"
+    etcd_deployment_type: "kubeadm"
     dns_mode: "coredns"
 
   clusters:
