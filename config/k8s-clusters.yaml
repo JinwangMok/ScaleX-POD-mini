@@ -1,0 +1,101 @@
+config:
+  common:
+    kubernetes_version: "1.33.1"
+    kubespray_version: "v2.30.0"
+    container_runtime: "containerd"
+    cni: "cilium"
+    cilium_version: "1.17.5"
+    kube_proxy_remove: true
+    cgroup_driver: "systemd"
+    helm_enabled: true
+    kube_apiserver_admission_plugins:
+      - NodeRestriction
+      - PodTolerationRestriction
+    firewalld_enabled: false
+    kube_vip_enabled: false  # Per-cluster override below for tower HA
+    graceful_node_shutdown: true
+    graceful_node_shutdown_sec: 120
+    kubelet_custom_flags:
+      - "--node-ip={{ ip }}"
+    gateway_api_enabled: true
+    gateway_api_version: "1.3.0"
+    kubeconfig_localhost: true
+    kubectl_localhost: true
+    enable_nodelocaldns: true
+    kube_network_node_prefix: 24
+    ntp_enabled: true
+    etcd_deployment_type: "kubeadm"
+    dns_mode: "coredns"
+
+  clusters:
+    # Tower: HA management cluster — 3 CPs with kube-vip VIP
+    - cluster_name: "tower"
+      api_endpoint: "https://tower-api.jinwang.dev"
+      cluster_sdi_resource_pool: "tower"
+      cluster_role: "management"
+      ssh_user: "jinwang"
+      network:
+        pod_cidr: "10.244.0.0/20"
+        service_cidr: "10.96.0.0/20"
+        dns_domain: "tower.local"
+      cilium:
+        cluster_id: 1
+        cluster_name: "tower"
+      kubespray_extra_vars:
+        kube_api_anonymous_auth: true
+        # kube-proxy settings (required by kube-vip conditional checks)
+        kube_proxy_mode: "ipvs"
+        kube_proxy_strict_arp: true
+        # kube-vip: static pod, L2/ARP mode for HA control plane
+        kube_vip_enabled: true
+        kube_vip_controlplane_enabled: true
+        kube_vip_address: "192.168.88.99"
+        kube_vip_arp_enabled: true
+        loadbalancer_apiserver:
+          address: "192.168.88.99"
+          port: 6443
+        supplementary_addresses_in_ssl_keys:
+          - "192.168.88.99"    # kube-vip VIP
+          - "100.64.0.1"       # Tailscale bastion IP
+
+    # Sandbox: workload cluster — 1 CP + 2 workers, kube-vip VIP for future HA
+    - cluster_name: "sandbox"
+      api_endpoint: "https://sandbox-api.jinwang.dev"
+      cluster_sdi_resource_pool: "sandbox"
+      cluster_role: "workload"
+      ssh_user: "jinwang"
+      network:
+        pod_cidr: "10.233.0.0/17"
+        service_cidr: "10.233.128.0/18"
+        dns_domain: "sandbox.local"
+      cilium:
+        cluster_id: 2
+        cluster_name: "sandbox"
+      kubespray_extra_vars:
+        kube_api_anonymous_auth: true
+        # kube-proxy settings (required by kube-vip conditional checks)
+        kube_proxy_mode: "ipvs"
+        kube_proxy_strict_arp: true
+        # kube-vip: static pod, L2/ARP mode — VIP for stable API endpoint
+        kube_vip_enabled: true
+        kube_vip_controlplane_enabled: true
+        kube_vip_address: "192.168.88.109"
+        kube_vip_arp_enabled: true
+        loadbalancer_apiserver:
+          address: "192.168.88.109"
+          port: 6443
+        supplementary_addresses_in_ssl_keys:
+          - "192.168.88.109"   # kube-vip VIP
+          - "100.64.0.1"       # Tailscale bastion IP
+
+  argocd:
+    namespace: "argocd"
+    repo_url: "https://github.com/JinwangMok/ScaleX-POD-mini.git"
+    repo_branch: "main"
+    tower_manages: ["sandbox"]
+
+  domains:
+    auth: "auth.jinwang.dev"
+    argocd: "cd.jinwang.dev"
+    tower_api: "tower-api.jinwang.dev"
+    sandbox_api: "sandbox-api.jinwang.dev"
