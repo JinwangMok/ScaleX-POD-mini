@@ -341,8 +341,7 @@ async fn exec_task(
                             match stdout.read(&mut buf).await {
                                 Ok(0) => break, // EOF
                                 Ok(n) => {
-                                    let _ =
-                                        tx_stdout.send(ExecMessage::Stdout(buf[..n].to_vec()));
+                                    let _ = tx_stdout.send(ExecMessage::Stdout(buf[..n].to_vec()));
                                 }
                                 Err(e) => {
                                     let _ = tx_stdout
@@ -363,8 +362,7 @@ async fn exec_task(
                             match stderr.read(&mut buf).await {
                                 Ok(0) => break,
                                 Ok(n) => {
-                                    let _ =
-                                        tx_stderr.send(ExecMessage::Stderr(buf[..n].to_vec()));
+                                    let _ = tx_stderr.send(ExecMessage::Stderr(buf[..n].to_vec()));
                                 }
                                 Err(e) => {
                                     let _ = tx_stderr
@@ -521,10 +519,7 @@ mod tests {
 
     #[test]
     fn terminal_size_copy() {
-        let ts = TerminalSize {
-            cols: 80,
-            rows: 24,
-        };
+        let ts = TerminalSize { cols: 80, rows: 24 };
         let ts2 = ts; // Copy
         assert_eq!(ts2.cols, 80);
         assert_eq!(ts2.rows, 24);
@@ -701,10 +696,8 @@ mod tests {
         let (mut session, tx, _, _) = make_test_session();
         tx.send(ExecMessage::Stdout(b"line1\nline2\n".to_vec()))
             .unwrap();
-        tx.send(ExecMessage::Stderr(b"warning\n".to_vec()))
-            .unwrap();
-        tx.send(ExecMessage::Stdout(b"line3\n".to_vec()))
-            .unwrap();
+        tx.send(ExecMessage::Stderr(b"warning\n".to_vec())).unwrap();
+        tx.send(ExecMessage::Stdout(b"line3\n".to_vec())).unwrap();
 
         let msgs = session.poll_messages();
         assert_eq!(msgs.len(), 3);
@@ -727,8 +720,7 @@ mod tests {
         session.poll_messages();
         assert_eq!(session.line_count(), 1);
 
-        tx.send(ExecMessage::Stdout(b"second\n".to_vec()))
-            .unwrap();
+        tx.send(ExecMessage::Stdout(b"second\n".to_vec())).unwrap();
         session.poll_messages();
         assert_eq!(session.line_count(), 2);
         assert_eq!(session.output_lines[0], "first");

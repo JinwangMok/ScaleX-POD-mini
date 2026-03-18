@@ -423,14 +423,12 @@ fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
     if needle_bytes.len() > haystack_bytes.len() {
         return false;
     }
-    haystack_bytes
-        .windows(needle_bytes.len())
-        .any(|window| {
-            window
-                .iter()
-                .zip(needle_bytes.iter())
-                .all(|(h, n)| h.to_ascii_lowercase() == *n)
-        })
+    haystack_bytes.windows(needle_bytes.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle_bytes.iter())
+            .all(|(h, n)| h.to_ascii_lowercase() == *n)
+    })
 }
 
 impl App {
@@ -786,7 +784,9 @@ impl App {
                 // Number keys (1/2) map to Tab events but should type digits in search mode
                 AppEvent::Tab(n) if (1..=9).contains(&n) => {
                     let digit = char::from_digit(n as u32, 10).unwrap_or('0');
-                    self.search_query.get_or_insert_with(String::new).push(digit);
+                    self.search_query
+                        .get_or_insert_with(String::new)
+                        .push(digit);
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
                 }
@@ -939,7 +939,6 @@ impl App {
             }
             return;
         }
-
 
         // Port-picker modal — intercept events when visible
         if self.port_picker.visible {
@@ -1241,7 +1240,9 @@ impl App {
     /// Check if a resource matches search by name OR namespace (case-insensitive, zero-allocation).
     pub fn matches_search_with_ns(&self, name: &str, namespace: &str) -> bool {
         match &self.search_query_lower {
-            Some(q) => contains_ignore_ascii_case(name, q) || contains_ignore_ascii_case(namespace, q),
+            Some(q) => {
+                contains_ignore_ascii_case(name, q) || contains_ignore_ascii_case(namespace, q)
+            }
             None => true,
         }
     }
@@ -1250,18 +1251,28 @@ impl App {
     /// Resolves resource type → creates DynamicResourceData → queues fetch.
     /// Open YAML/describe modal for the currently selected resource.
     fn open_describe_for_selected(&mut self) {
-        if self.active_tab != 0 { return; }
+        if self.active_tab != 0 {
+            return;
+        }
         let info = {
-            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let snapshot = match self.current_snapshot() {
+                Some(s) => s,
+                None => return,
+            };
             let search_lower = self.search_query_lower.clone();
             match self.resource_view {
                 ResourceView::Pods => {
-                    let filtered: Vec<_> = snapshot.pods.iter()
+                    let filtered: Vec<_> = snapshot
+                        .pods
+                        .iter()
                         .filter(|p| match &search_lower {
-                            Some(q) => contains_ignore_ascii_case(&p.name, q)
-                                || contains_ignore_ascii_case(&p.namespace, q),
+                            Some(q) => {
+                                contains_ignore_ascii_case(&p.name, q)
+                                    || contains_ignore_ascii_case(&p.namespace, q)
+                            }
                             None => true,
-                        }).collect();
+                        })
+                        .collect();
                     filtered.get(self.table_cursor).map(|pod| {
                         let content = format!(
                             "Name:         {}\nNamespace:    {}\nNode:         {}\nStatus:       {}\nReady:        {}\nRestarts:     {}\nAge:          {}\nContainers:   {}\n",
@@ -1273,12 +1284,17 @@ impl App {
                     })
                 }
                 ResourceView::Deployments => {
-                    let filtered: Vec<_> = snapshot.deployments.iter()
+                    let filtered: Vec<_> = snapshot
+                        .deployments
+                        .iter()
                         .filter(|d| match &search_lower {
-                            Some(q) => contains_ignore_ascii_case(&d.name, q)
-                                || contains_ignore_ascii_case(&d.namespace, q),
+                            Some(q) => {
+                                contains_ignore_ascii_case(&d.name, q)
+                                    || contains_ignore_ascii_case(&d.namespace, q)
+                            }
                             None => true,
-                        }).collect();
+                        })
+                        .collect();
                     filtered.get(self.table_cursor).map(|dep| {
                         let content = format!(
                             "Name:         {}\nNamespace:    {}\nReady:        {}\nUp-to-date:   {}\nAvailable:    {}\nAge:          {}\n",
@@ -1289,12 +1305,17 @@ impl App {
                     })
                 }
                 ResourceView::Services => {
-                    let filtered: Vec<_> = snapshot.services.iter()
+                    let filtered: Vec<_> = snapshot
+                        .services
+                        .iter()
                         .filter(|s| match &search_lower {
-                            Some(q) => contains_ignore_ascii_case(&s.name, q)
-                                || contains_ignore_ascii_case(&s.namespace, q),
+                            Some(q) => {
+                                contains_ignore_ascii_case(&s.name, q)
+                                    || contains_ignore_ascii_case(&s.namespace, q)
+                            }
                             None => true,
-                        }).collect();
+                        })
+                        .collect();
                     filtered.get(self.table_cursor).map(|svc| {
                         let content = format!(
                             "Name:         {}\nNamespace:    {}\nType:         {}\nCluster-IP:   {}\nExternal-IP:  {}\nPorts:        {}\nAge:          {}\n",
@@ -1305,11 +1326,14 @@ impl App {
                     })
                 }
                 ResourceView::Nodes => {
-                    let filtered: Vec<_> = snapshot.nodes.iter()
+                    let filtered: Vec<_> = snapshot
+                        .nodes
+                        .iter()
                         .filter(|n| match &search_lower {
                             Some(q) => contains_ignore_ascii_case(&n.name, q),
                             None => true,
-                        }).collect();
+                        })
+                        .collect();
                     filtered.get(self.table_cursor).map(|node| {
                         let content = format!(
                             "Name:         {}\nStatus:       {}\nRoles:        {}\nVersion:      {}\nAge:          {}\nCPU:          {}\nMemory:       {}/{}\n",
@@ -1321,12 +1345,17 @@ impl App {
                     })
                 }
                 ResourceView::ConfigMaps => {
-                    let filtered: Vec<_> = snapshot.configmaps.iter()
+                    let filtered: Vec<_> = snapshot
+                        .configmaps
+                        .iter()
                         .filter(|cm| match &search_lower {
-                            Some(q) => contains_ignore_ascii_case(&cm.name, q)
-                                || contains_ignore_ascii_case(&cm.namespace, q),
+                            Some(q) => {
+                                contains_ignore_ascii_case(&cm.name, q)
+                                    || contains_ignore_ascii_case(&cm.namespace, q)
+                            }
                             None => true,
-                        }).collect();
+                        })
+                        .collect();
                     filtered.get(self.table_cursor).map(|cm| {
                         let content = format!(
                             "Name:         {}\nNamespace:    {}\nData:         {}\nAge:          {}\n",
@@ -1336,14 +1365,19 @@ impl App {
                     })
                 }
                 ResourceView::Events => {
-                    let filtered: Vec<_> = snapshot.events.iter()
+                    let filtered: Vec<_> = snapshot
+                        .events
+                        .iter()
                         .filter(|ev| match &search_lower {
-                            Some(q) => contains_ignore_ascii_case(&ev.reason, q)
-                                || contains_ignore_ascii_case(&ev.namespace, q)
-                                || contains_ignore_ascii_case(&ev.object, q)
-                                || contains_ignore_ascii_case(&ev.message, q),
+                            Some(q) => {
+                                contains_ignore_ascii_case(&ev.reason, q)
+                                    || contains_ignore_ascii_case(&ev.namespace, q)
+                                    || contains_ignore_ascii_case(&ev.object, q)
+                                    || contains_ignore_ascii_case(&ev.message, q)
+                            }
                             None => true,
-                        }).collect();
+                        })
+                        .collect();
                     filtered.get(self.table_cursor).map(|ev| {
                         let content = format!(
                             "Namespace:    {}\nType:         {}\nReason:       {}\nObject:       {}\nMessage:      {}\nCount:        {}\nLast Seen:    {}\nAge:          {}\n",
@@ -1374,29 +1408,44 @@ impl App {
 
     /// Open log viewer for the currently selected pod.
     fn open_logs_for_selected(&mut self) {
-        if self.active_tab != 0 { return; }
+        if self.active_tab != 0 {
+            return;
+        }
         if self.resource_view != ResourceView::Pods {
             self.toasts.warn("Logs are only available for Pods");
             return;
         }
         let pod_data = {
-            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let snapshot = match self.current_snapshot() {
+                Some(s) => s,
+                None => return,
+            };
             let search_lower = self.search_query_lower.clone();
-            let filtered: Vec<_> = snapshot.pods.iter()
+            let filtered: Vec<_> = snapshot
+                .pods
+                .iter()
                 .filter(|p| match &search_lower {
-                    Some(q) => contains_ignore_ascii_case(&p.name, q)
-                        || contains_ignore_ascii_case(&p.namespace, q),
+                    Some(q) => {
+                        contains_ignore_ascii_case(&p.name, q)
+                            || contains_ignore_ascii_case(&p.namespace, q)
+                    }
                     None => true,
-                }).collect();
+                })
+                .collect();
             filtered.get(self.table_cursor).map(|pod| {
-                (pod.name.clone(), pod.namespace.clone(), pod.containers.clone())
+                (
+                    pod.name.clone(),
+                    pod.namespace.clone(),
+                    pod.containers.clone(),
+                )
             })
         };
         if let Some((pod_name, namespace, containers)) = pod_data {
             let cluster_name = self.selected_cluster.clone().unwrap_or_default();
             // Use first container (container selector integration in Phase 3)
             let container = containers.first().cloned().unwrap_or_default();
-            self.log_viewer.open(&pod_name, &namespace, &container, &cluster_name);
+            self.log_viewer
+                .open(&pod_name, &namespace, &container, &cluster_name);
             self.log_stream_generation += 1;
             self.pending_log_request = Some(LogStreamRequest {
                 cluster_name,
@@ -1410,22 +1459,36 @@ impl App {
 
     /// Open shell exec for the currently selected pod.
     fn open_shell_for_selected(&mut self) {
-        if self.active_tab != 0 { return; }
+        if self.active_tab != 0 {
+            return;
+        }
         if self.resource_view != ResourceView::Pods {
             self.toasts.warn("Shell exec is only available for Pods");
             return;
         }
         let pod_data = {
-            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let snapshot = match self.current_snapshot() {
+                Some(s) => s,
+                None => return,
+            };
             let search_lower = self.search_query_lower.clone();
-            let filtered: Vec<_> = snapshot.pods.iter()
+            let filtered: Vec<_> = snapshot
+                .pods
+                .iter()
                 .filter(|p| match &search_lower {
-                    Some(q) => contains_ignore_ascii_case(&p.name, q)
-                        || contains_ignore_ascii_case(&p.namespace, q),
+                    Some(q) => {
+                        contains_ignore_ascii_case(&p.name, q)
+                            || contains_ignore_ascii_case(&p.namespace, q)
+                    }
                     None => true,
-                }).collect();
+                })
+                .collect();
             filtered.get(self.table_cursor).map(|pod| {
-                (pod.name.clone(), pod.namespace.clone(), pod.containers.clone())
+                (
+                    pod.name.clone(),
+                    pod.namespace.clone(),
+                    pod.containers.clone(),
+                )
             })
         };
         if let Some((pod_name, namespace, containers)) = pod_data {
@@ -1473,10 +1536,7 @@ impl App {
                     namespaced: entry.namespaced,
                     display_name: entry.kind.clone(),
                     command_alias: input.to_string(),
-                    columns: dynamic_resource::columns_for_resource(
-                        &entry.kind,
-                        entry.namespaced,
-                    ),
+                    columns: dynamic_resource::columns_for_resource(&entry.kind, entry.namespaced),
                 };
                 // Add CLUSTER column for cross-cluster mode
                 if all_clusters {
@@ -1500,11 +1560,12 @@ impl App {
                     // Queue fetches for ALL connected clusters
                     self.pending_cross_cluster_fetches.clear();
                     for cluster in &self.clusters {
-                        self.pending_cross_cluster_fetches.push(DynamicFetchRequest {
-                            cluster_name: cluster.name.clone(),
-                            namespace: None, // All namespaces for cross-cluster
-                            generation: self.fetch_generation,
-                        });
+                        self.pending_cross_cluster_fetches
+                            .push(DynamicFetchRequest {
+                                cluster_name: cluster.name.clone(),
+                                namespace: None, // All namespaces for cross-cluster
+                                generation: self.fetch_generation,
+                            });
                     }
                     self.is_fetching = true;
                     self.fetch_started_at = Some(Instant::now());
@@ -1521,8 +1582,7 @@ impl App {
                         self.is_fetching = true;
                         self.fetch_started_at = Some(Instant::now());
                     }
-                    self.toasts
-                        .info(format!("Switched to {}", entry.kind));
+                    self.toasts.info(format!("Switched to {}", entry.kind));
                 }
             } else {
                 self.toasts
@@ -1543,8 +1603,7 @@ impl App {
                 .unwrap_or("Resource");
             self.footer_resource_label = format!("{} [{}]", label, row_count);
         } else {
-            self.footer_resource_label =
-                format!("{} [{}]", self.resource_view.label(), row_count);
+            self.footer_resource_label = format!("{} [{}]", self.resource_view.label(), row_count);
         }
     }
 
@@ -1641,8 +1700,7 @@ impl App {
                 if self.active_tab == 1 {
                     let max = self.top_tab_line_count();
                     let max_offset = max.saturating_sub(self.page_size);
-                    self.table_scroll_offset =
-                        (self.table_scroll_offset + jump).min(max_offset);
+                    self.table_scroll_offset = (self.table_scroll_offset + jump).min(max_offset);
                     return;
                 }
                 let max = self.current_row_count();
@@ -1905,8 +1963,8 @@ impl App {
             // US-603: dispatch sync based on node type
             match &self.tree[idx].node_type {
                 NodeType::Cluster(_) => self.sync_tree_from_snapshots(), // calls invalidate_tree_cache
-                NodeType::InfraHeader => self.sync_infra_tree(),         // calls invalidate_tree_cache
-                _ => self.invalidate_tree_cache(), // Root: expanded changed, no sync
+                NodeType::InfraHeader => self.sync_infra_tree(), // calls invalidate_tree_cache
+                _ => self.invalidate_tree_cache(),               // Root: expanded changed, no sync
             }
         }
     }
@@ -2113,15 +2171,13 @@ impl App {
             let ns_count = self.snapshots[si].namespaces.len();
 
             // Find the cluster node
-            let cluster_idx = self
-                .tree
-                .iter()
-                .position(|n| matches!(&n.node_type, NodeType::Cluster(name) if name == &snap_name));
+            let cluster_idx = self.tree.iter().position(
+                |n| matches!(&n.node_type, NodeType::Cluster(name) if name == &snap_name),
+            );
 
             if let Some(idx) = cluster_idx {
                 // Always update namespace count label (used by render_sidebar)
-                self.tree[idx].ns_count_label =
-                    Some(format!("{} ({}ns)", snap_name, ns_count));
+                self.tree[idx].ns_count_label = Some(format!("{} ({}ns)", snap_name, ns_count));
 
                 if !self.tree[idx].expanded {
                     continue;
@@ -2148,7 +2204,10 @@ impl App {
                     for existing in existing_iter {
                         match snap_iter.next() {
                             Some(sn) if sn == existing => {}
-                            _ => { changed = true; break; }
+                            _ => {
+                                changed = true;
+                                break;
+                            }
                         }
                     }
                     if !changed && snap_iter.next().is_some() {
@@ -2210,7 +2269,11 @@ impl App {
     fn top_tab_line_count(&self) -> usize {
         match self.current_snapshot() {
             Some(snap) => {
-                let filtered = snap.nodes.iter().filter(|n| self.matches_search(&n.name)).count();
+                let filtered = snap
+                    .nodes
+                    .iter()
+                    .filter(|n| self.matches_search(&n.name))
+                    .count();
                 2 + filtered.max(1) // header + blank + nodes (or "No data"/"No results")
             }
             None => 1,
@@ -2351,8 +2414,12 @@ impl App {
                 let wide = if ru.succeeded_pods > 0 {
                     format!(
                         "{} pods:{}+{}/{} nodes:{}/{}  ",
-                        s.name, ru.running_pods, ru.succeeded_pods, ru.total_pods,
-                        ru.ready_nodes, ru.total_nodes
+                        s.name,
+                        ru.running_pods,
+                        ru.succeeded_pods,
+                        ru.total_pods,
+                        ru.ready_nodes,
+                        ru.total_nodes
                     )
                 } else {
                     format!(
@@ -2370,10 +2437,8 @@ impl App {
             .self_rss_mb
             .map(|mb| format!("{:.0}MB", mb))
             .unwrap_or_else(|| "N/A".into());
-        self.status_bar_self_line = format!(
-            "| self: {} | latency: {}ms",
-            rss_str, self.api_latency_ms
-        );
+        self.status_bar_self_line =
+            format!("| self: {} | latency: {}ms", rss_str, self.api_latency_ms);
     }
 
     pub fn current_snapshot(&self) -> Option<&ClusterSnapshot> {
@@ -2418,51 +2483,73 @@ impl App {
 
     /// Open port-picker for the currently selected pod or service.
     fn open_port_forward_for_selected(&mut self) {
-        if self.active_tab != 0 { return; }
+        if self.active_tab != 0 {
+            return;
+        }
         match self.resource_view {
             ResourceView::Pods => self.open_port_picker_for_pod(),
             ResourceView::Services => self.open_port_picker_for_service(),
             _ => {
-                self.toasts.warn("Port-forward is only available for Pods and Services");
+                self.toasts
+                    .warn("Port-forward is only available for Pods and Services");
             }
         }
     }
 
     fn open_port_picker_for_pod(&mut self) {
         let pod_data = {
-            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let snapshot = match self.current_snapshot() {
+                Some(s) => s,
+                None => return,
+            };
             let search_lower = self.search_query_lower.clone();
-            let filtered: Vec<_> = snapshot.pods.iter()
+            let filtered: Vec<_> = snapshot
+                .pods
+                .iter()
                 .filter(|p| match &search_lower {
-                    Some(q) => contains_ignore_ascii_case(&p.name, q)
-                        || contains_ignore_ascii_case(&p.namespace, q),
+                    Some(q) => {
+                        contains_ignore_ascii_case(&p.name, q)
+                            || contains_ignore_ascii_case(&p.namespace, q)
+                    }
                     None => true,
-                }).collect();
-            filtered.get(self.table_cursor)
+                })
+                .collect();
+            filtered
+                .get(self.table_cursor)
                 .map(|pod| (pod.name.clone(), pod.namespace.clone()))
         };
         if let Some((pod_name, namespace)) = pod_data {
-            self.port_picker.open(pod_name, namespace, "pod".to_string(), Vec::new());
+            self.port_picker
+                .open(pod_name, namespace, "pod".to_string(), Vec::new());
         }
     }
 
     fn open_port_picker_for_service(&mut self) {
         let svc_data = {
-            let snapshot = match self.current_snapshot() { Some(s) => s, None => return };
+            let snapshot = match self.current_snapshot() {
+                Some(s) => s,
+                None => return,
+            };
             let search_lower = self.search_query_lower.clone();
-            let filtered: Vec<_> = snapshot.services.iter()
+            let filtered: Vec<_> = snapshot
+                .services
+                .iter()
                 .filter(|s| match &search_lower {
-                    Some(q) => contains_ignore_ascii_case(&s.name, q)
-                        || contains_ignore_ascii_case(&s.namespace, q),
+                    Some(q) => {
+                        contains_ignore_ascii_case(&s.name, q)
+                            || contains_ignore_ascii_case(&s.namespace, q)
+                    }
                     None => true,
-                }).collect();
+                })
+                .collect();
             filtered.get(self.table_cursor).map(|svc| {
                 let ports = Self::parse_service_port_string(&svc.ports);
                 (svc.name.clone(), svc.namespace.clone(), ports)
             })
         };
         if let Some((svc_name, namespace, ports)) = svc_data {
-            self.port_picker.open(svc_name, namespace, "svc".to_string(), ports);
+            self.port_picker
+                .open(svc_name, namespace, "svc".to_string(), ports);
         }
     }
 
@@ -2470,7 +2557,8 @@ impl App {
         if ports_str.is_empty() || ports_str == "<none>" {
             return Vec::new();
         }
-        ports_str.split(',')
+        ports_str
+            .split(',')
             .filter_map(|segment| {
                 let segment = segment.trim();
                 let (port_part, protocol) = segment.rsplit_once('/')?;
@@ -2493,7 +2581,10 @@ impl App {
         };
 
         // Check if local port is already in use by another forward
-        if self.port_forward_manager.is_port_in_use(selection.local_port) {
+        if self
+            .port_forward_manager
+            .is_port_in_use(selection.local_port)
+        {
             self.toasts.warn(format!(
                 "Local port {} is already in use by another forward",
                 selection.local_port
@@ -2539,12 +2630,10 @@ impl App {
                 .port_forward_manager
                 .entries()
                 .iter()
-                .find(|e| {
-                    match &event {
-                        crate::dash::port_forward::PfEvent::Active { id } => e.id == *id,
-                        crate::dash::port_forward::PfEvent::Failed { id, .. } => e.id == *id,
-                        crate::dash::port_forward::PfEvent::Exited { id, .. } => e.id == *id,
-                    }
+                .find(|e| match &event {
+                    crate::dash::port_forward::PfEvent::Active { id } => e.id == *id,
+                    crate::dash::port_forward::PfEvent::Failed { id, .. } => e.id == *id,
+                    crate::dash::port_forward::PfEvent::Exited { id, .. } => e.id == *id,
                 })
                 .map(|e| (e.resource.clone(), e.local_port, e.remote_port));
 
@@ -2581,7 +2670,6 @@ impl App {
             self.needs_redraw = true;
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -2603,9 +2691,7 @@ mod tests {
                 Tab {
                     name: "Resources".into(),
                 },
-                Tab {
-                    name: "Top".into(),
-                },
+                Tab { name: "Top".into() },
             ],
             resource_view: ResourceView::Pods,
             tree: vec![
@@ -3940,7 +4026,10 @@ mod tests {
 
         app.handle_event(AppEvent::Enter);
 
-        assert_eq!(app.search_query, None, "search should clear on cluster select");
+        assert_eq!(
+            app.search_query, None,
+            "search should clear on cluster select"
+        );
         assert_eq!(app.search_query_lower, None);
     }
 
@@ -3972,7 +4061,10 @@ mod tests {
 
         app.handle_event(AppEvent::Enter);
 
-        assert_eq!(app.search_query, None, "search should clear on namespace select");
+        assert_eq!(
+            app.search_query, None,
+            "search should clear on namespace select"
+        );
         assert_eq!(app.search_query_lower, None);
         assert_eq!(app.selected_namespace, Some("default".into()));
     }
@@ -4244,8 +4336,9 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                age: "1d".into(),
-                ..Default::default()},
+                    age: "1d".into(),
+                    ..Default::default()
+                },
                 crate::dash::data::NodeInfo {
                     name: "node-1".into(),
                     status: "Ready".into(),
@@ -4254,8 +4347,9 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                age: "1d".into(),
-                ..Default::default()},
+                    age: "1d".into(),
+                    ..Default::default()
+                },
             ],
             pods: vec![],
             deployments: vec![],
@@ -4291,8 +4385,9 @@ mod tests {
                 mem_capacity: "8Gi".into(),
                 cpu_allocatable: "4".into(),
                 mem_allocatable: "8Gi".into(),
-            age: "1d".into(),
-            ..Default::default()}],
+                age: "1d".into(),
+                ..Default::default()
+            }],
             pods: vec![],
             deployments: vec![],
             services: vec![],
@@ -4427,8 +4522,9 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                age: "1d".into(),
-                ..Default::default()})
+                    age: "1d".into(),
+                    ..Default::default()
+                })
                 .collect(),
             pods: vec![],
             deployments: vec![],
@@ -4470,8 +4566,9 @@ mod tests {
                 mem_capacity: "8Gi".into(),
                 cpu_allocatable: "4".into(),
                 mem_allocatable: "8Gi".into(),
-            age: "1d".into(),
-            ..Default::default()}],
+                age: "1d".into(),
+                ..Default::default()
+            }],
             pods: vec![],
             deployments: vec![],
             services: vec![],
@@ -4596,8 +4693,9 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                age: "1d".into(),
-                ..Default::default()},
+                    age: "1d".into(),
+                    ..Default::default()
+                },
                 crate::dash::data::NodeInfo {
                     name: "node-beta".into(),
                     status: "Ready".into(),
@@ -4606,8 +4704,9 @@ mod tests {
                     mem_capacity: "8Gi".into(),
                     cpu_allocatable: "4".into(),
                     mem_allocatable: "8Gi".into(),
-                age: "1d".into(),
-                ..Default::default()},
+                    age: "1d".into(),
+                    ..Default::default()
+                },
             ],
             pods: vec![],
             deployments: vec![],
@@ -4712,7 +4811,11 @@ mod tests {
         app.handle_event(AppEvent::Left);
         assert!(!app.tree[0].expanded);
         // Children still in tree vec
-        assert_eq!(app.tree.len(), 4, "collapse should NOT remove children for Root");
+        assert_eq!(
+            app.tree.len(),
+            4,
+            "collapse should NOT remove children for Root"
+        );
         // But only Root + Infrastructure visible (Infra is depth 0, sibling not child)
         let visible_collapsed = app.visible_tree_indices();
         assert_eq!(visible_collapsed.len(), 2); // Root + Infrastructure
@@ -4722,7 +4825,11 @@ mod tests {
         assert!(app.tree[0].expanded);
         assert_eq!(app.tree.len(), 4);
         let visible_after = app.visible_tree_indices();
-        assert_eq!(visible_after.len(), 4, "expand should restore all children visibility");
+        assert_eq!(
+            visible_after.len(),
+            4,
+            "expand should restore all children visibility"
+        );
     }
 
     // --- Port-forward Shift+F tests ---
@@ -4835,7 +4942,11 @@ mod tests {
         );
         assert_eq!(app.port_picker.resource_name, "web-svc");
         assert_eq!(app.port_picker.resource_kind, "svc");
-        assert_eq!(app.port_picker.ports.len(), 2, "Should parse 2 ports from '80/TCP,443/TCP'");
+        assert_eq!(
+            app.port_picker.ports.len(),
+            2,
+            "Should parse 2 ports from '80/TCP,443/TCP'"
+        );
         assert_eq!(app.port_picker.ports[0].container_port, 80);
         assert_eq!(app.port_picker.ports[1].container_port, 443);
     }
@@ -4857,7 +4968,8 @@ mod tests {
     #[test]
     fn port_picker_closes_on_escape() {
         let mut app = test_app();
-        app.port_picker.open("test".into(), "ns".into(), "pod".into(), Vec::new());
+        app.port_picker
+            .open("test".into(), "ns".into(), "pod".into(), Vec::new());
         assert!(app.port_picker.visible);
 
         app.handle_event(AppEvent::Escape);
@@ -4869,7 +4981,9 @@ mod tests {
     fn port_picker_intercepts_navigation() {
         let mut app = test_app();
         app.port_picker.open(
-            "test".into(), "ns".into(), "pod".into(),
+            "test".into(),
+            "ns".into(),
+            "pod".into(),
             vec![
                 crate::dash::port_picker::PortInfo {
                     container_port: 8080,
@@ -4888,9 +5002,15 @@ mod tests {
 
         assert_eq!(app.port_picker.cursor, 0);
         app.handle_event(AppEvent::Down);
-        assert_eq!(app.port_picker.cursor, 1, "Down should move port picker cursor");
+        assert_eq!(
+            app.port_picker.cursor, 1,
+            "Down should move port picker cursor"
+        );
         app.handle_event(AppEvent::Up);
-        assert_eq!(app.port_picker.cursor, 0, "Up should move port picker cursor back");
+        assert_eq!(
+            app.port_picker.cursor, 0,
+            "Up should move port picker cursor back"
+        );
     }
 
     #[test]
@@ -4993,7 +5113,10 @@ mod tests {
 
         app.handle_event(AppEvent::Describe);
 
-        assert!(!app.yaml_modal.visible, "y on sidebar should not open modal");
+        assert!(
+            !app.yaml_modal.visible,
+            "y on sidebar should not open modal"
+        );
     }
 
     #[test]
@@ -5010,13 +5133,23 @@ mod tests {
     #[test]
     fn yaml_modal_intercepts_navigation() {
         let mut app = test_app();
-        app.yaml_modal.open("Pod", "test", "line1\nline2\nline3\nline4\nline5\n".to_string());
+        app.yaml_modal.open(
+            "Pod",
+            "test",
+            "line1\nline2\nline3\nline4\nline5\n".to_string(),
+        );
         app.yaml_modal.viewport_height = 2;
 
         app.handle_event(AppEvent::Down);
-        assert_eq!(app.yaml_modal.scroll_offset, 1, "Down should scroll yaml modal");
+        assert_eq!(
+            app.yaml_modal.scroll_offset, 1,
+            "Down should scroll yaml modal"
+        );
         app.handle_event(AppEvent::Up);
-        assert_eq!(app.yaml_modal.scroll_offset, 0, "Up should scroll yaml modal back");
+        assert_eq!(
+            app.yaml_modal.scroll_offset, 0,
+            "Up should scroll yaml modal back"
+        );
     }
 
     #[test]
@@ -5027,8 +5160,11 @@ mod tests {
 
         app.handle_event(AppEvent::Describe);
 
-        assert_eq!(app.search_query.as_deref(), Some("y"),
-            "y in search mode should type 'y'");
+        assert_eq!(
+            app.search_query.as_deref(),
+            Some("y"),
+            "y in search mode should type 'y'"
+        );
     }
 
     // --- Log viewer tests ---
@@ -5066,7 +5202,10 @@ mod tests {
 
         app.handle_event(AppEvent::Logs);
 
-        assert!(app.log_viewer.visible, "Shift+L on pods should open log viewer");
+        assert!(
+            app.log_viewer.visible,
+            "Shift+L on pods should open log viewer"
+        );
         assert_eq!(app.log_viewer.pod_name, "nginx-pod");
         assert_eq!(app.log_viewer.container_name, "nginx");
     }
@@ -5080,8 +5219,14 @@ mod tests {
 
         app.handle_event(AppEvent::Logs);
 
-        assert!(!app.log_viewer.visible, "Shift+L on deployments should not open log viewer");
-        assert!(app.toasts.visible().next().is_some(), "Should show warning toast");
+        assert!(
+            !app.log_viewer.visible,
+            "Shift+L on deployments should not open log viewer"
+        );
+        assert!(
+            app.toasts.visible().next().is_some(),
+            "Should show warning toast"
+        );
     }
 
     #[test]
@@ -5103,7 +5248,10 @@ mod tests {
 
         app.handle_event(AppEvent::CharInput('f'));
 
-        assert!(!app.log_viewer.auto_follow, "f should toggle auto-follow off");
+        assert!(
+            !app.log_viewer.auto_follow,
+            "f should toggle auto-follow off"
+        );
     }
 
     #[test]
@@ -5114,8 +5262,11 @@ mod tests {
 
         app.handle_event(AppEvent::Logs);
 
-        assert_eq!(app.search_query.as_deref(), Some("L"),
-            "Shift+L in search mode should type 'L'");
+        assert_eq!(
+            app.search_query.as_deref(),
+            Some("L"),
+            "Shift+L in search mode should type 'L'"
+        );
     }
 
     #[test]
@@ -5126,8 +5277,11 @@ mod tests {
 
         app.handle_event(AppEvent::Shell);
 
-        assert_eq!(app.search_query.as_deref(), Some("S"),
-            "Shift+S in search mode should type 'S'");
+        assert_eq!(
+            app.search_query.as_deref(),
+            Some("S"),
+            "Shift+S in search mode should type 'S'"
+        );
     }
 
     #[test]
@@ -5139,8 +5293,10 @@ mod tests {
 
         app.handle_event(AppEvent::Shell);
 
-        assert!(app.toasts.visible().next().is_some(),
-            "Shift+S on non-pod view should show toast");
+        assert!(
+            app.toasts.visible().next().is_some(),
+            "Shift+S on non-pod view should show toast"
+        );
         assert!(app.pending_shell_exec.is_none());
     }
 
@@ -5221,11 +5377,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
     // Active watcher cancellation token (None when no watcher is running)
     let mut active_watcher_cancel: Option<tokio_util::sync::CancellationToken> = None;
     // Channel for log streaming lines (generation, line)
-    let (log_line_tx, mut log_line_rx) =
-        tokio::sync::mpsc::channel::<(u64, String)>(256);
+    let (log_line_tx, mut log_line_rx) = tokio::sync::mpsc::channel::<(u64, String)>(256);
     // Channel for describe fetch results (generation, content)
-    let (describe_tx, mut describe_rx) =
-        tokio::sync::mpsc::channel::<(u64, String)>(4);
+    let (describe_tx, mut describe_rx) = tokio::sync::mpsc::channel::<(u64, String)>(4);
 
     // Cancellation flag (shared with background tasks)
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -5256,7 +5410,11 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     (body_height as usize).saturating_sub(if sidebar_overflows { 1 } else { 0 });
                 app.ensure_sidebar_scroll_visible(sidebar_viewport);
                 // Table viewport = body height minus block borders (2) minus header row (1, Resources only) minus optional search bar (1)
-                let search_offset: u16 = if app.search_active || app.command_mode.is_active() { 1 } else { 0 };
+                let search_offset: u16 = if app.search_active || app.command_mode.is_active() {
+                    1
+                } else {
+                    0
+                };
                 let header_row: u16 = if app.active_tab == 0 { 1 } else { 0 }; // US-203: Top tab has no header row
                 let table_viewport =
                     body_height.saturating_sub(2 + header_row + search_offset) as usize;
@@ -5423,7 +5581,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         data::compute_resource_usage(&existing.nodes, &existing.pods, None);
                 } else {
                     // New cluster not yet in snapshots — add it
-                    app.snapshot_index.insert(new_snap.name.clone(), app.snapshots.len());
+                    app.snapshot_index
+                        .insert(new_snap.name.clone(), app.snapshots.len());
                     app.snapshots.push(new_snap);
                 }
             }
@@ -5445,7 +5604,11 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             if let Some(infra_snap) = result.infra {
                 app.infra = infra_snap;
                 // Re-sync infra tree if header is expanded
-                if let Some(idx) = app.tree.iter().position(|n| matches!(&n.node_type, NodeType::InfraHeader)) {
+                if let Some(idx) = app
+                    .tree
+                    .iter()
+                    .position(|n| matches!(&n.node_type, NodeType::InfraHeader))
+                {
                     if app.tree[idx].children_loaded {
                         app.remove_children(idx);
                         app.tree[idx].children_loaded = false;
@@ -5490,7 +5653,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     if let Some(cancel) = active_watcher_cancel.take() {
                         cancel.cancel();
                     }
-                    if let Some(client) = app.clusters.iter()
+                    if let Some(client) = app
+                        .clusters
+                        .iter()
                         .find(|c| Some(&c.name) == app.selected_cluster.as_ref())
                         .map(|c| c.client.clone())
                     {
@@ -5501,12 +5666,11 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                             namespace: app.selected_namespace.clone(),
                             generation: app.fetch_generation,
                         };
-                        active_watcher_cancel = Some(
-                            crate::dash::resource_watcher::start_debounced_watcher(
+                        active_watcher_cancel =
+                            Some(crate::dash::resource_watcher::start_debounced_watcher(
                                 params,
                                 watch_tx.clone(),
-                            ),
-                        );
+                            ));
                     }
                 }
             }
@@ -5529,10 +5693,8 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 continue;
             }
             if let Some(ref mut data) = app.dynamic_resource_data {
-                if crate::dash::resource_watcher::reconcile_objects(
-                    &mut data.objects,
-                    tagged.event,
-                ) {
+                if crate::dash::resource_watcher::reconcile_objects(&mut data.objects, tagged.event)
+                {
                     data.extract_rows();
                     app.needs_redraw = true;
                     let row_count = app.current_row_count();
@@ -5660,8 +5822,12 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 let ns = req.namespace.clone();
                 tokio::spawn(async move {
                     let result = dynamic_resource::describe_resource_yaml(
-                        &client, &kind, &name, ns.as_deref(),
-                    ).await;
+                        &client,
+                        &kind,
+                        &name,
+                        ns.as_deref(),
+                    )
+                    .await;
                     if let Ok(content) = result {
                         let _ = tx.send((gen, content)).await;
                     }
@@ -5769,7 +5935,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                 let start = Instant::now();
                 // Load infra data on worker thread if requested (avoids blocking main event loop)
                 let infra = if should_load_infra {
-                    Some(infra::load_sdi_state(std::path::Path::new("_generated/sdi")))
+                    Some(infra::load_sdi_state(std::path::Path::new(
+                        "_generated/sdi",
+                    )))
                 } else {
                     None
                 };
@@ -5902,8 +6070,13 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                                     // Tag objects with cluster name for cross-cluster mode
                                     if is_cross {
                                         for obj in &mut objects {
-                                            obj.metadata.labels.get_or_insert_with(Default::default)
-                                                .insert("scalex.io/cluster".to_string(), cluster_name.clone());
+                                            obj.metadata
+                                                .labels
+                                                .get_or_insert_with(Default::default)
+                                                .insert(
+                                                    "scalex.io/cluster".to_string(),
+                                                    cluster_name.clone(),
+                                                );
                                         }
                                     }
                                     let _ = tx.send((gen, objects)).await;

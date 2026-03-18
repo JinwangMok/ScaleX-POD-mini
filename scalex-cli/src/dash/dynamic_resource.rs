@@ -141,14 +141,12 @@ impl DynamicResourceData {
                     Some(needle) => {
                         // Search across all columns
                         row.iter().any(|val| {
-                            val.as_bytes()
-                                .windows(needle.len())
-                                .any(|window| {
-                                    window
-                                        .iter()
-                                        .zip(needle.as_bytes())
-                                        .all(|(h, n)| h.to_ascii_lowercase() == *n)
-                                })
+                            val.as_bytes().windows(needle.len()).any(|window| {
+                                window
+                                    .iter()
+                                    .zip(needle.as_bytes())
+                                    .all(|(h, n)| h.to_ascii_lowercase() == *n)
+                            })
                         })
                     }
                 }
@@ -165,14 +163,12 @@ impl DynamicResourceData {
                 .iter()
                 .filter(|row| {
                     row.iter().any(|val| {
-                        val.as_bytes()
-                            .windows(needle.len())
-                            .any(|window| {
-                                window
-                                    .iter()
-                                    .zip(needle.as_bytes())
-                                    .all(|(h, n)| h.to_ascii_lowercase() == *n)
-                            })
+                        val.as_bytes().windows(needle.len()).any(|window| {
+                            window
+                                .iter()
+                                .zip(needle.as_bytes())
+                                .all(|(h, n)| h.to_ascii_lowercase() == *n)
+                        })
                     })
                 })
                 .count(),
@@ -185,13 +181,12 @@ fn extract_column_value(obj: &DynamicObject, extractor: &ColumnExtractor) -> Str
     match extractor {
         ColumnExtractor::Name => obj.metadata.name.clone().unwrap_or_default(),
         ColumnExtractor::Namespace => obj.metadata.namespace.clone().unwrap_or_default(),
-        ColumnExtractor::Age => {
-            obj.metadata
-                .creation_timestamp
-                .as_ref()
-                .map(|ts| format_age(Utc::now(), ts.0))
-                .unwrap_or_else(|| "<unknown>".into())
-        }
+        ColumnExtractor::Age => obj
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|ts| format_age(Utc::now(), ts.0))
+            .unwrap_or_else(|| "<unknown>".into()),
         ColumnExtractor::StatusPhase => obj
             .data
             .get("status")
@@ -243,49 +238,46 @@ fn extract_column_value(obj: &DynamicObject, extractor: &ColumnExtractor) -> Str
             .and_then(|t| t.as_str())
             .unwrap_or("")
             .to_string(),
-        ColumnExtractor::ReadyCondition => {
-            obj.data
-                .get("status")
-                .and_then(|s| s.get("conditions"))
-                .and_then(|c| c.as_array())
-                .and_then(|conditions| {
-                    conditions.iter().find(|c| {
-                        c.get("type").and_then(|t| t.as_str()) == Some("Ready")
-                    })
-                })
-                .and_then(|c| c.get("status"))
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        ColumnExtractor::Restarts => {
-            obj.data
-                .get("status")
-                .and_then(|s| s.get("containerStatuses"))
-                .and_then(|c| c.as_array())
-                .map(|statuses| {
-                    let total: i64 = statuses
-                        .iter()
-                        .filter_map(|s| s.get("restartCount").and_then(|r| r.as_i64()))
-                        .sum();
-                    total.to_string()
-                })
-                .unwrap_or_else(|| "0".into())
-        }
-        ColumnExtractor::ContainerReady => {
-            obj.data
-                .get("status")
-                .and_then(|s| s.get("containerStatuses"))
-                .and_then(|c| c.as_array())
-                .map(|statuses| {
-                    let ready = statuses
-                        .iter()
-                        .filter(|s| s.get("ready").and_then(|r| r.as_bool()).unwrap_or(false))
-                        .count();
-                    format!("{}/{}", ready, statuses.len())
-                })
-                .unwrap_or_else(|| "0/0".into())
-        }
+        ColumnExtractor::ReadyCondition => obj
+            .data
+            .get("status")
+            .and_then(|s| s.get("conditions"))
+            .and_then(|c| c.as_array())
+            .and_then(|conditions| {
+                conditions
+                    .iter()
+                    .find(|c| c.get("type").and_then(|t| t.as_str()) == Some("Ready"))
+            })
+            .and_then(|c| c.get("status"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        ColumnExtractor::Restarts => obj
+            .data
+            .get("status")
+            .and_then(|s| s.get("containerStatuses"))
+            .and_then(|c| c.as_array())
+            .map(|statuses| {
+                let total: i64 = statuses
+                    .iter()
+                    .filter_map(|s| s.get("restartCount").and_then(|r| r.as_i64()))
+                    .sum();
+                total.to_string()
+            })
+            .unwrap_or_else(|| "0".into()),
+        ColumnExtractor::ContainerReady => obj
+            .data
+            .get("status")
+            .and_then(|s| s.get("containerStatuses"))
+            .and_then(|c| c.as_array())
+            .map(|statuses| {
+                let ready = statuses
+                    .iter()
+                    .filter(|s| s.get("ready").and_then(|r| r.as_bool()).unwrap_or(false))
+                    .count();
+                format!("{}/{}", ready, statuses.len())
+            })
+            .unwrap_or_else(|| "0/0".into()),
         ColumnExtractor::ClusterLabel => obj
             .metadata
             .labels
@@ -346,7 +338,9 @@ fn format_age(now: chrono::DateTime<Utc>, created: chrono::DateTime<Utc>) -> Str
 /// Built-in resource aliases (k9s-style shortcuts).
 /// Returns (group, version, plural, kind, namespaced) for known aliases.
 /// This avoids an API discovery call for the most common resource types.
-fn builtin_alias(input: &str) -> Option<(&'static str, &'static str, &'static str, &'static str, bool)> {
+fn builtin_alias(
+    input: &str,
+) -> Option<(&'static str, &'static str, &'static str, &'static str, bool)> {
     match input {
         // Core resources
         "po" | "pod" | "pods" => Some(("", "v1", "pods", "Pod", true)),
@@ -362,20 +356,26 @@ fn builtin_alias(input: &str) -> Option<(&'static str, &'static str, &'static st
         "pv" | "persistentvolume" | "persistentvolumes" => {
             Some(("", "v1", "persistentvolumes", "PersistentVolume", false))
         }
-        "pvc" | "persistentvolumeclaim" | "persistentvolumeclaims" => {
-            Some(("", "v1", "persistentvolumeclaims", "PersistentVolumeClaim", true))
-        }
+        "pvc" | "persistentvolumeclaim" | "persistentvolumeclaims" => Some((
+            "",
+            "v1",
+            "persistentvolumeclaims",
+            "PersistentVolumeClaim",
+            true,
+        )),
         "ep" | "endpoint" | "endpoints" => Some(("", "v1", "endpoints", "Endpoints", true)),
-        "rc" | "replicationcontroller" | "replicationcontrollers" => {
-            Some(("", "v1", "replicationcontrollers", "ReplicationController", true))
-        }
+        "rc" | "replicationcontroller" | "replicationcontrollers" => Some((
+            "",
+            "v1",
+            "replicationcontrollers",
+            "ReplicationController",
+            true,
+        )),
         // Apps group
         "dp" | "dep" | "deploy" | "deployment" | "deployments" => {
             Some(("apps", "v1", "deployments", "Deployment", true))
         }
-        "ds" | "daemonset" | "daemonsets" => {
-            Some(("apps", "v1", "daemonsets", "DaemonSet", true))
-        }
+        "ds" | "daemonset" | "daemonsets" => Some(("apps", "v1", "daemonsets", "DaemonSet", true)),
         "sts" | "statefulset" | "statefulsets" => {
             Some(("apps", "v1", "statefulsets", "StatefulSet", true))
         }
@@ -389,30 +389,52 @@ fn builtin_alias(input: &str) -> Option<(&'static str, &'static str, &'static st
         "ing" | "ingress" | "ingresses" => {
             Some(("networking.k8s.io", "v1", "ingresses", "Ingress", true))
         }
-        "netpol" | "networkpolicy" | "networkpolicies" => {
-            Some(("networking.k8s.io", "v1", "networkpolicies", "NetworkPolicy", true))
-        }
+        "netpol" | "networkpolicy" | "networkpolicies" => Some((
+            "networking.k8s.io",
+            "v1",
+            "networkpolicies",
+            "NetworkPolicy",
+            true,
+        )),
         // RBAC
-        "clusterrole" | "clusterroles" | "cr" => {
-            Some(("rbac.authorization.k8s.io", "v1", "clusterroles", "ClusterRole", false))
-        }
-        "clusterrolebinding" | "clusterrolebindings" | "crb" => {
-            Some(("rbac.authorization.k8s.io", "v1", "clusterrolebindings", "ClusterRoleBinding", false))
-        }
-        "role" | "roles" => {
-            Some(("rbac.authorization.k8s.io", "v1", "roles", "Role", true))
-        }
-        "rolebinding" | "rolebindings" | "rb" => {
-            Some(("rbac.authorization.k8s.io", "v1", "rolebindings", "RoleBinding", true))
-        }
+        "clusterrole" | "clusterroles" | "cr" => Some((
+            "rbac.authorization.k8s.io",
+            "v1",
+            "clusterroles",
+            "ClusterRole",
+            false,
+        )),
+        "clusterrolebinding" | "clusterrolebindings" | "crb" => Some((
+            "rbac.authorization.k8s.io",
+            "v1",
+            "clusterrolebindings",
+            "ClusterRoleBinding",
+            false,
+        )),
+        "role" | "roles" => Some(("rbac.authorization.k8s.io", "v1", "roles", "Role", true)),
+        "rolebinding" | "rolebindings" | "rb" => Some((
+            "rbac.authorization.k8s.io",
+            "v1",
+            "rolebindings",
+            "RoleBinding",
+            true,
+        )),
         // Storage
-        "sc" | "storageclass" | "storageclasses" => {
-            Some(("storage.k8s.io", "v1", "storageclasses", "StorageClass", false))
-        }
+        "sc" | "storageclass" | "storageclasses" => Some((
+            "storage.k8s.io",
+            "v1",
+            "storageclasses",
+            "StorageClass",
+            false,
+        )),
         // API extensions
-        "crd" | "customresourcedefinition" | "customresourcedefinitions" => {
-            Some(("apiextensions.k8s.io", "v1", "customresourcedefinitions", "CustomResourceDefinition", false))
-        }
+        "crd" | "customresourcedefinition" | "customresourcedefinitions" => Some((
+            "apiextensions.k8s.io",
+            "v1",
+            "customresourcedefinitions",
+            "CustomResourceDefinition",
+            false,
+        )),
         _ => None,
     }
 }
@@ -578,10 +600,7 @@ pub fn columns_for_resource(kind: &str, namespaced: bool) -> Vec<DynColumn> {
 
 /// Resolve a command input string to a ResolvedResource.
 /// First tries builtin aliases, then falls back to kube-rs API discovery.
-pub async fn resolve_resource(
-    client: &Client,
-    input: &str,
-) -> Result<ResolvedResource> {
+pub async fn resolve_resource(client: &Client, input: &str) -> Result<ResolvedResource> {
     let input_lower = input.to_ascii_lowercase();
     let input_lower = input_lower.trim();
 
@@ -751,7 +770,9 @@ pub async fn describe_resource(
 
     let obj = tokio::time::timeout(DESCRIBE_TIMEOUT, api.get(name))
         .await
-        .map_err(|_| anyhow::anyhow!("Timeout describing {} '{}'", resource.display_name, name))??;
+        .map_err(|_| {
+            anyhow::anyhow!("Timeout describing {} '{}'", resource.display_name, name)
+        })??;
 
     Ok(format_describe(&obj, &resource.api_resource.kind))
 }
@@ -825,7 +846,10 @@ fn format_describe(obj: &DynamicObject, kind: &str) -> String {
 
     // Creation timestamp
     if let Some(ts) = &obj.metadata.creation_timestamp {
-        out.push_str(&format!("Created:      {}\n", ts.0.format("%Y-%m-%d %H:%M:%S UTC")));
+        out.push_str(&format!(
+            "Created:      {}\n",
+            ts.0.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
     }
 
     // UID
@@ -1008,7 +1032,11 @@ fn format_scalar(value: &serde_json::Value) -> String {
 /// list/watch data. Falls back to `fetch_resource_yaml` if not found in cache.
 ///
 /// Returns the YAML string if found in cache, or None if an API fetch is needed.
-pub fn yaml_from_cache(data: &DynamicResourceData, name: &str, namespace: Option<&str>) -> Option<String> {
+pub fn yaml_from_cache(
+    data: &DynamicResourceData,
+    name: &str,
+    namespace: Option<&str>,
+) -> Option<String> {
     let obj = data.objects.iter().find(|o| {
         let name_match = o.metadata.name.as_deref() == Some(name);
         let ns_match = match namespace {
@@ -1024,7 +1052,11 @@ pub fn yaml_from_cache(data: &DynamicResourceData, name: &str, namespace: Option
 /// Generate describe output from cached DynamicResourceData objects.
 ///
 /// Returns None if the resource is not found in cache (caller should fall back to API fetch).
-pub fn describe_from_cache(data: &DynamicResourceData, name: &str, namespace: Option<&str>) -> Option<String> {
+pub fn describe_from_cache(
+    data: &DynamicResourceData,
+    name: &str,
+    namespace: Option<&str>,
+) -> Option<String> {
     let obj = data.objects.iter().find(|o| {
         let name_match = o.metadata.name.as_deref() == Some(name);
         let ns_match = match namespace {
@@ -1146,9 +1178,24 @@ mod tests {
         };
         let mut data = DynamicResourceData::new(resource);
         data.rows = vec![
-            vec!["kube-root-ca.crt".into(), "default".into(), "3".into(), "1d".into()],
-            vec!["my-config".into(), "default".into(), "5".into(), "2h".into()],
-            vec!["other-config".into(), "kube-system".into(), "1".into(), "3d".into()],
+            vec![
+                "kube-root-ca.crt".into(),
+                "default".into(),
+                "3".into(),
+                "1d".into(),
+            ],
+            vec![
+                "my-config".into(),
+                "default".into(),
+                "5".into(),
+                "2h".into(),
+            ],
+            vec![
+                "other-config".into(),
+                "kube-system".into(),
+                "1".into(),
+                "3d".into(),
+            ],
         ];
 
         assert_eq!(data.filtered_count(None), 3);
@@ -1169,9 +1216,10 @@ mod tests {
                     ("app".to_string(), "test".to_string()),
                     ("env".to_string(), "dev".to_string()),
                 ])),
-                annotations: Some(std::collections::BTreeMap::from([
-                    ("note".to_string(), "test annotation".to_string()),
-                ])),
+                annotations: Some(std::collections::BTreeMap::from([(
+                    "note".to_string(),
+                    "test annotation".to_string(),
+                )])),
                 uid: Some("abc-123".to_string()),
                 resource_version: Some("42".to_string()),
                 ..Default::default()
@@ -1219,11 +1267,26 @@ mod tests {
         let obj = make_test_obj("my-deploy", Some("production"));
         let output = format_describe(&obj, "Deployment");
 
-        assert!(output.contains("Name:         my-deploy"), "should contain name");
-        assert!(output.contains("Namespace:    production"), "should contain namespace");
-        assert!(output.contains("Kind:         Deployment"), "should contain kind");
-        assert!(output.contains("UID:          abc-123"), "should contain UID");
-        assert!(output.contains("Version:      42"), "should contain resource version");
+        assert!(
+            output.contains("Name:         my-deploy"),
+            "should contain name"
+        );
+        assert!(
+            output.contains("Namespace:    production"),
+            "should contain namespace"
+        );
+        assert!(
+            output.contains("Kind:         Deployment"),
+            "should contain kind"
+        );
+        assert!(
+            output.contains("UID:          abc-123"),
+            "should contain UID"
+        );
+        assert!(
+            output.contains("Version:      42"),
+            "should contain resource version"
+        );
     }
 
     #[test]
@@ -1241,8 +1304,14 @@ mod tests {
         let obj = make_test_obj("my-deploy", Some("default"));
         let output = format_describe(&obj, "Deployment");
 
-        assert!(output.contains("Annotations:"), "should have annotations section");
-        assert!(output.contains("note=test annotation"), "should contain annotation");
+        assert!(
+            output.contains("Annotations:"),
+            "should have annotations section"
+        );
+        assert!(
+            output.contains("note=test annotation"),
+            "should contain annotation"
+        );
     }
 
     #[test]
@@ -1253,7 +1322,10 @@ mod tests {
         assert!(output.contains("Spec:"), "should have spec section");
         assert!(output.contains("replicas"), "should contain replicas field");
         assert!(output.contains("Status:"), "should have status section");
-        assert!(output.contains("readyReplicas"), "should contain readyReplicas");
+        assert!(
+            output.contains("readyReplicas"),
+            "should contain readyReplicas"
+        );
     }
 
     #[test]
@@ -1269,7 +1341,10 @@ mod tests {
         };
         let output = format_describe(&obj, "Node");
         assert!(output.contains("Name:         my-node"));
-        assert!(!output.contains("Namespace:"), "cluster-scoped should not show namespace");
+        assert!(
+            !output.contains("Namespace:"),
+            "cluster-scoped should not show namespace"
+        );
     }
 
     #[test]
@@ -1279,7 +1354,10 @@ mod tests {
         let yaml = yaml_from_cache(&data, "nginx", Some("default"));
         assert!(yaml.is_some(), "should find nginx in default");
         let yaml_str = yaml.unwrap();
-        assert!(yaml_str.contains("nginx"), "YAML should contain resource name");
+        assert!(
+            yaml_str.contains("nginx"),
+            "YAML should contain resource name"
+        );
 
         let yaml = yaml_from_cache(&data, "redis", Some("kube-system"));
         assert!(yaml.is_some(), "should find redis in kube-system");
@@ -1351,9 +1429,10 @@ mod tests {
         let obj = DynamicObject {
             metadata: ObjectMeta {
                 name: Some("test".into()),
-                annotations: Some(std::collections::BTreeMap::from([
-                    ("long-annotation".to_string(), long_value),
-                ])),
+                annotations: Some(std::collections::BTreeMap::from([(
+                    "long-annotation".to_string(),
+                    long_value,
+                )])),
                 ..Default::default()
             },
             types: None,
@@ -1361,7 +1440,10 @@ mod tests {
         };
         let output = format_describe(&obj, "Pod");
         // Should be truncated with "..."
-        assert!(output.contains("..."), "long annotations should be truncated");
+        assert!(
+            output.contains("..."),
+            "long annotations should be truncated"
+        );
         // Should not contain the full 200 chars
         assert!(!output.contains(&"x".repeat(200)));
     }
@@ -1383,9 +1465,15 @@ mod tests {
             }),
         };
         let output = format_describe(&obj, "ConfigMap");
-        assert!(output.contains("Data:"), "should have Data section for ConfigMaps");
+        assert!(
+            output.contains("Data:"),
+            "should have Data section for ConfigMaps"
+        );
         assert!(output.contains("config.yaml:"), "should show data key");
-        assert!(output.contains("key: value"), "should show multi-line data content");
+        assert!(
+            output.contains("key: value"),
+            "should show multi-line data content"
+        );
     }
 }
 
@@ -1414,8 +1502,22 @@ impl DynamicResourceData {
             resource,
             objects: Vec::new(),
             rows: vec![
-                vec!["nginx".into(), "default".into(), "Running".into(), "1/1".into(), "0".into(), "1d".into()],
-                vec!["redis".into(), "default".into(), "Running".into(), "1/1".into(), "0".into(), "2h".into()],
+                vec![
+                    "nginx".into(),
+                    "default".into(),
+                    "Running".into(),
+                    "1/1".into(),
+                    "0".into(),
+                    "1d".into(),
+                ],
+                vec![
+                    "redis".into(),
+                    "default".into(),
+                    "Running".into(),
+                    "1/1".into(),
+                    "0".into(),
+                    "2h".into(),
+                ],
             ],
             fetched: true,
         }

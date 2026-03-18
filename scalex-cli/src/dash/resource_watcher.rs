@@ -11,10 +11,10 @@
 //! Uses kube-rs `watcher()` runtime which handles reconnection and bookmark tracking
 //! automatically, giving us a reliable event stream over the Watch API.
 
+use futures::StreamExt;
 use kube::api::{ApiResource, DynamicObject};
 use kube::runtime::watcher::{self, Event as WatcherEvent};
 use kube::{Api, Client};
-use futures::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -65,10 +65,7 @@ pub struct TaggedWatchEvent {
 ///
 /// Returns a `CancellationToken` that can be used to stop the watcher.
 /// The watcher will also stop if the channel receiver is dropped.
-pub fn start_watcher(
-    params: WatchParams,
-    tx: mpsc::Sender<TaggedWatchEvent>,
-) -> CancellationToken {
+pub fn start_watcher(params: WatchParams, tx: mpsc::Sender<TaggedWatchEvent>) -> CancellationToken {
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
 
@@ -318,10 +315,7 @@ async fn flush_batch(
     generation: u64,
 ) {
     for event in batch.drain(..) {
-        let tagged = TaggedWatchEvent {
-            event,
-            generation,
-        };
+        let tagged = TaggedWatchEvent { event, generation };
         if tx.send(tagged).await.is_err() {
             return; // Receiver dropped
         }
@@ -459,10 +453,7 @@ mod tests {
     #[test]
     fn reconcile_error_noop() {
         let mut objects = vec![make_obj("pod-a", Some("default"))];
-        let changed = reconcile_objects(
-            &mut objects,
-            WatchEvent::Error("some error".to_string()),
-        );
+        let changed = reconcile_objects(&mut objects, WatchEvent::Error("some error".to_string()));
         assert!(!changed);
         assert_eq!(objects.len(), 1);
     }
@@ -510,8 +501,11 @@ mod tests {
         assert!(!names.contains(&"pod-b")); // deleted
         assert!(names.contains(&"pod-c"));
         assert!(names.contains(&"pod-d")); // added
-        // pod-a should be the modified version
-        let pod_a = objects.iter().find(|o| o.metadata.name.as_deref() == Some("pod-a")).unwrap();
+                                           // pod-a should be the modified version
+        let pod_a = objects
+            .iter()
+            .find(|o| o.metadata.name.as_deref() == Some("pod-a"))
+            .unwrap();
         assert_eq!(
             pod_a.data.get("status").unwrap().get("phase").unwrap(),
             "Succeeded"

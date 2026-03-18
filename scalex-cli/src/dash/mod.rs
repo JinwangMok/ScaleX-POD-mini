@@ -14,6 +14,7 @@ pub mod infra;
 #[allow(dead_code)]
 pub mod keybinding_registry;
 pub mod kube_client;
+pub mod log_viewer;
 #[allow(dead_code, clippy::too_many_arguments, clippy::single_match)]
 pub mod pod_exec;
 #[allow(dead_code)]
@@ -34,7 +35,6 @@ pub mod toast;
 pub mod tui_suspend;
 pub mod ui;
 pub mod yaml_modal;
-pub mod log_viewer;
 
 use crate::commands::dash::DashArgs;
 

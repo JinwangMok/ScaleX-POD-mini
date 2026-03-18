@@ -346,10 +346,7 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
             let mem_allocatable_display = format_k8s_memory(&mem_alloc);
 
             let cpu_display = format!("{}/{}", cpu_alloc, cpu_cap);
-            let mem_display = format!(
-                "{}/{}",
-                mem_allocatable_display, mem_capacity_display
-            );
+            let mem_display = format!("{}/{}", mem_allocatable_display, mem_capacity_display);
 
             let kubelet_version = status
                 .and_then(|s| s.node_info.as_ref())
@@ -525,9 +522,9 @@ pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<
                 .and_then(|s| s.load_balancer.as_ref())
                 .and_then(|lb| lb.ingress.as_ref())
                 .and_then(|ingress| {
-                    ingress.first().and_then(|i| {
-                        i.ip.clone().or_else(|| i.hostname.clone())
-                    })
+                    ingress
+                        .first()
+                        .and_then(|i| i.ip.clone().or_else(|| i.hostname.clone()))
                 })
                 .unwrap_or_else(|| "<none>".into());
 
@@ -627,13 +624,19 @@ pub async fn fetch_events(client: &Client, namespace: Option<&str>) -> Result<Ve
 fn pod_status_severity(status: &str) -> u8 {
     match status {
         // Critical errors: shown first
-        "Failed" | "Error" | "OOMKilled" | "CrashLoopBackOff" | "ImagePullBackOff"
-        | "ErrImagePull" | "CreateContainerConfigError" | "InvalidImageName" | "Evicted"
-        | "NodeLost" | "Shutdown" => 0,
+        "Failed"
+        | "Error"
+        | "OOMKilled"
+        | "CrashLoopBackOff"
+        | "ImagePullBackOff"
+        | "ErrImagePull"
+        | "CreateContainerConfigError"
+        | "InvalidImageName"
+        | "Evicted"
+        | "NodeLost"
+        | "Shutdown" => 0,
         // Init errors
-        s if s.starts_with("Init:") && (s.contains("Error") || s.contains("CrashLoopBackOff")) => {
-            1
-        }
+        s if s.starts_with("Init:") && (s.contains("Error") || s.contains("CrashLoopBackOff")) => 1,
         // Pending/Initializing states
         "Pending" | "ContainerCreating" | "PodInitializing" | "Terminating" => 2,
         // Init in progress
@@ -672,7 +675,8 @@ pub async fn fetch_cluster_snapshot(
 ) -> Result<ClusterSnapshot> {
     // Single parallel join for ALL API calls — eliminates sequential latency
     // between the namespaces+nodes group and the resources group.
-    let (namespaces, nodes, pods, deployments, services, configmaps, events) = match active_resource {
+    let (namespaces, nodes, pods, deployments, services, configmaps, events) = match active_resource
+    {
         None => {
             // Full fetch: all 7 API calls in one parallel join
             let (ns, n, p, d, s, c, ev) = tokio::join!(
@@ -827,7 +831,10 @@ pub fn filter_snapshot_by_resource(
 // ---------------------------------------------------------------------------
 
 pub fn compute_health(nodes: &[NodeInfo], pods: &[PodInfo]) -> HealthStatus {
-    let not_ready_nodes = nodes.iter().filter(|n| !n.status.starts_with("Ready")).count();
+    let not_ready_nodes = nodes
+        .iter()
+        .filter(|n| !n.status.starts_with("Ready"))
+        .count();
     let failed_pods = pods
         .iter()
         .filter(|p| {
@@ -929,7 +936,10 @@ pub fn compute_resource_usage(
     node_metrics: Option<&[NodeMetrics]>,
 ) -> ResourceUsage {
     let total_nodes = nodes.len();
-    let ready_nodes = nodes.iter().filter(|n| n.status.starts_with("Ready")).count();
+    let ready_nodes = nodes
+        .iter()
+        .filter(|n| n.status.starts_with("Ready"))
+        .count();
     let total_pods = pods.len();
     let running_pods = pods.iter().filter(|p| p.status == "Running").count();
     let succeeded_pods = pods
@@ -1174,7 +1184,8 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-            ..Default::default()        }];
+            ..Default::default()
+        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -1200,7 +1211,8 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-            ..Default::default()        }];
+            ..Default::default()
+        }];
         assert_eq!(compute_health(&nodes, &[]), HealthStatus::Red);
     }
 
@@ -1215,7 +1227,8 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-            ..Default::default()        }];
+            ..Default::default()
+        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -1241,7 +1254,8 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-            ..Default::default()        }];
+            ..Default::default()
+        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -1267,7 +1281,8 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-            ..Default::default()        }];
+            ..Default::default()
+        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -1320,7 +1335,10 @@ mod tests {
     #[test]
     fn derive_status_returns_phase_when_no_waiting() {
         let statuses = vec![];
-        assert_eq!(derive_effective_status("Running", &statuses, &[], None), "Running");
+        assert_eq!(
+            derive_effective_status("Running", &statuses, &[], None),
+            "Running"
+        );
     }
 
     #[test]
@@ -1441,7 +1459,8 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-            ..Default::default()        }];
+            ..Default::default()
+        }];
         let pods = vec![PodInfo {
             name: "p1".into(),
             namespace: "default".into(),
@@ -1470,7 +1489,8 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-            ..Default::default()        }];
+            ..Default::default()
+        }];
         let metrics = vec![NodeMetrics {
             name: "n1".into(),
             cpu_usage: 2.0,
@@ -1504,7 +1524,10 @@ mod tests {
             }),
             ..Default::default()
         }];
-        assert_eq!(derive_effective_status("Running", &statuses, &[], None), "OOMKilled");
+        assert_eq!(
+            derive_effective_status("Running", &statuses, &[], None),
+            "OOMKilled"
+        );
     }
 
     #[test]
@@ -1517,9 +1540,7 @@ mod tests {
 
     #[test]
     fn derive_status_init_containers_pending() {
-        use k8s_openapi::api::core::v1::{
-            ContainerState, ContainerStateWaiting, ContainerStatus,
-        };
+        use k8s_openapi::api::core::v1::{ContainerState, ContainerStateWaiting, ContainerStatus};
 
         let init_statuses = vec![
             ContainerStatus {
@@ -1618,7 +1639,8 @@ mod tests {
             cpu_allocatable: "4".into(),
             mem_allocatable: "8Gi".into(),
             age: "1d".into(),
-            ..Default::default()        }];
+            ..Default::default()
+        }];
         let pods = vec![PodInfo {
             name: "evicted-pod".into(),
             namespace: "default".into(),
@@ -1670,11 +1692,14 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "crash-1", "error-1", "oom-1",
+                "crash-1",
+                "error-1",
+                "oom-1",
                 "init-err",
                 "pending-1",
                 "init-ok",
-                "running-1", "running-2",
+                "running-1",
+                "running-2",
                 "completed-1",
             ]
         );

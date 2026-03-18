@@ -215,8 +215,12 @@ pub async fn discover_clusters_streaming(
                 if token.is_none() {
                     if let Some(ref bh) = bastion {
                         if let Ok(t) = super::sa_provisioner::provision_dash_sa(
-                            &kubeconfig_path, &cluster_name, bh,
-                        ).await {
+                            &kubeconfig_path,
+                            &cluster_name,
+                            bh,
+                        )
+                        .await
+                        {
                             let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &t);
                             token = Some(t);
                         }
@@ -313,8 +317,7 @@ pub async fn discover_clusters_streaming(
                             })
                             .await;
                         let ver = fetch_server_version(&client).await;
-                        let ep =
-                            extract_server_url(&original_path).map(|(url, _, _)| url);
+                        let ep = extract_server_url(&original_path).map(|(url, _, _)| url);
                         let _ = tx
                             .send(DiscoverEvent::Connected(ClusterClient {
                                 name: cluster_name,
@@ -521,8 +524,7 @@ pub async fn discover_clusters_streaming_filtered(
                             })
                             .await;
                         let ver = fetch_server_version(&client).await;
-                        let ep =
-                            extract_server_url(&original_path).map(|(url, _, _)| url);
+                        let ep = extract_server_url(&original_path).map(|(url, _, _)| url);
                         let _ = tx
                             .send(DiscoverEvent::Connected(ClusterClient {
                                 name: cluster_name,
@@ -640,8 +642,12 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
                     if let Some(ref bh) = bastion {
                         eprintln!("{}: provisioning dash SA...", cluster_name);
                         match super::sa_provisioner::provision_dash_sa(
-                            &kubeconfig_path, &cluster_name, bh,
-                        ).await {
+                            &kubeconfig_path,
+                            &cluster_name,
+                            bh,
+                        )
+                        .await
+                        {
                             Ok(t) => {
                                 let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &t);
                                 token = Some(t);
@@ -671,7 +677,10 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
                         }
                     }
                     Err(e) => {
-                        eprintln!("{}: domain client build failed ({}): {}", cluster_name, ep, e);
+                        eprintln!(
+                            "{}: domain client build failed ({}): {}",
+                            cluster_name, ep, e
+                        );
                     }
                 }
             }
@@ -713,13 +722,8 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
 
             // Strategy 3: Auto-tunnel via bastion
             if let Some(ref bastion_host) = bastion {
-                match setup_auto_tunnel(
-                    &kubeconfig_path,
-                    &cluster_name,
-                    bastion_host,
-                    local_port,
-                )
-                .await
+                match setup_auto_tunnel(&kubeconfig_path, &cluster_name, bastion_host, local_port)
+                    .await
                 {
                     Ok((client, pid)) => {
                         eprintln!(

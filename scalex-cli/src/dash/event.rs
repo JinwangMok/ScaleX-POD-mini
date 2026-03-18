@@ -241,9 +241,7 @@ mod tests {
 
     #[test]
     fn unmapped_chars_various() {
-        for c in [
-            'b', 'f', 'g', 'i', 'm', 'o', 't', 'u', 'w', 'x', 'z',
-        ] {
+        for c in ['b', 'f', 'g', 'i', 'm', 'o', 't', 'u', 'w', 'x', 'z'] {
             assert_eq!(
                 map_key_event(key(KeyCode::Char(c), KeyModifiers::NONE)),
                 AppEvent::CharInput(c),
