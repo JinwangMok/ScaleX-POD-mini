@@ -36,7 +36,7 @@ config:
     # NTP synchronization
     ntp_enabled: true
     # Etcd deployment type: "host" (recommended for production), "docker", or "kubeadm"
-    etcd_deployment_type: "host"
+    etcd_deployment_type: "kubeadm"
     # DNS mode: "coredns" (production standard)
     dns_mode: "coredns"
 
