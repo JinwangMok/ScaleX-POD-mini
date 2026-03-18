@@ -490,6 +490,89 @@ echo "[scalex] === Node cleanup complete. Network interfaces (br0/bond) preserve
     .to_string()
 }
 
+/// Generate a self-contained launcher script for bridge setup that survives SSH disconnection.
+///
+/// The strategy:
+/// 1. Write the full bridge setup script to `/tmp/scalex-bridge-setup.sh` on the remote node.
+/// 2. Launch it with `nohup bash ... &` — detaches from the SSH session immediately.
+/// 3. Exit SSH right away (SSH returns success even though network will briefly drop).
+///
+/// The caller must then disconnect intentionally, wait ~30-60s, and poll br0 via a fresh SSH
+/// connection to verify the bridge came up. This avoids the SSH-disconnects-on-netplan-apply
+/// failure mode for bond0→br0 transitions.
+///
+/// Pure function.
+pub fn generate_bridge_nohup_launcher(
+    primary_nic: &str,
+    ip_address: &str,
+    gateway: &str,
+    cidr_prefix: u8,
+    is_bond: bool,
+) -> String {
+    let setup_script = generate_bridge_setup_script(
+        primary_nic,
+        ip_address,
+        gateway,
+        cidr_prefix,
+        is_bond,
+    );
+    // Escape single quotes in the script body for embedding in a bash heredoc-style write.
+    // We use a base64-encoded payload to avoid any quoting issues with the script content.
+    // The launcher: (a) decode and write script, (b) chmod, (c) nohup launch, (d) exit 0.
+    let encoded = base64_encode_script(&setup_script);
+    format!(
+        r#"#!/bin/bash
+# Scalex bridge nohup launcher — survives SSH disconnection during netplan apply
+# 1. Decode and write the actual setup script
+echo '{encoded}' | base64 -d > /tmp/scalex-bridge-setup.sh
+chmod +x /tmp/scalex-bridge-setup.sh
+# 2. Launch in background via nohup — detaches from this SSH session
+nohup bash /tmp/scalex-bridge-setup.sh > /tmp/scalex-bridge-setup.log 2>&1 &
+echo "[scalex] Bridge setup launched (PID $!) — SSH will disconnect when netplan applies"
+# 3. Exit immediately — do NOT wait; caller polls br0 via fresh SSH after reconnect
+exit 0
+"#
+    )
+}
+
+/// Base64-encode a script string (pure, no I/O).
+/// Uses standard alphabet, no line wrapping (single line output).
+fn base64_encode_script(s: &str) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        let b0 = bytes[i] as usize;
+        let b1 = bytes[i + 1] as usize;
+        let b2 = bytes[i + 2] as usize;
+        out.push(ALPHABET[b0 >> 2] as char);
+        out.push(ALPHABET[((b0 & 3) << 4) | (b1 >> 4)] as char);
+        out.push(ALPHABET[((b1 & 0xf) << 2) | (b2 >> 6)] as char);
+        out.push(ALPHABET[b2 & 0x3f] as char);
+        i += 3;
+    }
+    match bytes.len() - i {
+        1 => {
+            let b0 = bytes[i] as usize;
+            out.push(ALPHABET[b0 >> 2] as char);
+            out.push(ALPHABET[(b0 & 3) << 4] as char);
+            out.push('=');
+            out.push('=');
+        }
+        2 => {
+            let b0 = bytes[i] as usize;
+            let b1 = bytes[i + 1] as usize;
+            out.push(ALPHABET[b0 >> 2] as char);
+            out.push(ALPHABET[((b0 & 3) << 4) | (b1 >> 4)] as char);
+            out.push(ALPHABET[(b1 & 0xf) << 2] as char);
+            out.push('=');
+        }
+        _ => {}
+    }
+    out
+}
+
 /// Check if a host already has br0 configured.
 /// Pure function: examines facts data.
 pub fn has_bridge(facts: &NodeFacts) -> bool {
@@ -662,6 +745,75 @@ mod tests {
         );
         assert!(script.contains("netplan apply"));
         assert!(script.contains("bond=true"));
+    }
+
+    #[test]
+    fn test_generate_bridge_nohup_launcher_contains_nohup_and_base64() {
+        let launcher =
+            generate_bridge_nohup_launcher("bond0", "192.168.88.10", "192.168.88.1", 24, true);
+        // Must launch via nohup so it survives SSH disconnection
+        assert!(launcher.contains("nohup"), "launcher must use nohup");
+        // Must decode a base64 payload (the actual setup script)
+        assert!(
+            launcher.contains("base64 -d"),
+            "launcher must decode base64-encoded script"
+        );
+        // Must write to /tmp so no sudo is needed for the write step
+        assert!(
+            launcher.contains("/tmp/scalex-bridge-setup.sh"),
+            "launcher must write script to /tmp"
+        );
+        // Must exit 0 immediately — caller polls separately
+        assert!(launcher.contains("exit 0"), "launcher must exit 0 immediately");
+    }
+
+    #[test]
+    fn test_base64_encode_decode_roundtrip() {
+        // The launcher embeds a base64-encoded setup script; verify encode is correct
+        // by checking that the launcher's payload decodes to something containing br0.
+        let launcher =
+            generate_bridge_nohup_launcher("eno1", "10.0.0.5", "10.0.0.1", 24, false);
+        // Extract the base64 payload (single-quoted token after "echo '")
+        let payload_start = launcher.find("echo '").expect("launcher must have echo '...") + 6;
+        let payload_end = launcher[payload_start..]
+            .find("'")
+            .expect("closing quote")
+            + payload_start;
+        let encoded = &launcher[payload_start..payload_end];
+        // Decode using standard base64 alphabet
+        let decoded = base64_decode_for_test(encoded);
+        assert!(
+            decoded.contains("br0"),
+            "decoded payload must contain br0: {}",
+            &decoded[..decoded.len().min(200)]
+        );
+        assert!(
+            decoded.contains("netplan apply"),
+            "decoded payload must contain netplan apply"
+        );
+    }
+
+    /// Test-only base64 decoder to verify the launcher payload.
+    fn base64_decode_for_test(s: &str) -> String {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = Vec::new();
+        let chars: Vec<u8> = s
+            .bytes()
+            .filter(|&b| b != b'=' && b != b'\n' && b != b'\r')
+            .collect();
+        let mut i = 0;
+        while i + 3 < chars.len() {
+            let pos = |c: u8| ALPHABET.iter().position(|&a| a == c).unwrap_or(0) as u8;
+            let b0 = pos(chars[i]);
+            let b1 = pos(chars[i + 1]);
+            let b2 = pos(chars[i + 2]);
+            let b3 = pos(chars[i + 3]);
+            out.push((b0 << 2) | (b1 >> 4));
+            out.push(((b1 & 0xf) << 4) | (b2 >> 2));
+            out.push(((b2 & 3) << 6) | b3);
+            i += 4;
+        }
+        String::from_utf8_lossy(&out).to_string()
     }
 
     #[test]
