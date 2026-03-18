@@ -16,10 +16,13 @@ cloud_init:
 
 spec:
   sdi_pools:
+    # Tower: HA management cluster — 3 control planes spread across hosts
+    # kube-vip (static pod, L2/ARP) provides VIP at 192.168.88.99
+    # Each CP also runs workloads (control-plane + worker role)
     - pool_name: "tower"
       purpose: "management"
       placement:
-        hosts: [playbox-0]
+        spread: true  # Soft anti-affinity across hosts
       node_specs:
         - node_name: "tower-cp-0"
           ip: "192.168.88.100"
@@ -27,15 +30,48 @@ spec:
           mem_gb: 6
           disk_gb: 30
           host: "playbox-0"
-          roles: [control-plane, worker]
+          roles: [control-plane, etcd, worker]
+        - node_name: "tower-cp-1"
+          ip: "192.168.88.101"
+          cpu: 4
+          mem_gb: 6
+          disk_gb: 30
+          host: "playbox-1"
+          roles: [control-plane, etcd, worker]
+        - node_name: "tower-cp-2"
+          ip: "192.168.88.102"
+          cpu: 4
+          mem_gb: 6
+          disk_gb: 30
+          host: "playbox-2"
+          roles: [control-plane, etcd, worker]
+
+    # Sandbox: workload cluster — 1 CP + 2 workers
+    # kube-vip (static pod, L2/ARP) provides VIP at 192.168.88.109
+    # CP co-located on playbox-0, workers spread across playbox-1/2
     - pool_name: "sandbox"
       purpose: "workload"
       placement:
-        spread: true
+        spread: true  # Soft anti-affinity across hosts
       node_specs:
         - node_name: "sandbox-cp-0"
           ip: "192.168.88.110"
           cpu: 4
           mem_gb: 8
           disk_gb: 60
+          host: "playbox-0"
           roles: [control-plane, etcd, worker]
+        - node_name: "sandbox-worker-0"
+          ip: "192.168.88.120"
+          cpu: 2
+          mem_gb: 4
+          disk_gb: 40
+          host: "playbox-1"
+          roles: [worker]
+        - node_name: "sandbox-worker-1"
+          ip: "192.168.88.121"
+          cpu: 2
+          mem_gb: 4
+          disk_gb: 40
+          host: "playbox-2"
+          roles: [worker]

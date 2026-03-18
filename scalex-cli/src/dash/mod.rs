@@ -88,6 +88,11 @@ pub mod headless {
             return Ok(());
         }
 
+        // Handle checks mode — the 5 E2E health checks returning pass/fail JSON.
+        // Expected clusters are derived from target_clusters (what we intend to check).
+        let is_checks = args.resource.as_deref() == Some("checks")
+            || (args.resource.is_none() && std::env::var("SCALEX_DASH_CHECKS").is_ok());
+
         // Fetch all clusters in parallel for minimum latency.
         // Tunnel and kubeconfig connections are fully initialized by discover_clusters()
         // before we reach this point — ordering is guaranteed by setup_auto_tunnel(),
@@ -148,6 +153,19 @@ pub mod headless {
                 target_clusters.len(),
                 serde_json::to_string(&warn).unwrap_or_default()
             );
+        }
+
+        // Checks mode: run 5 E2E health checks and return pass/fail JSON
+        if is_checks {
+            let expected: Vec<&str> = target_clusters.iter().map(|c| c.name.as_str()).collect();
+            let report = data::run_e2e_checks(&cluster_data, &expected);
+            let output = serde_json::to_string_pretty(&report)?;
+            println!("{}", output);
+            // Exit with non-zero if any check failed
+            if report.overall == data::CheckStatus::Fail {
+                std::process::exit(1);
+            }
+            return Ok(());
         }
 
         // Filter by resource type if specified
