@@ -89,9 +89,10 @@ pub fn generate_cluster_vars(cluster: &ClusterDef, common: &CommonConfig) -> Str
         common.container_runtime
     ));
 
-    // CNI — set to 'cni' for Cilium (managed by GitOps)
+    // CNI — let Kubespray install Cilium directly so nodes become Ready during bootstrap.
+    // ArgoCD will manage Cilium configuration/upgrades post-bootstrap.
     if common.cni == "cilium" {
-        vars.push_str("kube_network_plugin: cni\n");
+        vars.push_str("kube_network_plugin: cilium\n");
         vars.push_str("kube_network_plugin_multus: false\n");
     } else {
         vars.push_str(&format!("kube_network_plugin: \"{}\"\n", common.cni));
@@ -659,7 +660,7 @@ mod tests {
         let vars = generate_cluster_vars(&cluster, &common);
 
         assert!(vars.contains("kube_version: \"1.33.1\""));
-        assert!(vars.contains("kube_network_plugin: cni"));
+        assert!(vars.contains("kube_network_plugin: cilium"));
         assert!(vars.contains("kube_proxy_remove: true"));
         assert!(vars.contains("kube_pods_subnet: \"10.244.0.0/20\""));
         assert!(vars.contains("dns_domain: \"tower.local\""));
@@ -2049,7 +2050,7 @@ supplementary_addresses_in_ssl_keys:
         assert!(vars.contains("kube_version: \"1.33.1\""));
         assert!(vars.contains("container_manager: \"containerd\""));
         // When cni=cilium, kubespray uses "cni" as plugin (Cilium managed by GitOps)
-        assert!(vars.contains("kube_network_plugin: cni"));
+        assert!(vars.contains("kube_network_plugin: cilium"));
         assert!(
             vars.contains("kube_pods_subnet: \"10.244.0.0/20\""),
             "cluster vars must include pod CIDR from cluster def"

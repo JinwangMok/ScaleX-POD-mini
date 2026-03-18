@@ -26,6 +26,7 @@ spec:
           cpu: 4
           mem_gb: 6
           disk_gb: 30
+          host: "playbox-0"
           roles: [control-plane, worker]
     - pool_name: "sandbox"
       purpose: "workload"
@@ -37,12 +38,4 @@ spec:
           cpu: 4
           mem_gb: 8
           disk_gb: 60
-          host: "playbox-0"
-          roles: [control-plane, etcd]
-        - node_name: "sandbox-w-0"
-          ip: "192.168.88.120"
-          cpu: 4
-          mem_gb: 12
-          disk_gb: 100
-          host: "playbox-1"
-          roles: [worker]
+          roles: [control-plane, etcd, worker]

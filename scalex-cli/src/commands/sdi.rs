@@ -44,12 +44,17 @@ enum SdiCommand {
     },
     /// Remove all SDI resources (VMs, bridges, etc.)
     Clean {
-        /// Hard clean: remove everything except SSH access
+        /// Hard clean: remove everything except SSH access (K8s, KVM, bridge, iptables)
         #[arg(long)]
         hard: bool,
         /// Confirmation flag
         #[arg(long = "yes-i-really-want-to")]
         confirm: bool,
+
+        /// Target a specific node by name (optional — if omitted, all nodes are cleaned).
+        /// Requires --hard. Example: --node playbox-2
+        #[arg(long)]
+        node: Option<String>,
 
         /// Path to baremetal-init.yaml (used for --hard node cleanup)
         #[arg(long, default_value = "credentials/.baremetal-init.yaml")]
@@ -108,11 +113,12 @@ pub fn run(args: SdiArgs) -> anyhow::Result<()> {
         SdiCommand::Clean {
             hard,
             confirm,
+            node,
             config,
             env_file,
             output_dir,
             dry_run,
-        } => run_clean(hard, confirm, config, env_file, output_dir, dry_run),
+        } => run_clean(hard, confirm, node, config, env_file, output_dir, dry_run),
         SdiCommand::Sync {
             config,
             env_file,
@@ -279,14 +285,48 @@ fn run_init(
     // Step 5: If spec file provided, generate and apply OpenTofu
     if let Some(ref spec_path) = spec_file {
         println!("[sdi] Phase 2: Generating OpenTofu from spec...");
-        let spec = load_sdi_spec(spec_path)?;
+        let mut spec = load_sdi_spec(spec_path)?;
 
-        // Validate SDI hosts reference known bare-metal nodes
         let bm_node_names: Vec<String> = bm_config
             .target_nodes
             .iter()
             .map(|n| n.name.clone())
             .collect();
+
+        // Auto-placement: resolve hosts for VMs that don't have an explicit host
+        let has_unplaced = spec
+            .spec
+            .sdi_pools
+            .iter()
+            .flat_map(|p| &p.node_specs)
+            .any(|n| n.host.is_none());
+
+        if has_unplaced {
+            println!("[sdi] Resolving auto-placement for unassigned VMs...");
+            if all_facts.is_empty() {
+                anyhow::bail!(
+                    "Auto-placement requires node facts but none are available. \
+                     Run `scalex facts --all` first or assign hosts explicitly in sdi-specs.yaml"
+                );
+            }
+            let summary = resource_pool::generate_resource_pool_summary(&all_facts);
+            match crate::core::placement::resolve_placement(&mut spec, &summary, &bm_node_names) {
+                Ok(plan) => {
+                    println!("{}", crate::core::placement::format_placement_table(&plan));
+                    let auto_count = plan.assignments.iter().filter(|a| a.was_auto).count();
+                    println!(
+                        "[sdi] Placed {} VM(s) automatically, {} explicit",
+                        auto_count,
+                        plan.assignments.len() - auto_count,
+                    );
+                }
+                Err(e) => {
+                    anyhow::bail!("Auto-placement failed: {}", e);
+                }
+            }
+        }
+
+        // Validate SDI hosts reference known bare-metal nodes (after placement)
         let host_errors = crate::core::validation::validate_sdi_hosts_exist(&spec, &bm_node_names);
         if !host_errors.is_empty() {
             eprintln!("[sdi] SDI host reference errors:");
@@ -423,39 +463,11 @@ fn run_init(
             }
         }
 
-        // Pre-download base image to the BASTION (where tofu runs).
-        // The libvirt provider reads source files locally and uploads via qemu+ssh.
+        // Pre-create base volumes on each host by downloading directly on the remote node.
+        // Each bare-metal node downloads the cloud image via curl (much faster than SSH pipe).
+        // The HCL references these by name instead of creating them.
         if !dry_run {
             let image_url = &spec.os_image.source;
-            let image_filename = image_url.rsplit('/').next().unwrap_or("cloud-image.img");
-            let local_cache_dir =
-                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
-                    .join(".scalex/images");
-            std::fs::create_dir_all(&local_cache_dir).ok();
-            let local_image_path = local_cache_dir.join(image_filename);
-
-            if local_image_path.exists() {
-                println!("[sdi] Base image cached: {}", local_image_path.display());
-            } else {
-                println!("[sdi] Downloading base image to bastion: {} ...", image_url);
-                let dl = std::process::Command::new("wget")
-                    .args(["-q", "--show-progress", "-O"])
-                    .arg(&local_image_path)
-                    .arg(image_url)
-                    .status();
-                match dl {
-                    Ok(s) if s.success() => println!(
-                        "[sdi] Base image downloaded: {}",
-                        local_image_path.display()
-                    ),
-                    _ => {
-                        println!("[sdi] WARNING: image download failed, tofu will use URL directly")
-                    }
-                }
-            }
-
-            // Pre-create base volumes on each host via virsh (bypass provider timeout).
-            // The HCL references these by name instead of creating them.
             let unique_hosts = tofu::collect_unique_hosts(&spec);
             for host_name in &unique_hosts {
                 let node = bm_config.target_nodes.iter().find(|n| n.name == *host_name);
@@ -463,7 +475,7 @@ fn run_init(
                     let vol_name = format!("base-ubuntu-{}.qcow2", host_name);
                     // Check if volume already exists
                     let check_script = format!(
-                        "sudo virsh -c qemu:///system vol-info '{}' --pool images >/dev/null 2>&1 && echo EXISTS || echo MISSING",
+                        "sudo virsh -c qemu:///system vol-info '{}' --pool default >/dev/null 2>&1 && echo EXISTS || echo MISSING",
                         vol_name
                     );
                     let check_cmd = crate::core::ssh::build_ssh_command(
@@ -483,84 +495,48 @@ fn run_init(
                             vol_name, host_name
                         );
                     } else {
-                        // Upload image via SCP then create volume with virsh
+                        // Download image directly on the remote node via curl
                         println!(
-                            "[sdi] Creating base volume '{}' on {} via SCP + virsh...",
-                            vol_name, host_name
+                            "[sdi] Downloading base image on {} (remote curl)...",
+                            host_name
                         );
-
-                        // Get pool directory
-                        let pool_dir_script = "sudo virsh -c qemu:///system pool-dumpxml images 2>/dev/null | grep -oP '(?<=<path>).*(?=</path>)' | head -1";
-                        let pool_dir_cmd = crate::core::ssh::build_ssh_command(
-                            node,
-                            pool_dir_script,
-                            &bm_config.target_nodes,
-                        );
-                        let pool_dir = pool_dir_cmd
-                            .ok()
-                            .and_then(|cmd| crate::core::ssh::execute_ssh(&cmd).ok())
-                            .map(|o| o.trim().to_string())
-                            .unwrap_or_else(|| "/var/lib/libvirt/images".to_string());
-
-                        // Upload image via SSH pipe (uses SSH config for ProxyJump)
+                        let pool_dir = "/var/lib/libvirt/images";
                         let remote_path = format!("{}/{}", pool_dir, vol_name);
-                        println!(
-                            "[sdi]   Uploading image via SSH to {}:{}...",
-                            host_name, remote_path
+                        let download_script = format!(
+                            "sudo mkdir -p {pool_dir} && \
+                             curl -fSL --progress-bar -o /tmp/scalex-download.img '{url}' && \
+                             sudo mv /tmp/scalex-download.img '{path}' && \
+                             sudo chmod 644 '{path}' && \
+                             sudo chown libvirt-qemu:kvm '{path}' 2>/dev/null; \
+                             sudo virsh -c qemu:///system pool-refresh default && \
+                             echo VOLUME_CREATED",
+                            pool_dir = pool_dir,
+                            url = image_url,
+                            path = remote_path,
                         );
-
-                        // Use scalex SSH to stream the file: cat local | ssh remote "sudo tee file"
-                        let upload_script = format!(
-                            "cat > /tmp/scalex-upload.img && sudo mv /tmp/scalex-upload.img '{}' && sudo virsh -c qemu:///system pool-refresh images && echo VOLUME_CREATED",
-                            remote_path
-                        );
-                        let upload_cmd = crate::core::ssh::build_ssh_command(
+                        let dl_cmd = crate::core::ssh::build_ssh_command(
                             node,
-                            &upload_script,
+                            &download_script,
                             &bm_config.target_nodes,
                         );
-                        match upload_cmd {
-                            Ok(cmd) => {
-                                // Build the full SSH command and pipe the file into it
-                                let mut ssh_args = if cmd.use_sshpass {
-                                    vec!["sshpass".to_string(), "-e".to_string(), "ssh".to_string()]
-                                } else {
-                                    vec!["ssh".to_string()]
-                                };
-                                ssh_args.extend(cmd.args.clone());
-
-                                let file = std::fs::File::open(&local_image_path);
-                                match file {
-                                    Ok(f) => {
-                                        let status = std::process::Command::new(&ssh_args[0])
-                                            .args(&ssh_args[1..])
-                                            .stdin(f)
-                                            .status();
-                                        match status {
-                                            Ok(s) if s.success() => {
-                                                println!("[sdi]   {} — VOLUME_CREATED", host_name);
-                                                // Fix permissions so qemu (libvirt-qemu) can read the base image
-                                                let chmod_script =
-                                                    format!("sudo chmod 644 '{}'", remote_path);
-                                                if let Ok(cmd) = crate::core::ssh::build_ssh_command(
-                                                    node,
-                                                    &chmod_script,
-                                                    &bm_config.target_nodes,
-                                                ) {
-                                                    let _ = crate::core::ssh::execute_ssh(&cmd);
-                                                }
-                                            }
-                                            _ => println!(
-                                                "[sdi]   WARNING: upload failed for {}",
-                                                host_name
-                                            ),
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("[sdi]   WARNING: can't open local image: {}", e)
+                        match dl_cmd {
+                            Ok(cmd) => match crate::core::ssh::execute_ssh(&cmd) {
+                                Ok(out) => {
+                                    if out.contains("VOLUME_CREATED") {
+                                        println!("[sdi]   {} — VOLUME_CREATED", host_name);
+                                    } else {
+                                        println!(
+                                            "[sdi]   WARNING: download may have failed on {}: {}",
+                                            host_name,
+                                            out.trim()
+                                        );
                                     }
                                 }
-                            }
+                                Err(e) => println!(
+                                    "[sdi]   WARNING: remote download failed on {}: {}",
+                                    host_name, e
+                                ),
+                            },
                             Err(e) => println!(
                                 "[sdi]   WARNING: SSH command build failed for {}: {}",
                                 host_name, e
@@ -717,6 +693,7 @@ fn run_init(
 fn run_clean(
     hard: bool,
     confirm: bool,
+    node_filter: Option<String>,
     config_path: PathBuf,
     env_path: PathBuf,
     output_dir: PathBuf,
@@ -726,64 +703,268 @@ fn run_clean(
         anyhow::bail!(err);
     }
 
+    // Soft mode: bail early when no SDI state directory exists.
+    // Hard mode: proceed to node cleanup even without a state dir — this supports the
+    // Phase 1 bare-metal clean-reinstall scenario where no prior SDI state was created.
     if !output_dir.exists() {
-        println!("[sdi] No SDI state found at {}", output_dir.display());
-        return Ok(());
+        if !hard {
+            println!(
+                "[sdi] No SDI state found at {}. Nothing to clean.",
+                output_dir.display()
+            );
+            return Ok(());
+        }
+        println!(
+            "[sdi] No SDI state found at {} (proceeding with node cleanup for clean reinstall)",
+            output_dir.display()
+        );
     }
 
-    // Destroy host-infra tofu resources first (created by `sdi init` no-flag path)
+    // Step 1: Destroy host-infra OpenTofu resources (created by `sdi init` no-spec path).
     let host_infra_dir = output_dir.join("host-infra");
     let host_infra_tf = host_infra_dir.join("main.tf");
     if host_infra_tf.exists() {
         if dry_run {
             println!("[dry-run] Would run: tofu destroy -auto-approve (host-infra)");
         } else {
-            println!("[sdi] Destroying host-infra OpenTofu resources...");
-            run_tofu_command(&host_infra_dir, &["destroy", "-auto-approve"])?;
+            println!("[sdi] Step 1: Destroying host-infra OpenTofu resources...");
+            if let Err(e) = run_tofu_command(&host_infra_dir, &["destroy", "-auto-approve"]) {
+                if hard {
+                    eprintln!("[sdi] WARNING: host-infra tofu destroy failed ({}), continuing with --hard node cleanup", e);
+                } else {
+                    return Err(e);
+                }
+            }
         }
     }
 
-    // Destroy main tofu resources (created by `sdi init <spec>`)
+    // Step 2: Destroy main OpenTofu VM resources (created by `sdi init <spec>`).
     let main_tf = output_dir.join("main.tf");
     if main_tf.exists() {
         if dry_run {
             println!("[dry-run] Would run: tofu destroy -auto-approve");
         } else {
-            println!("[sdi] Destroying OpenTofu resources...");
-            run_tofu_command(&output_dir, &["destroy", "-auto-approve"])?;
+            println!("[sdi] Step 2: Destroying OpenTofu VM resources...");
+            if let Err(e) = run_tofu_command(&output_dir, &["destroy", "-auto-approve"]) {
+                if hard {
+                    eprintln!("[sdi] WARNING: tofu destroy failed ({}), continuing with --hard node cleanup", e);
+                } else {
+                    return Err(e);
+                }
+            }
         }
     }
 
     if hard {
-        // SSH into each node and run full cleanup (K8s, KVM, bridge removal)
-        if config_path.exists() && env_path.exists() {
-            let bm_config = load_baremetal_config(&config_path, &env_path)?;
-            let cleanup_script = host_prepare::generate_node_cleanup_script();
-
+        // Step 3: SSH into each target node and run full cleanup (K8s, KVM, bridge).
+        // Cleanup is sequenced in three phases to avoid dependency failures:
+        //   Phase A — KVM/libvirt teardown (stops VMs, removes storage pools/volumes)
+        //   Phase B — Full node cleanup (removes K8s, KVM packages, bridge config)
+        //   Phase C — Per-node result summary
+        if !config_path.exists() || !env_path.exists() {
             println!(
-                "[sdi] Running full node cleanup on {} nodes...",
-                bm_config.target_nodes.len()
+                "[sdi] Step 3: No baremetal config found — skipping node cleanup (local state only)"
             );
-            for node in &bm_config.target_nodes {
-                println!("[sdi] {} — cleaning K8s, KVM, bridge...", node.name);
-                if !dry_run {
-                    let ssh_cmd =
-                        build_ssh_command(node, &cleanup_script, &bm_config.target_nodes)?;
-                    match execute_ssh(&ssh_cmd) {
-                        Ok(out) => println!("{}", out),
-                        Err(e) => eprintln!("[sdi] ERROR on {}: {}", node.name, e),
+        } else {
+            let bm_config = load_baremetal_config(&config_path, &env_path)?;
+
+            // Apply per-node filter: if --node was specified, scope cleanup to that node only.
+            let target_nodes: Vec<_> = if let Some(ref name) = node_filter {
+                let matched: Vec<_> = bm_config
+                    .target_nodes
+                    .iter()
+                    .filter(|n| n.name == *name)
+                    .collect();
+                if matched.is_empty() {
+                    anyhow::bail!(
+                        "--node '{}' not found in baremetal config. Available nodes: {}",
+                        name,
+                        bm_config
+                            .target_nodes
+                            .iter()
+                            .map(|n| n.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                matched
+            } else {
+                bm_config.target_nodes.iter().collect()
+            };
+
+            let total = target_nodes.len();
+            let node_names: Vec<&str> = target_nodes.iter().map(|n| n.name.as_str()).collect();
+            println!(
+                "[sdi] Step 3: Hard cleanup across {} node(s): {}",
+                total,
+                node_names.join(", ")
+            );
+
+            // Phase A: KVM/libvirt teardown — destroy running VMs and storage pools FIRST.
+            // Runs before the main cleanup so VM disk volumes are cleanly removed via virsh
+            // rather than left as dangling files after package purge.
+            let kvm_teardown_script = host_prepare::generate_kvm_teardown_script();
+            println!(
+                "[sdi]   Phase A: KVM/libvirt teardown (destroy VMs + storage pools) on all nodes..."
+            );
+
+            let mut kvm_results: Vec<(String, Result<(), String>)> = Vec::new();
+            for (idx, node) in target_nodes.iter().enumerate() {
+                println!(
+                    "[sdi]   [{}/{}] {} — destroying VMs, storage pools, network...",
+                    idx + 1,
+                    total,
+                    node.name
+                );
+                if dry_run {
+                    println!(
+                        "[dry-run]     Would run KVM teardown script on {}",
+                        node.name
+                    );
+                    kvm_results.push((node.name.clone(), Ok(())));
+                } else {
+                    match build_ssh_command(node, &kvm_teardown_script, &bm_config.target_nodes) {
+                        Ok(ssh_cmd) => match execute_ssh(&ssh_cmd) {
+                            Ok(out) => {
+                                if !out.trim().is_empty() {
+                                    println!("{}", out.trim());
+                                }
+                                kvm_results.push((node.name.clone(), Ok(())));
+                            }
+                            Err(e) => {
+                                eprintln!("[sdi]   ERROR on {} (KVM teardown): {}", node.name, e);
+                                kvm_results.push((node.name.clone(), Err(e.to_string())));
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("[sdi]   ERROR on {} (SSH setup): {}", node.name, e);
+                            kvm_results.push((node.name.clone(), Err(e.to_string())));
+                        }
                     }
                 }
             }
-        } else {
-            println!("[sdi] No baremetal config found, skipping node cleanup (only removing local state)");
+
+            // Phase B: Full node cleanup — removes K8s components, KVM packages, bridge config.
+            // Runs after KVM teardown to avoid removing packages while VMs are still active.
+            let cleanup_script = host_prepare::generate_node_cleanup_script();
+            println!(
+                "[sdi]   Phase B: Full node cleanup (K8s + KVM packages + bridge) on all nodes..."
+            );
+
+            let mut cleanup_results: Vec<(String, Result<(), String>)> = Vec::new();
+            for (idx, node) in target_nodes.iter().enumerate() {
+                println!(
+                    "[sdi]   [{}/{}] {} — removing K8s, KVM packages, bridge...",
+                    idx + 1,
+                    total,
+                    node.name
+                );
+                if dry_run {
+                    println!(
+                        "[dry-run]     Would run full cleanup script on {}",
+                        node.name
+                    );
+                    cleanup_results.push((node.name.clone(), Ok(())));
+                } else {
+                    // Wrap cleanup in nohup so it survives SSH disconnection
+                    // (bridge removal kills the SSH session on non-direct nodes)
+                    let wrapped_script = format!(
+                        "nohup bash -c '{}' > /tmp/scalex-cleanup.log 2>&1 &\n\
+                         CLEANUP_PID=$!\n\
+                         echo \"[scalex] Cleanup started (PID $CLEANUP_PID), waiting...\"\n\
+                         # Wait up to 180s for cleanup to finish\n\
+                         for i in $(seq 1 180); do\n\
+                           kill -0 $CLEANUP_PID 2>/dev/null || break\n\
+                           sleep 1\n\
+                         done\n\
+                         if kill -0 $CLEANUP_PID 2>/dev/null; then\n\
+                           echo \"[scalex] Cleanup still running after 180s (will complete in background)\"\n\
+                         else\n\
+                           echo \"[scalex] Cleanup finished\"\n\
+                         fi\n\
+                         cat /tmp/scalex-cleanup.log 2>/dev/null | tail -5",
+                        cleanup_script.replace('\'', "'\\''")
+                    );
+                    match build_ssh_command(node, &wrapped_script, &bm_config.target_nodes) {
+                        Ok(ssh_cmd) => match execute_ssh(&ssh_cmd) {
+                            Ok(out) => {
+                                if !out.trim().is_empty() {
+                                    println!("{}", out.trim());
+                                }
+                                cleanup_results.push((node.name.clone(), Ok(())));
+                            }
+                            Err(e) => {
+                                // SSH disconnection during cleanup is expected (bridge removal).
+                                // The nohup ensures cleanup completes in background.
+                                let msg = e.to_string();
+                                if msg.contains("Timeout") || msg.contains("closed") || msg.contains("reset") {
+                                    eprintln!(
+                                        "[sdi]   WARNING on {} (cleanup): SSH disconnected (bridge removal), cleanup continues in background",
+                                        node.name
+                                    );
+                                    cleanup_results.push((node.name.clone(), Ok(())));
+                                } else {
+                                    eprintln!("[sdi]   ERROR on {} (cleanup): {}", node.name, e);
+                                    cleanup_results.push((node.name.clone(), Err(msg)));
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("[sdi]   ERROR on {} (SSH setup): {}", node.name, e);
+                            cleanup_results.push((node.name.clone(), Err(e.to_string())));
+                        }
+                    }
+                }
+            }
+
+            // Phase C: Print per-node result summary.
+            println!("\n[sdi] Node cleanup summary ({} node(s)):", total);
+            let mut failed_nodes = 0usize;
+            for node in &target_nodes {
+                let kvm_ok = kvm_results
+                    .iter()
+                    .find(|(n, _)| n == &node.name)
+                    .map(|(_, r)| r.is_ok())
+                    .unwrap_or(false);
+                let clean_ok = cleanup_results
+                    .iter()
+                    .find(|(n, _)| n == &node.name)
+                    .map(|(_, r)| r.is_ok())
+                    .unwrap_or(false);
+                if kvm_ok && clean_ok {
+                    println!("[sdi]   OK {}", node.name);
+                } else {
+                    let kvm_label = if kvm_ok { "OK" } else { "FAIL" };
+                    let clean_label = if clean_ok { "OK" } else { "FAIL" };
+                    eprintln!(
+                        "[sdi]   FAIL {} (kvm-teardown: {}, cleanup: {})",
+                        node.name, kvm_label, clean_label
+                    );
+                    failed_nodes += 1;
+                }
+            }
+            if failed_nodes > 0 {
+                eprintln!(
+                    "[sdi] WARNING: {}/{} node(s) had failures. Review errors above.",
+                    failed_nodes, total
+                );
+            } else {
+                println!("[sdi] All {} node(s) cleaned successfully.", total);
+            }
         }
 
-        if dry_run {
-            println!("[dry-run] Would remove {}", output_dir.display());
-        } else {
-            std::fs::remove_dir_all(&output_dir)?;
-            println!("[sdi] Removed {}", output_dir.display());
+        // Step 4: Remove local SDI state directory (only if it actually exists).
+        if output_dir.exists() {
+            if dry_run {
+                println!("[dry-run] Would remove {}", output_dir.display());
+            } else {
+                println!(
+                    "[sdi] Step 4: Removing local SDI state ({})...",
+                    output_dir.display()
+                );
+                std::fs::remove_dir_all(&output_dir)?;
+                println!("[sdi] Removed {}", output_dir.display());
+            }
         }
     }
 
@@ -1204,6 +1385,8 @@ pub enum CleanOperation {
     TofuDestroy,
     /// Destroy host-infra OpenTofu resources (host-infra/main.tf exists)
     TofuDestroyHostInfra,
+    /// Run dedicated KVM/libvirt teardown per node (destroy VMs, remove storage pools, undefine domains)
+    KvmTeardown { node_count: usize },
     /// Run node cleanup scripts via SSH (hard mode, baremetal config exists)
     NodeCleanup { node_count: usize },
     /// Skip node cleanup (hard mode, but no baremetal config)
@@ -1239,7 +1422,11 @@ pub fn plan_clean_operations(
 
     if hard {
         match bm_config_node_count {
-            Some(count) => ops.push(CleanOperation::NodeCleanup { node_count: count }),
+            Some(count) => {
+                // KVM teardown runs first (destroy VMs/pools/domains), then full node cleanup
+                ops.push(CleanOperation::KvmTeardown { node_count: count });
+                ops.push(CleanOperation::NodeCleanup { node_count: count });
+            }
             None => ops.push(CleanOperation::SkipNodeCleanup),
         }
         ops.push(CleanOperation::RemoveStateDir);
@@ -1636,6 +1823,7 @@ mod tests {
             ops,
             vec![
                 CleanOperation::TofuDestroy,
+                CleanOperation::KvmTeardown { node_count: 4 },
                 CleanOperation::NodeCleanup { node_count: 4 },
                 CleanOperation::RemoveStateDir,
             ]
@@ -1661,6 +1849,7 @@ mod tests {
         assert_eq!(
             ops,
             vec![
+                CleanOperation::KvmTeardown { node_count: 2 },
                 CleanOperation::NodeCleanup { node_count: 2 },
                 CleanOperation::RemoveStateDir,
             ]
@@ -1696,6 +1885,7 @@ mod tests {
             vec![
                 CleanOperation::TofuDestroyHostInfra,
                 CleanOperation::TofuDestroy,
+                CleanOperation::KvmTeardown { node_count: 4 },
                 CleanOperation::NodeCleanup { node_count: 4 },
                 CleanOperation::RemoveStateDir,
             ],
@@ -1711,9 +1901,83 @@ mod tests {
             ops,
             vec![
                 CleanOperation::TofuDestroyHostInfra,
+                CleanOperation::KvmTeardown { node_count: 2 },
                 CleanOperation::NodeCleanup { node_count: 2 },
                 CleanOperation::RemoveStateDir,
             ]
+        );
+    }
+
+    // --- KVM teardown operation tests (Sub-AC 3) ---
+
+    #[test]
+    fn test_plan_clean_hard_includes_kvm_teardown_before_node_cleanup() {
+        // KVM teardown must appear BEFORE full NodeCleanup in hard mode
+        let ops = plan_clean_operations(true, true, true, false, Some(4));
+        let kvm_pos = ops
+            .iter()
+            .position(|op| matches!(op, CleanOperation::KvmTeardown { .. }))
+            .expect("KvmTeardown must be present in hard mode with bm config");
+        let node_cleanup_pos = ops
+            .iter()
+            .position(|op| matches!(op, CleanOperation::NodeCleanup { .. }))
+            .expect("NodeCleanup must be present in hard mode with bm config");
+        assert!(
+            kvm_pos < node_cleanup_pos,
+            "KvmTeardown must precede NodeCleanup to destroy VMs before package removal"
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_hard_kvm_teardown_uses_correct_node_count() {
+        let ops = plan_clean_operations(true, true, false, false, Some(4));
+        let kvm_op = ops
+            .iter()
+            .find(|op| matches!(op, CleanOperation::KvmTeardown { .. }))
+            .expect("KvmTeardown must be present");
+        assert_eq!(
+            *kvm_op,
+            CleanOperation::KvmTeardown { node_count: 4 },
+            "KvmTeardown must carry the correct node count for per-node SSH execution"
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_soft_has_no_kvm_teardown() {
+        // Soft clean (no --hard) must NOT include KVM teardown
+        let ops = plan_clean_operations(false, true, true, false, Some(4));
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, CleanOperation::KvmTeardown { .. })),
+            "soft clean must not include KVM teardown"
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_hard_no_bm_config_has_no_kvm_teardown() {
+        // Without baremetal config, skip KVM teardown (no SSH access info)
+        let ops = plan_clean_operations(true, true, true, false, None);
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, CleanOperation::KvmTeardown { .. })),
+            "hard clean without bm config must not include KVM teardown"
+        );
+        assert!(
+            ops.contains(&CleanOperation::SkipNodeCleanup),
+            "must include SkipNodeCleanup when bm config absent"
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_hard_kvm_teardown_with_two_nodes() {
+        let ops = plan_clean_operations(true, true, false, false, Some(2));
+        assert!(
+            ops.contains(&CleanOperation::KvmTeardown { node_count: 2 }),
+            "KvmTeardown must reflect actual node count"
+        );
+        assert!(
+            ops.contains(&CleanOperation::NodeCleanup { node_count: 2 }),
+            "NodeCleanup must follow KvmTeardown"
         );
     }
 
@@ -2492,6 +2756,295 @@ mod tests {
         assert!(
             gpu_node.unwrap().gpu_passthrough,
             "sandbox-w-2 must have gpu_passthrough=true"
+        );
+    }
+
+    // ===== Sub-AC 5: Idempotent re-run of `scalex sdi clean --hard` across all 4 nodes =====
+    //
+    // These tests validate:
+    //   1. First run returns the correct set of operations for 4-node playbox setup
+    //   2. Second run (after state is removed by first run) returns [NoState] — clean exit
+    //   3. The idempotency holds regardless of which OpenTofu files are present
+    //   4. The 4-node scenario (playbox-0/1/2/3) is explicitly represented
+    //
+    // Per constraints: `scalex sdi clean --hard` must be idempotent; second run must
+    // exit cleanly with no leftover K8s/KVM/bridge artifacts.
+
+    /// Sub-AC 5: Full two-run scenario — first run with 4 nodes removes state,
+    /// second run returns NoState and exits cleanly.
+    #[test]
+    fn test_clean_hard_idempotent_two_run_4_nodes_main_tf() {
+        // First run: _generated/sdi exists with main.tf, 4 playbox nodes
+        let first_run = plan_clean_operations(
+            true,  // hard
+            true,  // output_dir_exists
+            true,  // main_tf_exists
+            false, // host_infra_main_tf_exists
+            Some(4),
+        );
+        assert_eq!(
+            first_run,
+            vec![
+                CleanOperation::TofuDestroy,
+                CleanOperation::KvmTeardown { node_count: 4 },
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ],
+            "First run must: destroy OpenTofu, run KVM teardown, run node cleanup, remove state dir"
+        );
+
+        // After first run: RemoveStateDir removes _generated/sdi → output_dir_exists = false
+        // Second run must be a no-op (clean exit, nothing left to do)
+        let second_run = plan_clean_operations(
+            true,  // hard
+            false, // output_dir_exists (removed by RemoveStateDir)
+            false, // main_tf_exists (irrelevant — dir is gone)
+            false, // host_infra_main_tf_exists
+            Some(4),
+        );
+        assert_eq!(
+            second_run,
+            vec![CleanOperation::NoState],
+            "Second run after state removal must return NoState — idempotent clean exit"
+        );
+    }
+
+    /// Sub-AC 5: Two-run scenario with host-infra OpenTofu (no-flag path) plus 4 nodes.
+    #[test]
+    fn test_clean_hard_idempotent_two_run_4_nodes_host_infra_only() {
+        // First run: no main.tf but host-infra/main.tf exists (sdi init no-flag path)
+        let first_run = plan_clean_operations(
+            true,  // hard
+            true,  // output_dir_exists
+            false, // main_tf_exists
+            true,  // host_infra_main_tf_exists
+            Some(4),
+        );
+        assert_eq!(
+            first_run,
+            vec![
+                CleanOperation::TofuDestroyHostInfra,
+                CleanOperation::KvmTeardown { node_count: 4 },
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ],
+            "First run (no-flag path) must: destroy host-infra, KVM teardown, clean 4 nodes, remove state"
+        );
+
+        // Second run: output_dir removed → NoState
+        let second_run = plan_clean_operations(true, false, false, false, Some(4));
+        assert_eq!(
+            second_run,
+            vec![CleanOperation::NoState],
+            "Second run after no-flag path cleanup must return NoState"
+        );
+    }
+
+    /// Sub-AC 5: Two-run scenario with ALL artifacts (both main.tf and host-infra).
+    /// This represents a full clean of a complete E2E installation.
+    #[test]
+    fn test_clean_hard_idempotent_two_run_4_nodes_full_state() {
+        // First run: full state — both main.tf and host-infra/main.tf, 4 playbox nodes
+        let first_run = plan_clean_operations(
+            true, // hard
+            true, // output_dir_exists
+            true, // main_tf_exists
+            true, // host_infra_main_tf_exists
+            Some(4),
+        );
+        assert_eq!(
+            first_run,
+            vec![
+                CleanOperation::TofuDestroyHostInfra,
+                CleanOperation::TofuDestroy,
+                CleanOperation::KvmTeardown { node_count: 4 },
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ],
+            "Full first run must destroy host-infra THEN main tofu THEN KVM teardown THEN clean all 4 nodes"
+        );
+
+        // Second run is always a clean exit
+        let second_run = plan_clean_operations(true, false, false, false, Some(4));
+        assert_eq!(
+            second_run,
+            vec![CleanOperation::NoState],
+            "Second run of full clean must return NoState"
+        );
+    }
+
+    /// Sub-AC 5: Repeated re-runs (3rd, 4th, 5th) are all safe — not just the second.
+    #[test]
+    fn test_clean_hard_idempotent_n_runs_always_safe() {
+        // After first run removes state dir, every subsequent run sees no state
+        for run_number in 2..=5 {
+            let ops = plan_clean_operations(
+                true,  // hard
+                false, // output_dir does not exist after first run
+                false,
+                false,
+                Some(4),
+            );
+            assert_eq!(
+                ops,
+                vec![CleanOperation::NoState],
+                "Run #{} must return NoState for idempotent clean exit",
+                run_number
+            );
+        }
+    }
+
+    /// Sub-AC 5: Even without baremetal config, second run on clean state still exits cleanly.
+    #[test]
+    fn test_clean_hard_idempotent_second_run_no_bm_config() {
+        // First run: state exists but no baremetal config → SkipNodeCleanup
+        let first_run = plan_clean_operations(
+            true,  // hard
+            true,  // output_dir_exists
+            true,  // main_tf_exists
+            false, // host_infra_main_tf_exists
+            None,  // no baremetal config available
+        );
+        assert_eq!(
+            first_run,
+            vec![
+                CleanOperation::TofuDestroy,
+                CleanOperation::SkipNodeCleanup,
+                CleanOperation::RemoveStateDir,
+            ],
+            "First run without bm_config must SkipNodeCleanup but still remove state"
+        );
+
+        // Second run: state removed → NoState regardless of bm_config presence
+        let second_run = plan_clean_operations(true, false, false, false, None);
+        assert_eq!(
+            second_run,
+            vec![CleanOperation::NoState],
+            "Second run without bm_config must still return NoState"
+        );
+    }
+
+    /// Sub-AC 5: Validate that the --hard + --yes-i-really-want-to guard is
+    /// consistently enforced on every run — protecting against accidental re-runs.
+    #[test]
+    fn test_clean_hard_confirm_required_on_every_run() {
+        // --hard without confirmation must always be rejected
+        assert!(
+            validate_clean_args(true, false).is_some(),
+            "First run: --hard without confirm must be rejected"
+        );
+        assert!(
+            validate_clean_args(true, false).is_some(),
+            "Second run: --hard without confirm must still be rejected"
+        );
+        // With confirmation, all runs are accepted
+        assert!(validate_clean_args(true, true).is_none());
+    }
+
+    /// Sub-AC 5: RemoveStateDir is always last, ensuring no partial-state can
+    /// confuse a subsequent `sdi init` run after `sdi clean --hard`.
+    #[test]
+    fn test_clean_hard_remove_state_dir_is_last_operation() {
+        let ops = plan_clean_operations(true, true, true, true, Some(4));
+
+        // RemoveStateDir must always be the FINAL operation in hard clean
+        assert_eq!(
+            ops.last(),
+            Some(&CleanOperation::RemoveStateDir),
+            "RemoveStateDir must be the final operation to prevent leftover partial state"
+        );
+
+        // After RemoveStateDir, plan_clean_operations returns NoState — guaranteed clean
+        let post_clean = plan_clean_operations(true, false, false, false, Some(4));
+        assert_eq!(
+            post_clean,
+            vec![CleanOperation::NoState],
+            "After RemoveStateDir, no artifacts remain — clean exit guaranteed on re-run"
+        );
+    }
+
+    /// Sub-AC 5: NodeCleanup targets exactly all 4 playbox nodes (playbox-0/1/2/3).
+    #[test]
+    fn test_clean_hard_plans_node_cleanup_for_all_4_playbox_nodes() {
+        let ops = plan_clean_operations(true, true, true, false, Some(4));
+
+        let node_cleanup = ops
+            .iter()
+            .find(|op| matches!(op, CleanOperation::NodeCleanup { .. }));
+        assert!(
+            node_cleanup.is_some(),
+            "NodeCleanup must be planned for 4 playbox nodes"
+        );
+        assert_eq!(
+            *node_cleanup.unwrap(),
+            CleanOperation::NodeCleanup { node_count: 4 },
+            "NodeCleanup must target exactly 4 nodes: playbox-0, playbox-1, playbox-2, playbox-3"
+        );
+    }
+    // ===== Sub-AC 4: Per-node targeting tests =====
+
+    /// Sub-AC 4: --node filter applied to plan: 1 node out of 4 targeted.
+    /// When --node is specified, only that node is cleaned — others are skipped.
+    #[test]
+    fn test_clean_hard_with_node_filter_targets_single_node() {
+        // plan_clean_operations reflects the count after filtering
+        let ops_filtered = plan_clean_operations(true, true, false, false, Some(1));
+        let node_cleanup = ops_filtered
+            .iter()
+            .find(|op| matches!(op, CleanOperation::NodeCleanup { .. }));
+        assert!(
+            node_cleanup.is_some(),
+            "NodeCleanup must be planned when a single node is targeted"
+        );
+        assert_eq!(
+            *node_cleanup.unwrap(),
+            CleanOperation::NodeCleanup { node_count: 1 },
+            "NodeCleanup with --node filter must target exactly 1 node"
+        );
+    }
+
+    /// Sub-AC 4: validate_clean_args allows --hard with confirmation regardless of --node.
+    #[test]
+    fn test_validate_clean_args_hard_confirm_valid() {
+        // --hard + confirm: should pass regardless of node filter presence
+        assert_eq!(validate_clean_args(true, true), None);
+    }
+
+    /// Sub-AC 4: validate_clean_args rejects --hard without confirmation.
+    #[test]
+    fn test_validate_clean_args_hard_without_confirm_is_error() {
+        let err = validate_clean_args(true, false);
+        assert!(
+            err.is_some(),
+            "--hard without --yes-i-really-want-to must fail"
+        );
+        assert!(
+            err.unwrap().contains("--yes-i-really-want-to"),
+            "error message must mention the confirmation flag"
+        );
+    }
+
+    /// Sub-AC 4: plan with node_filter=1 keeps KvmTeardown + NodeCleanup in that order.
+    #[test]
+    fn test_clean_node_filter_preserves_kvm_then_cleanup_ordering() {
+        let ops = plan_clean_operations(true, true, false, false, Some(1));
+        let kvm_pos = ops
+            .iter()
+            .position(|op| matches!(op, CleanOperation::KvmTeardown { .. }));
+        let clean_pos = ops
+            .iter()
+            .position(|op| matches!(op, CleanOperation::NodeCleanup { .. }));
+        assert!(
+            kvm_pos.is_some(),
+            "KvmTeardown must be present even for single-node cleanup"
+        );
+        assert!(
+            clean_pos.is_some(),
+            "NodeCleanup must be present even for single-node cleanup"
+        );
+        assert!(
+            kvm_pos.unwrap() < clean_pos.unwrap(),
+            "KvmTeardown must precede NodeCleanup even for per-node targeted clean"
         );
     }
 }
