@@ -8,4 +8,5 @@ pub mod plan;
 pub mod sdi;
 pub mod secrets;
 pub mod status;
+pub mod tunnel;
 pub mod validate;

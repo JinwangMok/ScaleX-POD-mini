@@ -36,6 +36,8 @@ enum Commands {
     Plan(commands::plan::PlanArgs),
     /// Multi-cluster Kubernetes TUI dashboard (interactive & headless)
     Dash(commands::dash::DashArgs),
+    /// Manage API tunnels (SSH bastion / Cloudflare Tunnel)
+    Tunnel(commands::tunnel::TunnelArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -53,5 +55,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Validate(args) => commands::validate::run(args),
         Commands::Plan(args) => commands::plan::run(args),
         Commands::Dash(args) => commands::dash::run(args),
+        Commands::Tunnel(args) => commands::tunnel::run(args),
     }
 }

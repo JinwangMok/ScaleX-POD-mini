@@ -229,9 +229,61 @@ fn run_init(
                             );
                             let ssh_cmd =
                                 build_ssh_command(node, &script, &bm_config.target_nodes)?;
-                            match execute_ssh(&ssh_cmd) {
-                                Ok(out) => println!("{}", out),
-                                Err(e) => eprintln!("[sdi] ERROR on {}: {}", node.name, e),
+                            let ssh_failed = match execute_ssh(&ssh_cmd) {
+                                Ok(out) => {
+                                    println!("{}", out);
+                                    false
+                                }
+                                Err(e) => {
+                                    if is_bond {
+                                        println!(
+                                            "[sdi] {} — SSH disconnected during bridge setup (expected for bond→bridge)",
+                                            node.name
+                                        );
+                                    } else {
+                                        eprintln!("[sdi] ERROR on {}: {}", node.name, e);
+                                    }
+                                    true
+                                }
+                            };
+                            // Always verify br0 came up for bond interfaces
+                            if is_bond {
+                                let verify_script = format!(
+                                    "ip addr show br0 2>/dev/null | grep -q '{}/{}'",
+                                    node.node_ip, cidr_prefix
+                                );
+                                let mut bridge_ok = false;
+                                let max_attempts = if ssh_failed { 6 } else { 3 };
+                                let wait_secs = if ssh_failed { 5 } else { 2 };
+                                for attempt in 1..=max_attempts {
+                                    std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+                                    if let Ok(verify_cmd) = build_ssh_command(
+                                        node,
+                                        &verify_script,
+                                        &bm_config.target_nodes,
+                                    ) {
+                                        if execute_ssh(&verify_cmd).is_ok() {
+                                            println!(
+                                                "[sdi] {} — br0 verified after {}s",
+                                                node.name,
+                                                attempt * wait_secs
+                                            );
+                                            bridge_ok = true;
+                                            break;
+                                        }
+                                    }
+                                    println!(
+                                        "[sdi] {} — waiting for br0... (attempt {}/{})",
+                                        node.name, attempt, max_attempts
+                                    );
+                                }
+                                if !bridge_ok {
+                                    eprintln!(
+                                        "[sdi] ERROR on {}: bridge setup failed — br0 not reachable after {}s",
+                                        node.name,
+                                        max_attempts * wait_secs
+                                    );
+                                }
                             }
                         }
                     }
@@ -897,7 +949,10 @@ fn run_clean(
                                 // SSH disconnection during cleanup is expected (bridge removal).
                                 // The nohup ensures cleanup completes in background.
                                 let msg = e.to_string();
-                                if msg.contains("Timeout") || msg.contains("closed") || msg.contains("reset") {
+                                if msg.contains("Timeout")
+                                    || msg.contains("closed")
+                                    || msg.contains("reset")
+                                {
                                     eprintln!(
                                         "[sdi]   WARNING on {} (cleanup): SSH disconnected (bridge removal), cleanup continues in background",
                                         node.name
@@ -1199,8 +1254,51 @@ fn run_sync(
                             );
                             let ssh_cmd =
                                 build_ssh_command(node, &script, &bm_config.target_nodes)?;
-                            if let Err(e) = execute_ssh(&ssh_cmd) {
-                                eprintln!("[sdi] ERROR on {}: {}", node_name, e);
+                            match execute_ssh(&ssh_cmd) {
+                                Ok(out) => println!("{}", out),
+                                Err(e) => {
+                                    if is_bond {
+                                        println!(
+                                            "[sdi] {} — SSH disconnected during bridge setup (expected for bond→bridge), waiting for reconnect...",
+                                            node_name
+                                        );
+                                        let verify_script = format!(
+                                            "ip addr show br0 2>/dev/null | grep -q '{}/{}'",
+                                            node.node_ip, cidr_prefix
+                                        );
+                                        let mut bridge_ok = false;
+                                        for attempt in 1..=6 {
+                                            std::thread::sleep(std::time::Duration::from_secs(5));
+                                            if let Ok(verify_cmd) = build_ssh_command(
+                                                node,
+                                                &verify_script,
+                                                &bm_config.target_nodes,
+                                            ) {
+                                                if execute_ssh(&verify_cmd).is_ok() {
+                                                    println!(
+                                                        "[sdi] {} — br0 verified after {}s",
+                                                        node_name,
+                                                        attempt * 5
+                                                    );
+                                                    bridge_ok = true;
+                                                    break;
+                                                }
+                                            }
+                                            println!(
+                                                "[sdi] {} — waiting for br0... (attempt {}/6)",
+                                                node_name, attempt
+                                            );
+                                        }
+                                        if !bridge_ok {
+                                            eprintln!(
+                                                "[sdi] ERROR on {}: bridge setup failed — br0 not reachable after 30s",
+                                                node_name
+                                            );
+                                        }
+                                    } else {
+                                        eprintln!("[sdi] ERROR on {}: {}", node_name, e);
+                                    }
+                                }
                             }
                         }
                         host_prepare::PrepStep::ConfigureVfio => {

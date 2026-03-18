@@ -1069,6 +1069,7 @@ pub fn describe_from_cache(
     Some(format_describe(obj, &data.resource.api_resource.kind))
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
