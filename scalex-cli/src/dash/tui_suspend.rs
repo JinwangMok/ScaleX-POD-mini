@@ -6,8 +6,7 @@
 
 use anyhow::Result;
 use crossterm::{
-    cursor,
-    execute,
+    cursor, execute,
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::backend::CrosstermBackend;
@@ -55,11 +54,7 @@ pub struct ShellExecRequest {
 /// - Leaves the alternate screen
 /// - Disables raw mode
 pub fn suspend_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    execute!(
-        terminal.backend_mut(),
-        cursor::Show,
-        LeaveAlternateScreen
-    )?;
+    execute!(terminal.backend_mut(), cursor::Show, LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     Ok(())
 }
@@ -214,5 +209,4 @@ mod tests {
         let _s: fn(&mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> = suspend_tui;
         let _r: fn(&mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> = restore_tui;
     }
-
 }

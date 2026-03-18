@@ -424,7 +424,10 @@ mod tests {
     use crate::dash::resource_registry::ResourceRegistry;
 
     fn setup() -> (CommandMode, ResourceRegistry) {
-        (CommandMode::new(), ResourceRegistry::with_builtin_resources())
+        (
+            CommandMode::new(),
+            ResourceRegistry::with_builtin_resources(),
+        )
     }
 
     #[test]
@@ -446,7 +449,11 @@ mod tests {
         assert!(!cmd.suggestions.is_empty());
         // "p" should match pods, persistentvolumes, etc.
         let displays: Vec<&str> = cmd.suggestions.iter().map(|s| s.display.as_str()).collect();
-        assert!(displays.contains(&"pods"), "Expected 'pods' in suggestions: {:?}", displays);
+        assert!(
+            displays.contains(&"pods"),
+            "Expected 'pods' in suggestions: {:?}",
+            displays
+        );
     }
 
     #[test]
@@ -645,11 +652,15 @@ mod tests {
         let (mut cmd, reg) = setup();
         // Submit "pods" twice in a row
         cmd.activate();
-        for c in "pods".chars() { cmd.push_char(c, &reg); }
+        for c in "pods".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         cmd.activate();
-        for c in "pods".chars() { cmd.push_char(c, &reg); }
+        for c in "pods".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         assert_eq!(cmd.history_len(), 1); // Only one entry
@@ -659,15 +670,21 @@ mod tests {
     fn history_allows_non_consecutive_duplicates() {
         let (mut cmd, reg) = setup();
         cmd.activate();
-        for c in "pods".chars() { cmd.push_char(c, &reg); }
+        for c in "pods".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         cmd.activate();
-        for c in "nodes".chars() { cmd.push_char(c, &reg); }
+        for c in "nodes".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         cmd.activate();
-        for c in "pods".chars() { cmd.push_char(c, &reg); }
+        for c in "pods".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         assert_eq!(cmd.history_len(), 3); // pods, nodes, pods
@@ -678,11 +695,15 @@ mod tests {
         let (mut cmd, reg) = setup();
         // Build up history: "pods", "nodes"
         cmd.activate();
-        for c in "pods".chars() { cmd.push_char(c, &reg); }
+        for c in "pods".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         cmd.activate();
-        for c in "nodes".chars() { cmd.push_char(c, &reg); }
+        for c in "nodes".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         // Start new command and navigate back
@@ -710,11 +731,15 @@ mod tests {
     fn history_next_navigates_forwards() {
         let (mut cmd, reg) = setup();
         cmd.activate();
-        for c in "pods".chars() { cmd.push_char(c, &reg); }
+        for c in "pods".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         cmd.activate();
-        for c in "nodes".chars() { cmd.push_char(c, &reg); }
+        for c in "nodes".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         // Start new command, navigate back, then forward
@@ -756,7 +781,9 @@ mod tests {
     fn reset_history_cursor_on_typing() {
         let (mut cmd, reg) = setup();
         cmd.activate();
-        for c in "pods".chars() { cmd.push_char(c, &reg); }
+        for c in "pods".chars() {
+            cmd.push_char(c, &reg);
+        }
         cmd.submit();
 
         cmd.activate();
@@ -796,7 +823,10 @@ mod tests {
         // "s" matches multiple resources: services, secrets, statefulsets, etc.
         cmd.push_char('s', &reg);
         let suggestion_count = cmd.suggestions.len();
-        assert!(suggestion_count >= 3, "need at least 3 suggestions to test cycling");
+        assert!(
+            suggestion_count >= 3,
+            "need at least 3 suggestions to test cycling"
+        );
 
         let first = cmd.suggestions[0].display.clone();
         let second = cmd.suggestions[1].display.clone();
@@ -1066,7 +1096,10 @@ mod tests {
         cmd.activate();
         cmd.push_char('p', &reg);
         cmd.select_next(); // arrow key selects first suggestion
-        assert!(cmd.ghost_text().is_none(), "Ghost text should hide when a suggestion is arrow-selected");
+        assert!(
+            cmd.ghost_text().is_none(),
+            "Ghost text should hide when a suggestion is arrow-selected"
+        );
     }
 
     #[test]
@@ -1076,7 +1109,10 @@ mod tests {
         cmd.push_char('d', &reg);
         cmd.push_char('e', &reg);
         cmd.tab_complete(&reg); // start tab cycle
-        assert!(cmd.ghost_text().is_none(), "Ghost text should hide during tab cycling");
+        assert!(
+            cmd.ghost_text().is_none(),
+            "Ghost text should hide during tab cycling"
+        );
     }
 
     #[test]

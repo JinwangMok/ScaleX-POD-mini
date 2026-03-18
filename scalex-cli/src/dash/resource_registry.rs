@@ -116,38 +116,276 @@ impl ResourceRegistry {
     pub fn with_builtin_resources() -> Self {
         let mut reg = Self::new();
         // Standard verbs for most resources
-        let all_verbs: Vec<String> = vec!["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
-            .into_iter().map(String::from).collect();
+        let all_verbs: Vec<String> = vec![
+            "create",
+            "delete",
+            "deletecollection",
+            "get",
+            "list",
+            "patch",
+            "update",
+            "watch",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
         let read_verbs: Vec<String> = vec!["get", "list", "watch"]
-            .into_iter().map(String::from).collect();
+            .into_iter()
+            .map(String::from)
+            .collect();
 
-        type BuiltinEntry<'a> = (&'a str, &'a str, &'a str, &'a str, bool, Vec<&'a str>, &'a str, &'a [String]);
+        type BuiltinEntry<'a> = (
+            &'a str,
+            &'a str,
+            &'a str,
+            &'a str,
+            bool,
+            Vec<&'a str>,
+            &'a str,
+            &'a [String],
+        );
         let builtins: Vec<BuiltinEntry<'_>> = vec![
             ("pods", "Pod", "", "v1", true, vec!["po"], "pod", &all_verbs),
-            ("services", "Service", "", "v1", true, vec!["svc"], "service", &all_verbs),
-            ("deployments", "Deployment", "apps", "v1", true, vec!["deploy"], "deployment", &all_verbs),
-            ("replicasets", "ReplicaSet", "apps", "v1", true, vec!["rs"], "replicaset", &all_verbs),
-            ("statefulsets", "StatefulSet", "apps", "v1", true, vec!["sts"], "statefulset", &all_verbs),
-            ("daemonsets", "DaemonSet", "apps", "v1", true, vec!["ds"], "daemonset", &all_verbs),
-            ("configmaps", "ConfigMap", "", "v1", true, vec!["cm"], "configmap", &all_verbs),
-            ("secrets", "Secret", "", "v1", true, vec![], "secret", &all_verbs),
-            ("namespaces", "Namespace", "", "v1", false, vec!["ns"], "namespace", &all_verbs),
-            ("nodes", "Node", "", "v1", false, vec!["no"], "node", &all_verbs),
-            ("events", "Event", "", "v1", true, vec!["ev"], "event", &read_verbs),
-            ("persistentvolumes", "PersistentVolume", "", "v1", false, vec!["pv"], "persistentvolume", &all_verbs),
-            ("persistentvolumeclaims", "PersistentVolumeClaim", "", "v1", true, vec!["pvc"], "persistentvolumeclaim", &all_verbs),
-            ("ingresses", "Ingress", "networking.k8s.io", "v1", true, vec!["ing"], "ingress", &all_verbs),
-            ("networkpolicies", "NetworkPolicy", "networking.k8s.io", "v1", true, vec!["netpol"], "networkpolicy", &all_verbs),
-            ("serviceaccounts", "ServiceAccount", "", "v1", true, vec!["sa"], "serviceaccount", &all_verbs),
-            ("roles", "Role", "rbac.authorization.k8s.io", "v1", true, vec![], "role", &all_verbs),
-            ("rolebindings", "RoleBinding", "rbac.authorization.k8s.io", "v1", true, vec![], "rolebinding", &all_verbs),
-            ("clusterroles", "ClusterRole", "rbac.authorization.k8s.io", "v1", false, vec![], "clusterrole", &all_verbs),
-            ("clusterrolebindings", "ClusterRoleBinding", "rbac.authorization.k8s.io", "v1", false, vec![], "clusterrolebinding", &all_verbs),
-            ("cronjobs", "CronJob", "batch", "v1", true, vec!["cj"], "cronjob", &all_verbs),
-            ("jobs", "Job", "batch", "v1", true, vec![], "job", &all_verbs),
-            ("horizontalpodautoscalers", "HorizontalPodAutoscaler", "autoscaling", "v2", true, vec!["hpa"], "horizontalpodautoscaler", &all_verbs),
-            ("storageclasses", "StorageClass", "storage.k8s.io", "v1", false, vec!["sc"], "storageclass", &all_verbs),
-            ("endpoints", "Endpoints", "", "v1", true, vec!["ep"], "endpoints", &all_verbs),
+            (
+                "services",
+                "Service",
+                "",
+                "v1",
+                true,
+                vec!["svc"],
+                "service",
+                &all_verbs,
+            ),
+            (
+                "deployments",
+                "Deployment",
+                "apps",
+                "v1",
+                true,
+                vec!["deploy"],
+                "deployment",
+                &all_verbs,
+            ),
+            (
+                "replicasets",
+                "ReplicaSet",
+                "apps",
+                "v1",
+                true,
+                vec!["rs"],
+                "replicaset",
+                &all_verbs,
+            ),
+            (
+                "statefulsets",
+                "StatefulSet",
+                "apps",
+                "v1",
+                true,
+                vec!["sts"],
+                "statefulset",
+                &all_verbs,
+            ),
+            (
+                "daemonsets",
+                "DaemonSet",
+                "apps",
+                "v1",
+                true,
+                vec!["ds"],
+                "daemonset",
+                &all_verbs,
+            ),
+            (
+                "configmaps",
+                "ConfigMap",
+                "",
+                "v1",
+                true,
+                vec!["cm"],
+                "configmap",
+                &all_verbs,
+            ),
+            (
+                "secrets",
+                "Secret",
+                "",
+                "v1",
+                true,
+                vec![],
+                "secret",
+                &all_verbs,
+            ),
+            (
+                "namespaces",
+                "Namespace",
+                "",
+                "v1",
+                false,
+                vec!["ns"],
+                "namespace",
+                &all_verbs,
+            ),
+            (
+                "nodes",
+                "Node",
+                "",
+                "v1",
+                false,
+                vec!["no"],
+                "node",
+                &all_verbs,
+            ),
+            (
+                "events",
+                "Event",
+                "",
+                "v1",
+                true,
+                vec!["ev"],
+                "event",
+                &read_verbs,
+            ),
+            (
+                "persistentvolumes",
+                "PersistentVolume",
+                "",
+                "v1",
+                false,
+                vec!["pv"],
+                "persistentvolume",
+                &all_verbs,
+            ),
+            (
+                "persistentvolumeclaims",
+                "PersistentVolumeClaim",
+                "",
+                "v1",
+                true,
+                vec!["pvc"],
+                "persistentvolumeclaim",
+                &all_verbs,
+            ),
+            (
+                "ingresses",
+                "Ingress",
+                "networking.k8s.io",
+                "v1",
+                true,
+                vec!["ing"],
+                "ingress",
+                &all_verbs,
+            ),
+            (
+                "networkpolicies",
+                "NetworkPolicy",
+                "networking.k8s.io",
+                "v1",
+                true,
+                vec!["netpol"],
+                "networkpolicy",
+                &all_verbs,
+            ),
+            (
+                "serviceaccounts",
+                "ServiceAccount",
+                "",
+                "v1",
+                true,
+                vec!["sa"],
+                "serviceaccount",
+                &all_verbs,
+            ),
+            (
+                "roles",
+                "Role",
+                "rbac.authorization.k8s.io",
+                "v1",
+                true,
+                vec![],
+                "role",
+                &all_verbs,
+            ),
+            (
+                "rolebindings",
+                "RoleBinding",
+                "rbac.authorization.k8s.io",
+                "v1",
+                true,
+                vec![],
+                "rolebinding",
+                &all_verbs,
+            ),
+            (
+                "clusterroles",
+                "ClusterRole",
+                "rbac.authorization.k8s.io",
+                "v1",
+                false,
+                vec![],
+                "clusterrole",
+                &all_verbs,
+            ),
+            (
+                "clusterrolebindings",
+                "ClusterRoleBinding",
+                "rbac.authorization.k8s.io",
+                "v1",
+                false,
+                vec![],
+                "clusterrolebinding",
+                &all_verbs,
+            ),
+            (
+                "cronjobs",
+                "CronJob",
+                "batch",
+                "v1",
+                true,
+                vec!["cj"],
+                "cronjob",
+                &all_verbs,
+            ),
+            (
+                "jobs",
+                "Job",
+                "batch",
+                "v1",
+                true,
+                vec![],
+                "job",
+                &all_verbs,
+            ),
+            (
+                "horizontalpodautoscalers",
+                "HorizontalPodAutoscaler",
+                "autoscaling",
+                "v2",
+                true,
+                vec!["hpa"],
+                "horizontalpodautoscaler",
+                &all_verbs,
+            ),
+            (
+                "storageclasses",
+                "StorageClass",
+                "storage.k8s.io",
+                "v1",
+                false,
+                vec!["sc"],
+                "storageclass",
+                &all_verbs,
+            ),
+            (
+                "endpoints",
+                "Endpoints",
+                "",
+                "v1",
+                true,
+                vec!["ep"],
+                "endpoints",
+                &all_verbs,
+            ),
         ];
 
         for (resource, kind, group, version, ns, shorts, singular, verbs) in builtins {
@@ -172,7 +410,8 @@ impl ResourceRegistry {
         self.alias_index.insert(entry.resource.to_lowercase(), idx);
         self.alias_index.insert(entry.kind.to_lowercase(), idx);
         if !entry.singular_name.is_empty() {
-            self.alias_index.insert(entry.singular_name.to_lowercase(), idx);
+            self.alias_index
+                .insert(entry.singular_name.to_lowercase(), idx);
         }
         for s in &entry.short_names {
             self.alias_index.insert(s.to_lowercase(), idx);
@@ -437,7 +676,9 @@ impl ResourceNameProvider {
 
     /// Check if the provider contains a given resource plural name.
     pub fn has_resource(&self, name: &str) -> bool {
-        self.names.binary_search_by(|n| n.as_str().cmp(name)).is_ok()
+        self.names
+            .binary_search_by(|n| n.as_str().cmp(name))
+            .is_ok()
     }
 }
 
@@ -652,7 +893,11 @@ pub struct FuzzyMatch {
 /// - Prefix match: 500 + (query_len / alias_len * 100) — longer prefix coverage = higher
 /// - Subsequence match: 100 + bonus for consecutive chars and early positions
 /// - No match: excluded
-pub fn fuzzy_match(registry: &ResourceRegistry, query: &str, max_results: usize) -> Vec<FuzzyMatch> {
+pub fn fuzzy_match(
+    registry: &ResourceRegistry,
+    query: &str,
+    max_results: usize,
+) -> Vec<FuzzyMatch> {
     if query.is_empty() {
         // Empty query: return all entries sorted alphabetically by resource name
         let mut results: Vec<FuzzyMatch> = registry
@@ -683,7 +928,10 @@ pub fn fuzzy_match(registry: &ResourceRegistry, query: &str, max_results: usize)
         // Check all aliases + kind (lowered)
         let aliases = entry.all_aliases();
         let kind_lower = entry.kind.to_lowercase();
-        let all_candidates: Vec<&str> = aliases.into_iter().chain(std::iter::once(kind_lower.as_str())).collect();
+        let all_candidates: Vec<&str> = aliases
+            .into_iter()
+            .chain(std::iter::once(kind_lower.as_str()))
+            .collect();
 
         for alias in all_candidates {
             let alias_lower = alias.to_lowercase();
@@ -947,7 +1195,11 @@ mod tests {
         let results = fuzzy_match(&reg, "po", 20);
         let mut seen = std::collections::HashSet::new();
         for r in &results {
-            assert!(seen.insert(r.entry_idx), "Duplicate entry_idx: {}", r.entry_idx);
+            assert!(
+                seen.insert(r.entry_idx),
+                "Duplicate entry_idx: {}",
+                r.entry_idx
+            );
         }
     }
 
@@ -963,7 +1215,13 @@ mod tests {
             namespaced: true,
             short_names: vec!["cert".to_string()],
             singular_name: "certificate".to_string(),
-            verbs: vec!["get".into(), "list".into(), "watch".into(), "create".into(), "delete".into()],
+            verbs: vec![
+                "get".into(),
+                "list".into(),
+                "watch".into(),
+                "create".into(),
+                "delete".into(),
+            ],
         });
         assert_eq!(reg.len(), initial_len + 1);
         assert!(reg.lookup("cert").is_some());
@@ -1043,7 +1301,13 @@ mod tests {
             group: None,
             version: None,
             kind: "Pod".to_string(),
-            verbs: vec!["get".into(), "list".into(), "watch".into(), "create".into(), "delete".into()],
+            verbs: vec![
+                "get".into(),
+                "list".into(),
+                "watch".into(),
+                "create".into(),
+                "delete".into(),
+            ],
             short_names: Some(vec!["po".into()]),
             categories: None,
             storage_version_hash: None,
@@ -1068,7 +1332,15 @@ mod tests {
             group: Some("apps".into()),
             version: Some("v1".into()),
             kind: "Deployment".to_string(),
-            verbs: vec!["create".into(), "delete".into(), "get".into(), "list".into(), "patch".into(), "update".into(), "watch".into()],
+            verbs: vec![
+                "create".into(),
+                "delete".into(),
+                "get".into(),
+                "list".into(),
+                "patch".into(),
+                "update".into(),
+                "watch".into(),
+            ],
             short_names: Some(vec!["deploy".into()]),
             categories: None,
             storage_version_hash: None,
@@ -1094,7 +1366,15 @@ mod tests {
             group: Some("cert-manager.io".into()),
             version: Some("v1".into()),
             kind: "Certificate".to_string(),
-            verbs: vec!["get".into(), "list".into(), "watch".into(), "create".into(), "delete".into(), "patch".into(), "update".into()],
+            verbs: vec![
+                "get".into(),
+                "list".into(),
+                "watch".into(),
+                "create".into(),
+                "delete".into(),
+                "patch".into(),
+                "update".into(),
+            ],
             short_names: Some(vec!["cert".into(), "certs".into()]),
             categories: None,
             storage_version_hash: None,
@@ -1203,7 +1483,12 @@ mod tests {
         let pairs = reg.sorted_alias_pairs();
         assert!(!pairs.is_empty());
         for w in pairs.windows(2) {
-            assert!(w[0].0 <= w[1].0, "aliases not sorted: {:?} > {:?}", w[0].0, w[1].0);
+            assert!(
+                w[0].0 <= w[1].0,
+                "aliases not sorted: {:?} > {:?}",
+                w[0].0,
+                w[1].0
+            );
         }
     }
 
@@ -1214,7 +1499,10 @@ mod tests {
         let aliases: Vec<&str> = pairs.iter().map(|(a, _)| *a).collect();
         assert!(aliases.contains(&"po"), "should include shortname 'po'");
         assert!(aliases.contains(&"svc"), "should include shortname 'svc'");
-        assert!(aliases.contains(&"deploy"), "should include shortname 'deploy'");
+        assert!(
+            aliases.contains(&"deploy"),
+            "should include shortname 'deploy'"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -1305,11 +1593,19 @@ mod tests {
         assert!(!matches.is_empty());
         // All matches should start with "po"
         for m in &matches {
-            assert!(m.alias.starts_with("po"), "alias '{}' doesn't start with 'po'", m.alias);
+            assert!(
+                m.alias.starts_with("po"),
+                "alias '{}' doesn't start with 'po'",
+                m.alias
+            );
         }
         // Should include "pods" (or "pod") alias
         let resources: Vec<&str> = matches.iter().map(|m| m.resource.as_str()).collect();
-        assert!(resources.contains(&"pods"), "should match pods, got: {:?}", resources);
+        assert!(
+            resources.contains(&"pods"),
+            "should match pods, got: {:?}",
+            resources
+        );
     }
 
     #[test]
@@ -1318,7 +1614,10 @@ mod tests {
         let provider = ResourceNameProvider::from_registry(&reg);
         let matches = provider.prefix_matches("");
         // Should return all aliases
-        assert!(matches.len() > reg.len(), "should have more aliases than entries");
+        assert!(
+            matches.len() > reg.len(),
+            "should have more aliases than entries"
+        );
     }
 
     #[test]
@@ -1372,7 +1671,10 @@ mod tests {
     fn name_provider_from_discovery_flag() {
         let reg = test_registry();
         let provider = ResourceNameProvider::from_registry(&reg);
-        assert!(!provider.is_from_discovery(), "builtin registry should not be from_discovery");
+        assert!(
+            !provider.is_from_discovery(),
+            "builtin registry should not be from_discovery"
+        );
 
         let mut discovered_reg = test_registry();
         discovered_reg.discovered_at = Some(Instant::now());
@@ -1404,7 +1706,12 @@ mod tests {
         let matches = provider.prefix_matches("de");
         assert!(!matches.is_empty());
         let aliases: Vec<&str> = matches.iter().map(|m| m.alias.as_str()).collect();
-        assert!(aliases.contains(&"deploy") || aliases.contains(&"deployment") || aliases.contains(&"deployments"),
-            "should match deployments-related alias, got: {:?}", aliases);
+        assert!(
+            aliases.contains(&"deploy")
+                || aliases.contains(&"deployment")
+                || aliases.contains(&"deployments"),
+            "should match deployments-related alias, got: {:?}",
+            aliases
+        );
     }
 }

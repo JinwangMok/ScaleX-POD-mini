@@ -105,10 +105,7 @@ pub fn secrets_for_cluster(cluster_role: &str, secrets: &SecretsConfig) -> Vec<K
                 specs.push(K8sSecretSpec {
                     name: "cloudflared-tunnel-token".to_string(),
                     namespace: "kube-tunnel".to_string(),
-                    data: vec![(
-                        "token".to_string(),
-                        secrets.cloudflare.tunnel_token.clone(),
-                    )],
+                    data: vec![("token".to_string(), secrets.cloudflare.tunnel_token.clone())],
                 });
             }
             specs
@@ -276,9 +273,7 @@ keycloak:
         };
         let specs = secrets_for_cluster("management", &secrets);
         assert_eq!(specs.len(), 2, "without cloudflare, only 2 secrets needed");
-        assert!(specs
-            .iter()
-            .all(|s| s.name != "cloudflared-tunnel-token"));
+        assert!(specs.iter().all(|s| s.name != "cloudflared-tunnel-token"));
     }
 
     #[test]

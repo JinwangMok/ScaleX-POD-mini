@@ -34,7 +34,13 @@ pub fn filter_and_rank(rows: &[Vec<String>], query: &str) -> Vec<(usize, FuzzySc
             }
         }
         if best_score > 0 {
-            results.push((i, FuzzyScore { score: best_score, is_exact }));
+            results.push((
+                i,
+                FuzzyScore {
+                    score: best_score,
+                    is_exact,
+                },
+            ));
         }
     }
     results.sort_by(|a, b| b.1.score.cmp(&a.1.score));
@@ -84,10 +90,7 @@ mod tests {
 
     #[test]
     fn filter_no_matches() {
-        let rows = vec![
-            vec!["nginx-pod".into()],
-            vec!["redis-pod".into()],
-        ];
+        let rows = vec![vec!["nginx-pod".into()], vec!["redis-pod".into()]];
         let results = filter_and_rank(&rows, "xyz-nonexistent");
         assert!(results.is_empty());
     }
@@ -95,8 +98,8 @@ mod tests {
     #[test]
     fn filter_ranks_exact_higher() {
         let rows = vec![
-            vec!["my-nginx-pod".into()],  // substring match
-            vec!["nginx".into()],          // exact match (higher score)
+            vec!["my-nginx-pod".into()], // substring match
+            vec!["nginx".into()],        // exact match (higher score)
         ];
         let results = filter_and_rank(&rows, "nginx");
         assert_eq!(results.len(), 2);
@@ -108,8 +111,8 @@ mod tests {
     #[test]
     fn filter_ranks_prefix_higher_than_substring() {
         let rows = vec![
-            vec!["my-nginx-pod".into()],   // substring match
-            vec!["nginx-deploy".into()],    // prefix match (higher score)
+            vec!["my-nginx-pod".into()], // substring match
+            vec!["nginx-deploy".into()], // prefix match (higher score)
         ];
         let results = filter_and_rank(&rows, "nginx");
         assert_eq!(results.len(), 2);
@@ -119,9 +122,7 @@ mod tests {
 
     #[test]
     fn filter_searches_all_columns() {
-        let rows = vec![
-            vec!["redis-pod".into(), "nginx-namespace".into()],
-        ];
+        let rows = vec![vec!["redis-pod".into(), "nginx-namespace".into()]];
         let results = filter_and_rank(&rows, "nginx");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 0);

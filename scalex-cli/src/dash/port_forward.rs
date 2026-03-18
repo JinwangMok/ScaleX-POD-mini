@@ -217,7 +217,10 @@ impl PortForwardManager {
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let msg = if stderr.is_empty() {
-                format!("kubectl port-forward exited with code {:?}", output.status.code())
+                format!(
+                    "kubectl port-forward exited with code {:?}",
+                    output.status.code()
+                )
             } else {
                 stderr.trim().to_string()
             };
@@ -484,8 +487,7 @@ impl PortForwardManager {
     /// Check if there's already a forward for this local port.
     pub fn is_port_in_use(&self, local_port: u16) -> bool {
         self.entries.values().any(|e| {
-            e.local_port == local_port
-                && matches!(e.status, PfStatus::Active | PfStatus::Starting)
+            e.local_port == local_port && matches!(e.status, PfStatus::Active | PfStatus::Starting)
         })
     }
 
@@ -534,9 +536,7 @@ impl PortForwardManager {
 
         let entries = self.entries();
         let list_rows = entries.len().max(1) as u16;
-        let popup_height = (list_rows + 6)
-            .min(24)
-            .min(area.height.saturating_sub(4));
+        let popup_height = (list_rows + 6).min(24).min(area.height.saturating_sub(4));
         let popup_width = 80u16.min(area.width.saturating_sub(4)).max(50);
 
         if popup_height < 5 || popup_width < 40 {

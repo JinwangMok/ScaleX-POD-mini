@@ -277,7 +277,11 @@ impl std::fmt::Display for ServicePort {
             None => String::new(),
         };
         match &self.port_name {
-            Some(name) => write!(f, "{}{}{}/{} ({})", self.port, target, node, self.protocol, name),
+            Some(name) => write!(
+                f,
+                "{}{}{}/{} ({})",
+                self.port, target, node, self.protocol, name
+            ),
             None => write!(f, "{}{}{}/{}", self.port, target, node, self.protocol),
         }
     }
@@ -287,8 +291,8 @@ impl std::fmt::Display for ServicePort {
 mod tests {
     use super::*;
     use k8s_openapi::api::core::v1::{
-        Container, ContainerPort as K8sContainerPort, Pod, PodSpec, Service, ServicePort as K8sServicePort,
-        ServiceSpec,
+        Container, ContainerPort as K8sContainerPort, Pod, PodSpec, Service,
+        ServicePort as K8sServicePort, ServiceSpec,
     };
     use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
     use kube::api::ObjectMeta;
@@ -311,11 +315,7 @@ mod tests {
     fn make_container(name: &str, ports: Vec<K8sContainerPort>) -> Container {
         Container {
             name: name.into(),
-            ports: if ports.is_empty() {
-                None
-            } else {
-                Some(ports)
-            },
+            ports: if ports.is_empty() { None } else { Some(ports) },
             ..Default::default()
         }
     }
@@ -337,11 +337,7 @@ mod tests {
                 ..Default::default()
             },
             spec: Some(ServiceSpec {
-                ports: if ports.is_empty() {
-                    None
-                } else {
-                    Some(ports)
-                },
+                ports: if ports.is_empty() { None } else { Some(ports) },
                 ..Default::default()
             }),
             status: None,
@@ -371,7 +367,10 @@ mod tests {
         let pod = make_pod(
             "nginx",
             "default",
-            vec![make_container("nginx", vec![make_k8s_port(80, Some("http"), None)])],
+            vec![make_container(
+                "nginx",
+                vec![make_k8s_port(80, Some("http"), None)],
+            )],
         );
         let ports = extract_pod_ports(&pod);
         assert_eq!(ports.len(), 1);
@@ -424,11 +423,7 @@ mod tests {
 
     #[test]
     fn extract_pod_no_ports() {
-        let pod = make_pod(
-            "no-ports",
-            "default",
-            vec![make_container("app", vec![])],
-        );
+        let pod = make_pod("no-ports", "default", vec![make_container("app", vec![])]);
         let ports = extract_pod_ports(&pod);
         assert!(ports.is_empty());
     }
@@ -495,7 +490,12 @@ mod tests {
         let svc = make_service(
             "web-svc",
             "default",
-            vec![make_svc_port(80, Some(IntOrString::Int(8080)), Some("http"), None)],
+            vec![make_svc_port(
+                80,
+                Some(IntOrString::Int(8080)),
+                Some("http"),
+                None,
+            )],
         );
         let ports = extract_service_ports(&svc);
         assert_eq!(ports.len(), 1);
@@ -541,7 +541,12 @@ mod tests {
         let svc = make_service(
             "nodeport-svc",
             "default",
-            vec![make_svc_port(80, Some(IntOrString::Int(8080)), Some("http"), Some(30080))],
+            vec![make_svc_port(
+                80,
+                Some(IntOrString::Int(8080)),
+                Some("http"),
+                Some(30080),
+            )],
         );
         let ports = extract_service_ports(&svc);
         assert_eq!(ports.len(), 1);
@@ -593,7 +598,10 @@ mod tests {
         let pod = make_pod(
             "web",
             "default",
-            vec![make_container("web", vec![make_k8s_port(8080, Some("http"), None)])],
+            vec![make_container(
+                "web",
+                vec![make_k8s_port(8080, Some("http"), None)],
+            )],
         );
         assert_eq!(resolve_named_port(&pod, "http"), Some(8080));
     }
@@ -603,7 +611,10 @@ mod tests {
         let pod = make_pod(
             "web",
             "default",
-            vec![make_container("web", vec![make_k8s_port(8080, Some("http"), None)])],
+            vec![make_container(
+                "web",
+                vec![make_k8s_port(8080, Some("http"), None)],
+            )],
         );
         assert_eq!(resolve_named_port(&pod, "grpc"), None);
     }

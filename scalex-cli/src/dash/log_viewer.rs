@@ -16,11 +16,11 @@
 //! | `f`        | Toggle auto-follow (tail)  |
 
 use crate::dash::theme;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
-use ratatui::buffer::Buffer;
 use ratatui::Frame;
 
 // ---------------------------------------------------------------------------
@@ -208,7 +208,10 @@ impl LogViewer {
             for i in start..end {
                 let line_text = &self.lines[i];
                 // Color log lines based on content
-                let style = if line_text.contains("ERROR") || line_text.contains("error") || line_text.contains("FATAL") {
+                let style = if line_text.contains("ERROR")
+                    || line_text.contains("error")
+                    || line_text.contains("FATAL")
+                {
                     Style::default().fg(theme::BRIGHT_RED)
                 } else if line_text.contains("WARN") || line_text.contains("warn") {
                     Style::default().fg(theme::BRIGHT_YELLOW)

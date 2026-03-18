@@ -123,16 +123,29 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 
     if is_full {
         render_header_full(
-            f, area, hi.cluster_name.as_str(), hi.endpoint.as_str(),
-            hi.k8s_version.as_str(), &hi.config_path,
-            &hi.version_display, &hi.cluster_count_full,
-            label_style, value_style, accent_style,
+            f,
+            area,
+            hi.cluster_name.as_str(),
+            hi.endpoint.as_str(),
+            hi.k8s_version.as_str(),
+            &hi.config_path,
+            &hi.version_display,
+            &hi.cluster_count_full,
+            label_style,
+            value_style,
+            accent_style,
         );
     } else {
         render_header_compact(
-            f, area, hi.cluster_name.as_str(), hi.endpoint.as_str(),
-            &hi.version_compact, &hi.cluster_count_compact,
-            label_style, value_style, accent_style,
+            f,
+            area,
+            hi.cluster_name.as_str(),
+            hi.endpoint.as_str(),
+            &hi.version_compact,
+            &hi.cluster_count_compact,
+            label_style,
+            value_style,
+            accent_style,
         );
     }
 }
@@ -222,10 +235,7 @@ fn render_header_full(
                     .fg(theme::BRIGHT_ORANGE)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                cluster_count_display,
-                Style::default().fg(theme::FG3),
-            ),
+            Span::styled(cluster_count_display, Style::default().fg(theme::FG3)),
         ]),
         Line::from(vec![
             Span::styled(" Config:    ", label_style),
@@ -264,15 +274,9 @@ fn render_header_compact(
                 .bg(theme::BRIGHT_ORANGE)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            version_compact,
-            Style::default().fg(theme::BRIGHT_ORANGE),
-        ),
+        Span::styled(version_compact, Style::default().fg(theme::BRIGHT_ORANGE)),
         Span::styled(cluster_name, accent_style),
-        Span::styled(
-            cluster_count_compact,
-            Style::default().fg(theme::FG3),
-        ),
+        Span::styled(cluster_count_compact, Style::default().fg(theme::FG3)),
     ];
 
     let line2_spans = vec![
@@ -339,8 +343,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                     // Show ● on cluster node when selected with no namespace filter,
                     // even when expanded (children may not yet be loaded).
                     // When a specific namespace is selected, ● moves to the namespace node.
-                    app.selected_cluster.as_ref() == Some(name)
-                        && app.selected_namespace.is_none()
+                    app.selected_cluster.as_ref() == Some(name) && app.selected_namespace.is_none()
                 }
                 NodeType::Namespace { cluster, namespace } => {
                     app.selected_cluster.as_ref() == Some(cluster)
@@ -401,7 +404,8 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let (conn_suffix, label_ref): (Option<(&str, Color)>, &str) = match &node.node_type {
                 NodeType::Cluster(name) => {
                     // Single snapshot lookup reused for both health dot and namespace count
-                    let snap = app.snapshot_index
+                    let snap = app
+                        .snapshot_index
                         .get(name)
                         .and_then(|&i| app.snapshots.get(i))
                         .or_else(|| app.snapshots.iter().find(|s| &s.name == name));
@@ -409,14 +413,12 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                     let suffix = match app.cluster_connection_status.get(name) {
                         Some(ConnectionStatus::Discovering) => Some((" [..]", theme::FG4)),
                         Some(ConnectionStatus::Failed(_)) => Some((" [!!]", theme::BRIGHT_RED)),
-                        Some(ConnectionStatus::Connected) | None => {
-                            snap.map(|s| match s.health {
-                                data::HealthStatus::Green => (" ●", theme::BRIGHT_GREEN),
-                                data::HealthStatus::Yellow => (" ●", theme::BRIGHT_YELLOW),
-                                data::HealthStatus::Red => (" ●", theme::BRIGHT_RED),
-                                data::HealthStatus::Unknown => (" ○", theme::FG4),
-                            })
-                        }
+                        Some(ConnectionStatus::Connected) | None => snap.map(|s| match s.health {
+                            data::HealthStatus::Green => (" ●", theme::BRIGHT_GREEN),
+                            data::HealthStatus::Yellow => (" ●", theme::BRIGHT_YELLOW),
+                            data::HealthStatus::Red => (" ●", theme::BRIGHT_RED),
+                            data::HealthStatus::Unknown => (" ○", theme::FG4),
+                        }),
                     };
                     // US-205: namespace count — borrow pre-computed label, no clone
                     let label: &str = if node.expanded {
@@ -471,7 +473,8 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             }
             // Pad to full sidebar width so cursor/selection highlight fills the row.
             // Static buffer avoids per-row heap allocation from " ".repeat(pad).
-            const SPACES: &str = "                                                                                ";
+            const SPACES: &str =
+                "                                                                                ";
             let pad = (inner.width as usize).saturating_sub(used_cols);
             if pad > 0 {
                 let pad_style = if is_cursor {
@@ -520,8 +523,22 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
 
     // Resource shortcut indicator: p d s c n with active one highlighted
     // Static strings avoid per-frame format!() allocation for tab labels
-    const SHORTCUTS_ACTIVE: [&str; 6] = ["[p]Pods ", "[d]Deploy ", "[s]Svc ", "[c]CM ", "[n]Nodes ", "[e]Events "];
-    const SHORTCUTS_INACTIVE: [&str; 6] = ["p:Pods ", "d:Deploy ", "s:Svc ", "c:CM ", "n:Nodes ", "e:Events "];
+    const SHORTCUTS_ACTIVE: [&str; 6] = [
+        "[p]Pods ",
+        "[d]Deploy ",
+        "[s]Svc ",
+        "[c]CM ",
+        "[n]Nodes ",
+        "[e]Events ",
+    ];
+    const SHORTCUTS_INACTIVE: [&str; 6] = [
+        "p:Pods ",
+        "d:Deploy ",
+        "s:Svc ",
+        "c:CM ",
+        "n:Nodes ",
+        "e:Events ",
+    ];
     const SHORTCUT_VIEWS: [ResourceView; 6] = [
         ResourceView::Pods,
         ResourceView::Deployments,
@@ -674,7 +691,9 @@ fn render_command_bar(f: &mut Frame, app: &App, area: Rect) {
 /// Render the autocomplete suggestion dropdown above the command bar.
 fn render_command_suggestions(f: &mut Frame, app: &App, inner: Rect) {
     let suggestions = &app.command_mode.suggestions;
-    let count = suggestions.len().min(crate::dash::command_mode::MAX_SUGGESTIONS);
+    let count = suggestions
+        .len()
+        .min(crate::dash::command_mode::MAX_SUGGESTIONS);
     if count == 0 {
         return;
     }
@@ -711,12 +730,7 @@ fn render_command_suggestions(f: &mut Frame, app: &App, inner: Rect) {
             break;
         }
         let is_selected = selected == Some(i);
-        let row_area = Rect::new(
-            inner_area.x,
-            inner_area.y + i as u16,
-            inner_area.width,
-            1,
-        );
+        let row_area = Rect::new(inner_area.x, inner_area.y + i as u16, inner_area.width, 1);
 
         let (fg, bg) = if is_selected {
             (theme::BG_HARD, theme::BRIGHT_AQUA)
@@ -810,8 +824,7 @@ fn render_dynamic_resource_table(f: &mut Frame, app: &App, area: Rect) {
             "  \\ Loading...",
         ];
         let spin_idx = (app.tick_count as usize) % 4;
-        let paragraph =
-            Paragraph::new(LOAD_DYN[spin_idx]).style(Style::default().fg(theme::FG4));
+        let paragraph = Paragraph::new(LOAD_DYN[spin_idx]).style(Style::default().fg(theme::FG4));
         f.render_widget(paragraph, area);
         return;
     }
@@ -898,8 +911,7 @@ fn render_dynamic_resource_table(f: &mut Frame, app: &App, area: Rect) {
         .skip(clamped_scroll)
         .take(viewport_rows)
         .map(|(vis_idx, (orig_idx, _score))| {
-            let is_selected =
-                vis_idx == clamped_cursor && app.active_panel == ActivePanel::Center;
+            let is_selected = vis_idx == clamped_cursor && app.active_panel == ActivePanel::Center;
             let base = row_base_style(is_selected);
 
             let row_data = &dyn_data.rows[*orig_idx];
@@ -1020,10 +1032,7 @@ fn render_connection_error_banner(f: &mut Frame, app: &App, area: Rect) -> Rect 
             let banner_height = 1;
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(banner_height),
-                    Constraint::Min(0),
-                ])
+                .constraints([Constraint::Length(banner_height), Constraint::Min(0)])
                 .split(area);
 
             let banner = Line::from(vec![
@@ -1033,8 +1042,7 @@ fn render_connection_error_banner(f: &mut Frame, app: &App, area: Rect) -> Rect 
                     Style::default().fg(theme::BRIGHT_RED),
                 ),
             ]);
-            let paragraph =
-                Paragraph::new(banner).style(Style::default().bg(theme::BG));
+            let paragraph = Paragraph::new(banner).style(Style::default().bg(theme::BG));
             f.render_widget(paragraph, chunks[0]);
             return chunks[1];
         }
@@ -1070,12 +1078,42 @@ fn render_resources_tab(f: &mut Frame, app: &App, area: Rect) {
     };
     if is_empty && !app.fetched_resources.contains(&active) {
         // Static per-resource loading spinners — avoids per-frame format!()
-        const LOAD_PODS: [&str; 4] = ["  | Loading Pods...", "  / Loading Pods...", "  - Loading Pods...", "  \\ Loading Pods..."];
-        const LOAD_DEPLOY: [&str; 4] = ["  | Loading Deployments...", "  / Loading Deployments...", "  - Loading Deployments...", "  \\ Loading Deployments..."];
-        const LOAD_SVC: [&str; 4] = ["  | Loading Services...", "  / Loading Services...", "  - Loading Services...", "  \\ Loading Services..."];
-        const LOAD_CM: [&str; 4] = ["  | Loading ConfigMaps...", "  / Loading ConfigMaps...", "  - Loading ConfigMaps...", "  \\ Loading ConfigMaps..."];
-        const LOAD_NODES: [&str; 4] = ["  | Loading Nodes...", "  / Loading Nodes...", "  - Loading Nodes...", "  \\ Loading Nodes..."];
-        const LOAD_EVENTS: [&str; 4] = ["  | Loading Events...", "  / Loading Events...", "  - Loading Events...", "  \\ Loading Events..."];
+        const LOAD_PODS: [&str; 4] = [
+            "  | Loading Pods...",
+            "  / Loading Pods...",
+            "  - Loading Pods...",
+            "  \\ Loading Pods...",
+        ];
+        const LOAD_DEPLOY: [&str; 4] = [
+            "  | Loading Deployments...",
+            "  / Loading Deployments...",
+            "  - Loading Deployments...",
+            "  \\ Loading Deployments...",
+        ];
+        const LOAD_SVC: [&str; 4] = [
+            "  | Loading Services...",
+            "  / Loading Services...",
+            "  - Loading Services...",
+            "  \\ Loading Services...",
+        ];
+        const LOAD_CM: [&str; 4] = [
+            "  | Loading ConfigMaps...",
+            "  / Loading ConfigMaps...",
+            "  - Loading ConfigMaps...",
+            "  \\ Loading ConfigMaps...",
+        ];
+        const LOAD_NODES: [&str; 4] = [
+            "  | Loading Nodes...",
+            "  / Loading Nodes...",
+            "  - Loading Nodes...",
+            "  \\ Loading Nodes...",
+        ];
+        const LOAD_EVENTS: [&str; 4] = [
+            "  | Loading Events...",
+            "  / Loading Events...",
+            "  - Loading Events...",
+            "  \\ Loading Events...",
+        ];
         let spin_idx = (app.tick_count as usize) % 4;
         let msg = match app.resource_view {
             ResourceView::Pods => LOAD_PODS[spin_idx],
@@ -1377,7 +1415,9 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
         app,
         nodes,
         area,
-        resource_header(vec!["NAME", "STATUS", "ROLES", "VERSION", "CPU", "MEMORY", "AGE"]),
+        resource_header(vec![
+            "NAME", "STATUS", "ROLES", "VERSION", "CPU", "MEMORY", "AGE",
+        ]),
         &[
             Constraint::Min(16),
             Constraint::Length(10),
@@ -1414,9 +1454,12 @@ fn render_nodes_table(f: &mut Frame, app: &App, nodes: &[crate::dash::data::Node
                     Cell::from(node.name.as_str()).style(Style::default().fg(theme::FG)),
                     Cell::from(node.status.as_str()).style(Style::default().fg(status_color)),
                     Cell::from(node.roles_display.as_str()).style(Style::default().fg(theme::FG3)),
-                    Cell::from(node.kubelet_version.as_str()).style(Style::default().fg(theme::FG4)),
-                    Cell::from(node.cpu_display.as_str()).style(Style::default().fg(theme::BRIGHT_AQUA)),
-                    Cell::from(node.mem_display.as_str()).style(Style::default().fg(theme::BRIGHT_PURPLE)),
+                    Cell::from(node.kubelet_version.as_str())
+                        .style(Style::default().fg(theme::FG4)),
+                    Cell::from(node.cpu_display.as_str())
+                        .style(Style::default().fg(theme::BRIGHT_AQUA)),
+                    Cell::from(node.mem_display.as_str())
+                        .style(Style::default().fg(theme::BRIGHT_PURPLE)),
                     Cell::from(node.age.as_str()).style(Style::default().fg(theme::FG3)),
                 ])
             }
@@ -1475,8 +1518,8 @@ fn render_events_table(f: &mut Frame, app: &App, events: &[data::EventInfo], are
             Constraint::Length(8),  // LAST SEEN
             Constraint::Length(8),  // TYPE
             Constraint::Length(16), // REASON
-            Constraint::Min(20),   // OBJECT
-            Constraint::Min(30),   // MESSAGE
+            Constraint::Min(20),    // OBJECT
+            Constraint::Min(30),    // MESSAGE
         ],
         "No events",
         |evt| {
@@ -1542,7 +1585,11 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
 
     // Iterate directly without collecting into Vec (avoids per-frame allocation)
     let mut has_nodes = false;
-    for node in snapshot.nodes.iter().filter(|n| app.matches_search(&n.name)) {
+    for node in snapshot
+        .nodes
+        .iter()
+        .filter(|n| app.matches_search(&n.name))
+    {
         has_nodes = true;
         let (status_icon, status_color) = if node.status.starts_with("Ready") {
             if node.status.contains("SchedulingDisabled") {
@@ -1560,10 +1607,7 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
                 &node.name,
                 Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                node.top_display.as_str(),
-                Style::default().fg(theme::FG3),
-            ),
+            Span::styled(node.top_display.as_str(), Style::default().fg(theme::FG3)),
         ]));
     }
 
@@ -1600,17 +1644,19 @@ const BAR_EMPTY: &str = "--------------------"; // 20 chars max
 /// Static lookup table for "] XXX% " suffix strings (0-100).
 /// Avoids per-frame format!() allocation in render_usage_bar.
 const PERCENT_SUFFIXES: [&str; 101] = [
-    "]   0% ", "]   1% ", "]   2% ", "]   3% ", "]   4% ", "]   5% ", "]   6% ", "]   7% ", "]   8% ", "]   9% ",
-    "]  10% ", "]  11% ", "]  12% ", "]  13% ", "]  14% ", "]  15% ", "]  16% ", "]  17% ", "]  18% ", "]  19% ",
-    "]  20% ", "]  21% ", "]  22% ", "]  23% ", "]  24% ", "]  25% ", "]  26% ", "]  27% ", "]  28% ", "]  29% ",
-    "]  30% ", "]  31% ", "]  32% ", "]  33% ", "]  34% ", "]  35% ", "]  36% ", "]  37% ", "]  38% ", "]  39% ",
-    "]  40% ", "]  41% ", "]  42% ", "]  43% ", "]  44% ", "]  45% ", "]  46% ", "]  47% ", "]  48% ", "]  49% ",
-    "]  50% ", "]  51% ", "]  52% ", "]  53% ", "]  54% ", "]  55% ", "]  56% ", "]  57% ", "]  58% ", "]  59% ",
-    "]  60% ", "]  61% ", "]  62% ", "]  63% ", "]  64% ", "]  65% ", "]  66% ", "]  67% ", "]  68% ", "]  69% ",
-    "]  70% ", "]  71% ", "]  72% ", "]  73% ", "]  74% ", "]  75% ", "]  76% ", "]  77% ", "]  78% ", "]  79% ",
-    "]  80% ", "]  81% ", "]  82% ", "]  83% ", "]  84% ", "]  85% ", "]  86% ", "]  87% ", "]  88% ", "]  89% ",
-    "]  90% ", "]  91% ", "]  92% ", "]  93% ", "]  94% ", "]  95% ", "]  96% ", "]  97% ", "]  98% ", "]  99% ",
-    "] 100% ",
+    "]   0% ", "]   1% ", "]   2% ", "]   3% ", "]   4% ", "]   5% ", "]   6% ", "]   7% ",
+    "]   8% ", "]   9% ", "]  10% ", "]  11% ", "]  12% ", "]  13% ", "]  14% ", "]  15% ",
+    "]  16% ", "]  17% ", "]  18% ", "]  19% ", "]  20% ", "]  21% ", "]  22% ", "]  23% ",
+    "]  24% ", "]  25% ", "]  26% ", "]  27% ", "]  28% ", "]  29% ", "]  30% ", "]  31% ",
+    "]  32% ", "]  33% ", "]  34% ", "]  35% ", "]  36% ", "]  37% ", "]  38% ", "]  39% ",
+    "]  40% ", "]  41% ", "]  42% ", "]  43% ", "]  44% ", "]  45% ", "]  46% ", "]  47% ",
+    "]  48% ", "]  49% ", "]  50% ", "]  51% ", "]  52% ", "]  53% ", "]  54% ", "]  55% ",
+    "]  56% ", "]  57% ", "]  58% ", "]  59% ", "]  60% ", "]  61% ", "]  62% ", "]  63% ",
+    "]  64% ", "]  65% ", "]  66% ", "]  67% ", "]  68% ", "]  69% ", "]  70% ", "]  71% ",
+    "]  72% ", "]  73% ", "]  74% ", "]  75% ", "]  76% ", "]  77% ", "]  78% ", "]  79% ",
+    "]  80% ", "]  81% ", "]  82% ", "]  83% ", "]  84% ", "]  85% ", "]  86% ", "]  87% ",
+    "]  88% ", "]  89% ", "]  90% ", "]  91% ", "]  92% ", "]  93% ", "]  94% ", "]  95% ",
+    "]  96% ", "]  97% ", "]  98% ", "]  99% ", "] 100% ",
 ];
 
 fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color) -> Vec<Span<'a>> {
@@ -1638,10 +1684,7 @@ fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color
         Span::styled(" [", Style::default().fg(theme::FG4)),
         Span::styled(&BAR_FILL[..filled], Style::default().fg(bar_color)),
         Span::styled(&BAR_EMPTY[..empty], Style::default().fg(theme::FG4)),
-        Span::styled(
-            PERCENT_SUFFIXES[pct_idx],
-            Style::default().fg(theme::FG3),
-        ),
+        Span::styled(PERCENT_SUFFIXES[pct_idx], Style::default().fg(theme::FG3)),
     ]
 }
 
@@ -1706,13 +1749,14 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             HealthStatus::Red => (DOT_FILLED, theme::BRIGHT_RED),
             HealthStatus::Unknown => (DOT_EMPTY, theme::FG4),
         };
-        health_spans.push(Span::styled(
-            dot_str,
-            Style::default().fg(color),
-        ));
+        health_spans.push(Span::styled(dot_str, Style::default().fg(color)));
         // Use pre-computed health strings (computed on fetch arrival, not per-frame)
         if let Some((narrow_str, wide_str, _)) = app.status_bar_health_strings.get(i) {
-            let text = if narrow { narrow_str.as_str() } else { wide_str.as_str() };
+            let text = if narrow {
+                narrow_str.as_str()
+            } else {
+                wide_str.as_str()
+            };
             health_spans.push(Span::styled(text, Style::default().fg(theme::FG3)));
         }
     }
@@ -1729,13 +1773,12 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         for (i, snapshot) in app.snapshots.iter().enumerate() {
             let ru = &snapshot.resource_usage;
             // Use pre-computed "name: " label to avoid per-frame format!()
-            let name_label = app.status_bar_health_strings.get(i)
+            let name_label = app
+                .status_bar_health_strings
+                .get(i)
                 .map(|(_, _, nl)| nl.as_str())
                 .unwrap_or("");
-            usage_spans.push(Span::styled(
-                name_label,
-                Style::default().fg(theme::FG3),
-            ));
+            usage_spans.push(Span::styled(name_label, Style::default().fg(theme::FG3)));
             usage_spans.extend(render_usage_bar(
                 "CPU",
                 ru.cpu_percent,
@@ -1792,10 +1835,16 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 /// Render YAML/describe modal as immutable borrow (avoids clone of YamlModal).
 /// Duplicates the layout logic from YamlModal::render but takes &self.
 fn render_yaml_modal(f: &mut Frame, modal: &crate::dash::yaml_modal::YamlModal, area: Rect) {
-    if !modal.visible { return; }
+    if !modal.visible {
+        return;
+    }
 
-    let popup_width = (area.width * 80 / 100).max(40).min(area.width.saturating_sub(4));
-    let popup_height = (area.height * 80 / 100).max(10).min(area.height.saturating_sub(2));
+    let popup_width = (area.width * 80 / 100)
+        .max(40)
+        .min(area.width.saturating_sub(4));
+    let popup_height = (area.height * 80 / 100)
+        .max(10)
+        .min(area.height.saturating_sub(2));
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -1810,7 +1859,8 @@ fn render_yaml_modal(f: &mut Frame, modal: &crate::dash::yaml_modal::YamlModal, 
 
     let _inner = block.inner(popup_area);
 
-    let lines: Vec<Line<'_>> = modal.content
+    let lines: Vec<Line<'_>> = modal
+        .content
         .lines()
         .map(|line| {
             let trimmed = line.trim();
@@ -1827,9 +1877,7 @@ fn render_yaml_modal(f: &mut Frame, modal: &crate::dash::yaml_modal::YamlModal, 
                 ))
             } else if let Some(colon_pos) = trimmed.find(':') {
                 let key_part = &trimmed[..colon_pos];
-                if !key_part.is_empty()
-                    && !key_part.contains(' ')
-                    && colon_pos < trimmed.len() - 1
+                if !key_part.is_empty() && !key_part.contains(' ') && colon_pos < trimmed.len() - 1
                 {
                     let indent = line.len() - line.trim_start().len();
                     let indent_str = &line[..indent];
@@ -1871,10 +1919,15 @@ fn render_yaml_modal(f: &mut Frame, modal: &crate::dash::yaml_modal::YamlModal, 
         ),
         Span::styled(
             scroll_info,
-            Style::default().fg(theme::BRIGHT_AQUA).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::BRIGHT_AQUA)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
-    f.render_widget(Paragraph::new(footer).style(Style::default().bg(theme::BG_HARD)), footer_area);
+    f.render_widget(
+        Paragraph::new(footer).style(Style::default().bg(theme::BG_HARD)),
+        footer_area,
+    );
 }
 
 fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {

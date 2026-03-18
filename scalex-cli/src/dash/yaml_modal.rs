@@ -94,8 +94,12 @@ impl YamlModal {
         }
 
         // Popup dimensions: 80% width, 80% height
-        let popup_width = (area.width * 80 / 100).max(40).min(area.width.saturating_sub(4));
-        let popup_height = (area.height * 80 / 100).max(10).min(area.height.saturating_sub(2));
+        let popup_width = (area.width * 80 / 100)
+            .max(40)
+            .min(area.width.saturating_sub(4));
+        let popup_height = (area.height * 80 / 100)
+            .max(10)
+            .min(area.height.saturating_sub(2));
         let x = (area.width.saturating_sub(popup_width)) / 2;
         let y = (area.height.saturating_sub(popup_height)) / 2;
         let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -117,7 +121,8 @@ impl YamlModal {
             self.scroll_offset = max;
         }
 
-        let lines: Vec<Line<'_>> = self.content
+        let lines: Vec<Line<'_>> = self
+            .content
             .lines()
             .map(|line| {
                 let trimmed = line.trim();
@@ -185,7 +190,11 @@ mod tests {
     #[test]
     fn open_sets_visible_and_content() {
         let mut m = YamlModal::new();
-        m.open("Pod", "nginx", "Name: nginx\nNamespace: default\n".to_string());
+        m.open(
+            "Pod",
+            "nginx",
+            "Name: nginx\nNamespace: default\n".to_string(),
+        );
         assert!(m.visible);
         assert_eq!(m.resource_name, "nginx");
         assert_eq!(m.resource_kind, "Pod");

@@ -512,7 +512,9 @@ impl HelpOverlay {
         let popup_width = if use_two_col {
             80u16.min(area.width.saturating_sub(4))
         } else {
-            54u16.min(area.width.saturating_sub(4)).max(40.min(area.width))
+            54u16
+                .min(area.width.saturating_sub(4))
+                .max(40.min(area.width))
         };
 
         // Build content lines
@@ -575,18 +577,10 @@ impl HelpOverlay {
         let has_more_below = scroll_offset < max_scroll && max_scroll > 0;
 
         if has_more_above {
-            let ind = Rect::new(
-                popup_area.x + popup_area.width - 1,
-                popup_area.y,
-                1,
-                1,
-            );
+            let ind = Rect::new(popup_area.x + popup_area.width - 1, popup_area.y, 1, 1);
             f.render_widget(
-                Paragraph::new("▲").style(
-                    Style::default()
-                        .fg(theme::BRIGHT_YELLOW)
-                        .bg(theme::BG_HARD),
-                ),
+                Paragraph::new("▲")
+                    .style(Style::default().fg(theme::BRIGHT_YELLOW).bg(theme::BG_HARD)),
                 ind,
             );
         }
@@ -598,11 +592,8 @@ impl HelpOverlay {
                 1,
             );
             f.render_widget(
-                Paragraph::new("▼").style(
-                    Style::default()
-                        .fg(theme::BRIGHT_YELLOW)
-                        .bg(theme::BG_HARD),
-                ),
+                Paragraph::new("▼")
+                    .style(Style::default().fg(theme::BRIGHT_YELLOW).bg(theme::BG_HARD)),
                 ind,
             );
         }
@@ -630,10 +621,7 @@ mod tests {
     fn key_category_construction() {
         let cat = KeyCategory::new(
             "Navigation",
-            vec![
-                KeyEntry::new("j", "down"),
-                KeyEntry::new("k", "up"),
-            ],
+            vec![KeyEntry::new("j", "down"), KeyEntry::new("k", "up")],
         );
         assert_eq!(cat.label, "Navigation");
         assert_eq!(cat.entries.len(), 2);
@@ -709,7 +697,10 @@ mod tests {
         );
         let entries = &action_cat.unwrap().entries;
         // describe, logs, shell, port-forward
-        assert!(entries.len() >= 4, "Resource Actions should have ≥4 entries");
+        assert!(
+            entries.len() >= 4,
+            "Resource Actions should have ≥4 entries"
+        );
     }
 
     #[test]
@@ -955,11 +946,7 @@ mod tests {
 
     #[test]
     fn line_plain_text_concatenates() {
-        let line = Line::from(vec![
-            Span::raw("hello"),
-            Span::raw(" "),
-            Span::raw("world"),
-        ]);
+        let line = Line::from(vec![Span::raw("hello"), Span::raw(" "), Span::raw("world")]);
         assert_eq!(HelpOverlay::line_plain_text(&line), "hello world");
     }
 }

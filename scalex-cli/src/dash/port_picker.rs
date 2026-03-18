@@ -312,9 +312,7 @@ impl PortPicker {
         // Compute popup dimensions
         let list_rows = self.ports.len().max(1) as u16;
         // header(1) + separator(1) + list + separator(1) + local_port_row(1) + separator(1) + hints(1) = 6 + list
-        let popup_height = (list_rows + 8)
-            .min(24)
-            .min(area.height.saturating_sub(4));
+        let popup_height = (list_rows + 8).min(24).min(area.height.saturating_sub(4));
         let popup_width = 72u16.min(area.width.saturating_sub(4)).max(44);
 
         if popup_height < 7 || popup_width < 34 {
@@ -356,10 +354,7 @@ impl PortPicker {
 
         // Column header
         lines.push(Line::from(vec![Span::styled(
-            format!(
-                " {:6} {:8} {:16} {}",
-                "PORT", "PROTO", "NAME", "CONTAINER"
-            ),
+            format!(" {:6} {:8} {:16} {}", "PORT", "PROTO", "NAME", "CONTAINER"),
             Style::default()
                 .fg(theme::BRIGHT_ORANGE)
                 .add_modifier(Modifier::BOLD),
@@ -390,10 +385,7 @@ impl PortPicker {
                             .add_modifier(Modifier::BOLD),
                     )
                 } else if is_selected {
-                    (
-                        "\u{25b8}",
-                        Style::default().fg(theme::FG2),
-                    )
+                    ("\u{25b8}", Style::default().fg(theme::FG2))
                 } else {
                     (" ", Style::default().fg(theme::FG))
                 };
@@ -481,7 +473,10 @@ impl PortPicker {
                 },
             ),
             Span::styled(port_display, field_style),
-            Span::styled(cursor_char.to_string(), Style::default().fg(theme::BRIGHT_AQUA)),
+            Span::styled(
+                cursor_char.to_string(),
+                Style::default().fg(theme::BRIGHT_AQUA),
+            ),
             validity,
         ]));
 
@@ -554,10 +549,8 @@ pub fn extract_ports_from_pod(obj: &serde_json::Value) -> Vec<PortInfo> {
 
             if let Some(ports) = c.get("ports").and_then(|v| v.as_array()) {
                 for p in ports {
-                    let container_port = p
-                        .get("containerPort")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as u16;
+                    let container_port =
+                        p.get("containerPort").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
                     if container_port == 0 {
                         continue;
                     }
@@ -602,10 +595,7 @@ pub fn extract_ports_from_service(obj: &serde_json::Value) -> Vec<PortInfo> {
         for p in ports {
             // For services, "port" is the service port (what we forward to),
             // "targetPort" is the container port.
-            let svc_port = p
-                .get("port")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u16;
+            let svc_port = p.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
             let target_port = p
                 .get("targetPort")
                 .and_then(|v| v.as_u64())

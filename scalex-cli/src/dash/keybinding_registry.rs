@@ -634,7 +634,9 @@ mod tests {
     fn log_viewer_has_follow_toggle() {
         let registry = KeybindingRegistry::new();
         let entries = registry.get(Mode::LogViewer);
-        let has_follow = entries.iter().any(|e| e.key == "f" && e.description.contains("follow"));
+        let has_follow = entries
+            .iter()
+            .any(|e| e.key == "f" && e.description.contains("follow"));
         assert!(has_follow, "LogViewer should have follow toggle on 'f'");
     }
 
@@ -643,8 +645,14 @@ mod tests {
         let registry = KeybindingRegistry::new();
         let entries = registry.get(Mode::PortForwardManager);
         let keys: Vec<&str> = entries.iter().map(|e| e.key).collect();
-        assert!(keys.contains(&"a"), "PortForwardManager should have 'a' for add");
-        assert!(keys.contains(&"d"), "PortForwardManager should have 'd' for delete");
+        assert!(
+            keys.contains(&"a"),
+            "PortForwardManager should have 'a' for add"
+        );
+        assert!(
+            keys.contains(&"d"),
+            "PortForwardManager should have 'd' for delete"
+        );
     }
 
     #[test]
