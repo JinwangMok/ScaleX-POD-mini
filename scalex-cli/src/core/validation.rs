@@ -2218,7 +2218,7 @@ spec:
         ];
 
         // Removing playbox-2 must detect sandbox-w-0 as affected
-        let to_remove = vec!["playbox-2"];
+        let to_remove = ["playbox-2"];
         let mut affected_vms = Vec::new();
         for pool in &pools {
             for node in &pool.nodes {
@@ -2274,7 +2274,7 @@ spec:
     fn test_sdi_sync_remove_empty_host_no_warning() {
         use crate::models::sdi::{SdiNodeState, SdiPoolState};
 
-        let pools = vec![SdiPoolState {
+        let pools = [SdiPoolState {
             pool_name: "tower".to_string(),
             purpose: "management".to_string(),
             nodes: vec![SdiNodeState {
@@ -2290,7 +2290,7 @@ spec:
         }];
 
         // Removing playbox-3 (no VMs on it) should have 0 affected
-        let to_remove = vec!["playbox-3"];
+        let to_remove = ["playbox-3"];
         let affected_count: usize = pools
             .iter()
             .flat_map(|p| &p.nodes)
@@ -3422,10 +3422,8 @@ spec:
 
             // Vars must be valid YAML with essential keys
             let parsed: serde_yaml::Mapping = serde_yaml::from_str(&vars).unwrap();
-            assert!(parsed.contains_key(&serde_yaml::Value::String("kube_version".to_string())));
-            assert!(
-                parsed.contains_key(&serde_yaml::Value::String("container_manager".to_string()))
-            );
+            assert!(parsed.contains_key(serde_yaml::Value::String("kube_version".to_string())));
+            assert!(parsed.contains_key(serde_yaml::Value::String("container_manager".to_string())));
         }
 
         // --- Phase 4: Secrets generation ---
@@ -4222,7 +4220,7 @@ spec:
                         .map(|e| {
                             e.path()
                                 .extension()
-                                .map_or(false, |ext| ext == "yaml" || ext == "yml")
+                                .is_some_and(|ext| ext == "yaml" || ext == "yml")
                         })
                         .unwrap_or(false)
                 })
@@ -4820,8 +4818,8 @@ config:
         assert_eq!(summary.total_cpu_threads, 48); // 16+32
         assert_eq!(summary.total_memory_mb, 98304); // 32768+65536
         assert_eq!(summary.total_gpu_count, 1);
-        assert_eq!(summary.nodes[0].has_bridge, true);
-        assert_eq!(summary.nodes[1].has_bridge, false);
+        assert!(summary.nodes[0].has_bridge);
+        assert!(!summary.nodes[1].has_bridge);
     }
 
     // =========================================================================
@@ -5613,7 +5611,7 @@ config:
         let cluster_ids: Vec<&str> = k8s_clusters
             .lines()
             .filter(|l| l.contains("cluster_id:"))
-            .map(|l| l.split(':').last().unwrap_or("").trim())
+            .map(|l| l.split(':').next_back().unwrap_or("").trim())
             .collect();
 
         assert!(
@@ -5636,7 +5634,7 @@ config:
         for id in &cluster_ids {
             let num: u32 = id.parse().expect("cluster_id must be numeric");
             assert!(
-                num >= 1 && num <= 255,
+                (1..=255).contains(&num),
                 "Cilium cluster_id {} out of range (must be 1-255)",
                 num
             );

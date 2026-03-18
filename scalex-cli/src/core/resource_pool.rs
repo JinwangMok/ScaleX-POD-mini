@@ -182,7 +182,7 @@ mod tests {
         assert_eq!(summary.total_cpu_cores, 8 + 16 + 8 + 32);
         assert_eq!(summary.total_cpu_threads, (8 + 16 + 8 + 32) * 2);
         assert_eq!(summary.total_memory_mb, 32768 + 65536 + 32768 + 131072);
-        assert_eq!(summary.total_gpu_count, 0 + 2 + 1 + 4);
+        assert_eq!(summary.total_gpu_count, 2 + 1 + 4);
         assert_eq!(summary.total_disk_count, 2 + 4 + 2 + 8);
     }
 

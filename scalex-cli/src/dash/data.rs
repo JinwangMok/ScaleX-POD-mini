@@ -22,7 +22,14 @@ pub enum ActiveResource {
 /// Per-API-call timeout to prevent slow calls from blocking the entire fetch.
 /// Reduced from 1s to 500ms — K8s API calls on a healthy cluster complete in <200ms;
 /// 500ms is generous while halving worst-case fetch latency.
-const API_CALL_TIMEOUT: Duration = Duration::from_millis(500);
+pub const API_CALL_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Per-API-call timeout for headless mode.
+/// Remote clusters (CF Tunnel, SSH tunnel) may have higher latency than 500ms.
+/// 30s handles slow tunneled connections (SSH → remote bastion → K8s API) without
+/// blocking CI scripts indefinitely. Each of the 7 parallel API calls has this
+/// individual budget; total wall time is bounded by the slowest single call.
+pub const HEADLESS_API_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // Data models
@@ -167,9 +174,9 @@ pub struct ResourceUsage {
 // Fetch functions (async, pure-ish — only side effect is network I/O)
 // ---------------------------------------------------------------------------
 
-pub async fn fetch_namespaces(client: &Client) -> Result<Vec<String>> {
+pub async fn fetch_namespaces(client: &Client, timeout: Duration) -> Result<Vec<String>> {
     let api: Api<Namespace> = Api::all(client.clone());
-    let ns_list = tokio::time::timeout(API_CALL_TIMEOUT, api.list(&ListParams::default()))
+    let ns_list = tokio::time::timeout(timeout, api.list(&ListParams::default()))
         .await
         .map_err(|_| anyhow::anyhow!("namespace list timeout"))??;
     let mut names: Vec<String> = ns_list
@@ -181,12 +188,16 @@ pub async fn fetch_namespaces(client: &Client) -> Result<Vec<String>> {
     Ok(names)
 }
 
-pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<PodInfo>> {
+pub async fn fetch_pods(
+    client: &Client,
+    namespace: Option<&str>,
+    timeout: Duration,
+) -> Result<Vec<PodInfo>> {
     let api: Api<Pod> = match namespace {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
     };
-    let pod_list = tokio::time::timeout(API_CALL_TIMEOUT, api.list(&ListParams::default()))
+    let pod_list = tokio::time::timeout(timeout, api.list(&ListParams::default()))
         .await
         .map_err(|_| anyhow::anyhow!("pod list timeout"))??;
     let now = Utc::now();
@@ -265,9 +276,9 @@ pub async fn fetch_pods(client: &Client, namespace: Option<&str>) -> Result<Vec<
         .collect())
 }
 
-pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
+pub async fn fetch_nodes(client: &Client, timeout: Duration) -> Result<Vec<NodeInfo>> {
     let api: Api<Node> = Api::all(client.clone());
-    let node_list = tokio::time::timeout(API_CALL_TIMEOUT, api.list(&ListParams::default()))
+    let node_list = tokio::time::timeout(timeout, api.list(&ListParams::default()))
         .await
         .map_err(|_| anyhow::anyhow!("node list timeout"))??;
     let now = Utc::now();
@@ -382,12 +393,13 @@ pub async fn fetch_nodes(client: &Client) -> Result<Vec<NodeInfo>> {
 pub async fn fetch_deployments(
     client: &Client,
     namespace: Option<&str>,
+    timeout: Duration,
 ) -> Result<Vec<DeploymentInfo>> {
     let api: Api<Deployment> = match namespace {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
     };
-    let dep_list = tokio::time::timeout(API_CALL_TIMEOUT, api.list(&ListParams::default()))
+    let dep_list = tokio::time::timeout(timeout, api.list(&ListParams::default()))
         .await
         .map_err(|_| anyhow::anyhow!("deployment list timeout"))??;
     let now = Utc::now();
@@ -429,12 +441,13 @@ pub async fn fetch_deployments(
 pub async fn fetch_configmaps(
     client: &Client,
     namespace: Option<&str>,
+    timeout: Duration,
 ) -> Result<Vec<ConfigMapInfo>> {
     let api: Api<ConfigMap> = match namespace {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
     };
-    let cm_list = tokio::time::timeout(API_CALL_TIMEOUT, api.list(&ListParams::default()))
+    let cm_list = tokio::time::timeout(timeout, api.list(&ListParams::default()))
         .await
         .map_err(|_| anyhow::anyhow!("configmap list timeout"))??;
     let now = Utc::now();
@@ -464,12 +477,16 @@ pub async fn fetch_configmaps(
         .collect())
 }
 
-pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<Vec<ServiceInfo>> {
+pub async fn fetch_services(
+    client: &Client,
+    namespace: Option<&str>,
+    timeout: Duration,
+) -> Result<Vec<ServiceInfo>> {
     let api: Api<Service> = match namespace {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
     };
-    let svc_list = tokio::time::timeout(API_CALL_TIMEOUT, api.list(&ListParams::default()))
+    let svc_list = tokio::time::timeout(timeout, api.list(&ListParams::default()))
         .await
         .map_err(|_| anyhow::anyhow!("service list timeout"))??;
     let now = Utc::now();
@@ -541,12 +558,16 @@ pub async fn fetch_services(client: &Client, namespace: Option<&str>) -> Result<
         .collect())
 }
 
-pub async fn fetch_events(client: &Client, namespace: Option<&str>) -> Result<Vec<EventInfo>> {
+pub async fn fetch_events(
+    client: &Client,
+    namespace: Option<&str>,
+    timeout: Duration,
+) -> Result<Vec<EventInfo>> {
     let api: Api<Event> = match namespace {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
     };
-    let event_list = tokio::time::timeout(API_CALL_TIMEOUT, api.list(&ListParams::default()))
+    let event_list = tokio::time::timeout(timeout, api.list(&ListParams::default()))
         .await
         .map_err(|_| anyhow::anyhow!("event list timeout"))??;
     let now = Utc::now();
@@ -665,6 +686,8 @@ pub fn sort_pods_by_severity(pods: &mut [PodInfo]) {
 /// - `active_resource: None` → fetch ALL resources (used for selected cluster / headless)
 /// - `active_resource: Some(r)` → fetch only nodes + the active resource
 ///   (reduces API calls, cutting latency)
+/// - `api_timeout` — per-call timeout; use `API_CALL_TIMEOUT` for TUI (500ms) and
+///   `HEADLESS_API_TIMEOUT` for headless mode (30s) to handle remote cluster latency.
 ///
 /// Metrics fetch is removed (metrics_server_enabled hardcoded false).
 pub async fn fetch_cluster_snapshot(
@@ -672,6 +695,7 @@ pub async fn fetch_cluster_snapshot(
     cluster_name: &str,
     namespace: Option<&str>,
     active_resource: Option<ActiveResource>,
+    api_timeout: Duration,
 ) -> Result<ClusterSnapshot> {
     // Single parallel join for ALL API calls — eliminates sequential latency
     // between the namespaces+nodes group and the resources group.
@@ -680,38 +704,66 @@ pub async fn fetch_cluster_snapshot(
         None => {
             // Full fetch: all 7 API calls in one parallel join
             let (ns, n, p, d, s, c, ev) = tokio::join!(
-                async { fetch_namespaces(client).await.unwrap_or_default() },
-                async { fetch_nodes(client).await.unwrap_or_default() },
-                async { fetch_pods(client, namespace).await.unwrap_or_default() },
                 async {
-                    fetch_deployments(client, namespace)
+                    fetch_namespaces(client, api_timeout)
                         .await
                         .unwrap_or_default()
                 },
-                async { fetch_services(client, namespace).await.unwrap_or_default() },
+                async { fetch_nodes(client, api_timeout).await.unwrap_or_default() },
                 async {
-                    fetch_configmaps(client, namespace)
+                    fetch_pods(client, namespace, api_timeout)
                         .await
                         .unwrap_or_default()
                 },
-                async { fetch_events(client, namespace).await.unwrap_or_default() },
+                async {
+                    fetch_deployments(client, namespace, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
+                async {
+                    fetch_services(client, namespace, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
+                async {
+                    fetch_configmaps(client, namespace, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
+                async {
+                    fetch_events(client, namespace, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
             );
             (ns, n, Some(p), Some(d), Some(s), Some(c), Some(ev))
         }
         Some(ActiveResource::Pods) => {
             let (ns, n, p) = tokio::join!(
-                async { fetch_namespaces(client).await.unwrap_or_default() },
-                async { fetch_nodes(client).await.unwrap_or_default() },
-                async { fetch_pods(client, namespace).await.unwrap_or_default() },
+                async {
+                    fetch_namespaces(client, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
+                async { fetch_nodes(client, api_timeout).await.unwrap_or_default() },
+                async {
+                    fetch_pods(client, namespace, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
             );
             (ns, n, Some(p), None, None, None, None)
         }
         Some(ActiveResource::Deployments) => {
             let (ns, n, d) = tokio::join!(
-                async { fetch_namespaces(client).await.unwrap_or_default() },
-                async { fetch_nodes(client).await.unwrap_or_default() },
                 async {
-                    fetch_deployments(client, namespace)
+                    fetch_namespaces(client, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
+                async { fetch_nodes(client, api_timeout).await.unwrap_or_default() },
+                async {
+                    fetch_deployments(client, namespace, api_timeout)
                         .await
                         .unwrap_or_default()
                 },
@@ -720,18 +772,30 @@ pub async fn fetch_cluster_snapshot(
         }
         Some(ActiveResource::Services) => {
             let (ns, n, s) = tokio::join!(
-                async { fetch_namespaces(client).await.unwrap_or_default() },
-                async { fetch_nodes(client).await.unwrap_or_default() },
-                async { fetch_services(client, namespace).await.unwrap_or_default() },
+                async {
+                    fetch_namespaces(client, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
+                async { fetch_nodes(client, api_timeout).await.unwrap_or_default() },
+                async {
+                    fetch_services(client, namespace, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
             );
             (ns, n, None, None, Some(s), None, None)
         }
         Some(ActiveResource::ConfigMaps) => {
             let (ns, n, c) = tokio::join!(
-                async { fetch_namespaces(client).await.unwrap_or_default() },
-                async { fetch_nodes(client).await.unwrap_or_default() },
                 async {
-                    fetch_configmaps(client, namespace)
+                    fetch_namespaces(client, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
+                async { fetch_nodes(client, api_timeout).await.unwrap_or_default() },
+                async {
+                    fetch_configmaps(client, namespace, api_timeout)
                         .await
                         .unwrap_or_default()
                 },
@@ -740,18 +804,82 @@ pub async fn fetch_cluster_snapshot(
         }
         Some(ActiveResource::Events) => {
             let (ns, n, ev) = tokio::join!(
-                async { fetch_namespaces(client).await.unwrap_or_default() },
-                async { fetch_nodes(client).await.unwrap_or_default() },
-                async { fetch_events(client, namespace).await.unwrap_or_default() },
+                async {
+                    fetch_namespaces(client, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
+                async { fetch_nodes(client, api_timeout).await.unwrap_or_default() },
+                async {
+                    fetch_events(client, namespace, api_timeout)
+                        .await
+                        .unwrap_or_default()
+                },
             );
             (ns, n, None, None, None, None, Some(ev))
         }
         Some(ActiveResource::Nodes) => {
             // Nodes-only fetch for non-selected clusters: skip namespace API call
             // (namespaces change rarely, preserved by merge logic in run_tui)
-            let n = fetch_nodes(client).await.unwrap_or_default();
+            let n = fetch_nodes(client, api_timeout).await.unwrap_or_default();
             (Vec::new(), n, None, None, None, None, None)
         }
+    };
+
+    // Namespace fallback: if fetch_namespaces failed/timed-out (returned empty),
+    // derive namespace list from the actually-fetched resources so headless mode
+    // always returns non-empty namespace lists for each connected cluster.
+    //
+    // Three-tier fallback strategy:
+    //   1. Use fetch_namespaces result if non-empty (normal path, requires cluster RBAC)
+    //   2. If a namespace filter was specified, return at least [requested_namespace]
+    //   3. Otherwise, collect unique namespace names from all successfully-fetched resources
+    let namespaces = if namespaces.is_empty() {
+        if let Some(explicit_ns) = namespace {
+            // Namespace filter was specified — always include the requested namespace
+            vec![explicit_ns.to_string()]
+        } else {
+            // Derive unique namespace names from all fetched namespaced resources
+            let mut ns_set = std::collections::BTreeSet::new();
+            if let Some(ref p) = pods {
+                for item in p {
+                    if !item.namespace.is_empty() {
+                        ns_set.insert(item.namespace.clone());
+                    }
+                }
+            }
+            if let Some(ref d) = deployments {
+                for item in d {
+                    if !item.namespace.is_empty() {
+                        ns_set.insert(item.namespace.clone());
+                    }
+                }
+            }
+            if let Some(ref s) = services {
+                for item in s {
+                    if !item.namespace.is_empty() {
+                        ns_set.insert(item.namespace.clone());
+                    }
+                }
+            }
+            if let Some(ref c) = configmaps {
+                for item in c {
+                    if !item.namespace.is_empty() {
+                        ns_set.insert(item.namespace.clone());
+                    }
+                }
+            }
+            if let Some(ref ev) = events {
+                for item in ev {
+                    if !item.namespace.is_empty() {
+                        ns_set.insert(item.namespace.clone());
+                    }
+                }
+            }
+            ns_set.into_iter().collect()
+        }
+    } else {
+        namespaces
     };
 
     // Sort pods by status severity (k9s-style: errors first)
@@ -814,6 +942,10 @@ pub fn filter_snapshot_by_resource(
                 }
                 "events" => {
                     obj["events"] = serde_json::to_value(&s.events).unwrap_or_default();
+                }
+                "namespaces" => {
+                    // Return namespace list for each connected cluster
+                    obj["namespaces"] = serde_json::to_value(&s.namespaces).unwrap_or_default();
                 }
                 _ => {
                     obj["error"] =

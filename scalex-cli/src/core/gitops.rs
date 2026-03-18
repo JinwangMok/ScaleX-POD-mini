@@ -777,10 +777,7 @@ contexts:
             serde_yaml::from_str(&values).expect("ClusterMesh values must be valid YAML");
         assert_eq!(parsed["cluster"]["name"].as_str().unwrap(), "sandbox");
         assert_eq!(parsed["cluster"]["id"].as_u64().unwrap(), 2);
-        assert_eq!(
-            parsed["clustermesh"]["useAPIServer"].as_bool().unwrap(),
-            true
-        );
+        assert!(parsed["clustermesh"]["useAPIServer"].as_bool().unwrap());
     }
 
     #[test]

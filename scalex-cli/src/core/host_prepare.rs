@@ -144,10 +144,17 @@ sudo bash -c 'cat > /etc/netplan/50-scalex-bridge.yaml << NETPLAN_EOF
 NETPLAN_EOF
 chmod 600 /etc/netplan/50-scalex-bridge.yaml'
 
-echo "[scalex] Applying netplan with 120s timeout (auto-revert on failure)..."
-sudo netplan try --timeout 120
-
-echo "[scalex] br0 bridge setup complete."
+echo "[scalex] Applying netplan..."
+sudo netplan apply 2>/dev/null || true
+# Wait for br0 to come up (netplan apply may take a moment)
+for i in $(seq 1 10); do
+    if ip addr show br0 2>/dev/null | grep -q '{ip_address}/{cidr_prefix}'; then
+        echo "[scalex] br0 bridge setup complete."
+        exit 0
+    fi
+    sleep 1
+done
+echo "[scalex] WARNING: br0 not yet visible — caller will verify via SSH retry."
 "#
     )
 }
@@ -699,7 +706,7 @@ mod tests {
         assert!(script.contains("br0"));
         assert!(script.contains("eno1"));
         assert!(script.contains("ethernets:"));
-        assert!(script.contains("netplan try"));
+        assert!(script.contains("netplan apply"));
     }
 
     #[test]
@@ -712,7 +719,7 @@ mod tests {
             !script.contains("ethernets:"),
             "bond bridge must not have ethernets section"
         );
-        assert!(script.contains("netplan try"));
+        assert!(script.contains("netplan apply"));
         assert!(script.contains("bond=true"));
     }
 

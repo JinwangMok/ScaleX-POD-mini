@@ -88,22 +88,66 @@ pub mod headless {
             return Ok(());
         }
 
-        // Fetch all clusters in parallel for minimum latency
-        let mut handles = Vec::new();
+        // Fetch all clusters in parallel for minimum latency.
+        // Tunnel and kubeconfig connections are fully initialized by discover_clusters()
+        // before we reach this point — ordering is guaranteed by setup_auto_tunnel(),
+        // which polls port readiness + probes the K8s API before returning.
+        let mut handles: Vec<(String, _)> = Vec::new();
         for cluster in &target_clusters {
             let client = cluster.client.clone();
             let name = cluster.name.clone();
             let ns = args.namespace.clone();
-            handles.push(tokio::spawn(async move {
-                data::fetch_cluster_snapshot(&client, &name, ns.as_deref(), None).await
-            }));
+            handles.push((
+                name.clone(),
+                tokio::spawn(async move {
+                    data::fetch_cluster_snapshot(
+                        &client,
+                        &name,
+                        ns.as_deref(),
+                        None,
+                        data::HEADLESS_API_TIMEOUT,
+                    )
+                    .await
+                }),
+            ));
         }
-        let results = futures::future::join_all(handles).await;
         let mut cluster_data = Vec::new();
-        for result in results {
-            if let Ok(Ok(snapshot)) = result {
-                cluster_data.push(snapshot);
+        let mut fetch_errors: Vec<(String, String)> = Vec::new();
+        for (cluster_name, handle) in handles {
+            match handle.await {
+                Ok(Ok(snapshot)) => cluster_data.push(snapshot),
+                Ok(Err(e)) => fetch_errors.push((cluster_name, format!("{:#}", e))),
+                Err(e) => fetch_errors.push((cluster_name, format!("task panic: {}", e))),
             }
+        }
+
+        // Surface fetch errors so callers can diagnose empty-data issues.
+        // Previously errors were silently dropped, causing empty JSON output
+        // with no indication of what went wrong.
+        if !fetch_errors.is_empty() && cluster_data.is_empty() {
+            let error_detail: Vec<serde_json::Value> = fetch_errors
+                .iter()
+                .map(|(n, e)| serde_json::json!({"cluster": n, "error": e}))
+                .collect();
+            let output = serde_json::json!({
+                "error": "All cluster data fetches failed",
+                "details": error_detail
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+            std::process::exit(1);
+        }
+        // Partial failures: warn on stderr, include successful clusters in output
+        if !fetch_errors.is_empty() {
+            let warn: Vec<serde_json::Value> = fetch_errors
+                .iter()
+                .map(|(n, e)| serde_json::json!({"cluster": n, "error": e}))
+                .collect();
+            eprintln!(
+                "warning: {}/{} cluster(s) failed to fetch data: {}",
+                fetch_errors.len(),
+                target_clusters.len(),
+                serde_json::to_string(&warn).unwrap_or_default()
+            );
         }
 
         // Filter by resource type if specified

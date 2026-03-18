@@ -18,6 +18,7 @@ readonly GEN_DIR="$INSTALLER_DIR/generated"
 readonly LOG_DIR="$INSTALLER_DIR/logs"
 readonly LOG_FILE="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
 readonly REPO_URL="${SCALEX_REPO_URL:-https://github.com/ScaleX-project/ScaleX-POD-mini.git}"
+readonly TUNNEL_STATE_FILE="$SCALEX_HOME/tunnel-state.yaml"
 
 readonly KUBECTL_VERSION="v1.33.1"
 readonly HELM_VERSION="v3.17.3"
@@ -56,6 +57,8 @@ AUTO_MODE="${AUTO_MODE:-false}"
 SUDO_KEEPALIVE_PID=""
 API_TUNNEL_PIDS=()
 API_TUNNEL_BACKUPS=()
+TUNNEL_WATCHDOG_PID=""
+TUNNEL_CONF_DIR=""
 
 # ============================================================================
 # Section 1: Utility Functions
@@ -224,6 +227,15 @@ ensure_sudo() {
     log_info "$(i18n "sudo: NOPASSWD confirmed" "sudo: NOPASSWD 확인됨")"
     return 0
   fi
+  # In auto mode, never prompt — fail immediately with actionable message
+  if [[ "$AUTO_MODE" == "true" ]]; then
+    error_msg \
+      "$(i18n "sudo requires a password but auto mode is non-interactive" "sudo에 비밀번호가 필요하지만 자동 모드는 비대화형입니다")" \
+      "$(i18n "sudo -n failed — NOPASSWD not configured for the current user" "sudo -n 실패 — 현재 사용자에 대해 NOPASSWD가 구성되지 않음")" \
+      "$(i18n "Add NOPASSWD to sudoers: echo '${USER} ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/scalex-auto" \
+         "${USER} ALL=(ALL) NOPASSWD:ALL 를 /etc/sudoers.d/scalex-auto에 추가하세요")"
+    return 1
+  fi
   log_info "$(i18n "sudo access required. Please enter your password (one-time)." "sudo 권한이 필요합니다. 비밀번호를 입력해 주세요 (최초 1회).")"
   sudo -v || { log_error "$(i18n "sudo authentication failed" "sudo 인증 실패")"; return 1; }
   # Keep sudo timestamp alive in background
@@ -233,8 +245,727 @@ ensure_sudo() {
 }
 
 # --- API tunnel management (E2E: kubectl/helm access to cluster APIs) ---
+
+# _ssh_tunnel_start: Start one SSH port-forward tunnel with retry logic.
+# Usage: new_pid=$(_ssh_tunnel_start LOCAL_PORT SERVER_IP SERVER_PORT BASTION)
+# Tries up to 3 times with ConnectTimeout=10; waits up to 5s per attempt for process stability.
+# Emits PID on stdout on success; exits non-zero after all attempts exhausted.
+# SSH stderr is captured per-attempt and emitted as actionable error on final failure.
+_ssh_tunnel_start() {
+  local local_port="$1" server_ip="$2" server_port="$3" bastion="$4"
+  local max_attempts=3 attempt=0 tpid="" stable=false
+  local err_file; err_file=$(mktemp /tmp/scalex-ssh-err.XXXXXX 2>/dev/null || echo "/tmp/scalex-ssh-err.$$")
+  local last_ssh_err=""
+
+  while (( attempt < max_attempts )); do
+    attempt=$((attempt + 1))
+    : > "$err_file"
+    ssh -N \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o BatchMode=yes \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=4 \
+      -o ConnectTimeout=10 \
+      -L "${local_port}:${server_ip}:${server_port}" \
+      "$bastion" >/dev/null 2>"$err_file" &
+    tpid=$!
+
+    # Wait up to 5s, checking each second that the process is still alive.
+    # Early exit = ExitOnForwardFailure triggered (port conflict, connect refused, etc.)
+    local w=0
+    stable=false
+    while (( w < 5 )); do
+      sleep 1; w=$((w+1))
+      if ! kill -0 "$tpid" 2>/dev/null; then
+        last_ssh_err=$(cat "$err_file" 2>/dev/null | head -5 | tr '\n' ' ')
+        log_warn "$(i18n "Tunnel attempt ${attempt}/${max_attempts}: SSH process exited early (bind/connect failed)" \
+          "터널 시도 ${attempt}/${max_attempts}: SSH 프로세스 조기 종료 (바인드/연결 실패)")"
+        [[ -n "$last_ssh_err" ]] && log_warn "$(i18n "SSH error: ${last_ssh_err}" "SSH 오류: ${last_ssh_err}")"
+        tpid=""
+        break
+      fi
+    done
+
+    if [[ -n "$tpid" ]] && kill -0 "$tpid" 2>/dev/null; then
+      stable=true
+      break
+    fi
+
+    if (( attempt < max_attempts )); then
+      local backoff=$(( attempt * 3 ))
+      log_info "$(i18n "Retrying SSH tunnel in ${backoff}s..." "SSH 터널 ${backoff}초 후 재시도...")"
+      sleep "$backoff"
+    fi
+  done
+
+  rm -f "$err_file"
+
+  if $stable && [[ -n "$tpid" ]]; then
+    echo "$tpid"
+    return 0
+  fi
+
+  # Emit actionable error based on captured SSH output
+  if echo "$last_ssh_err" | grep -qi "permission denied\|publickey\|authentication"; then
+    error_msg \
+      "$(i18n "SSH authentication failed to bastion '${bastion}'" "bastion '${bastion}'에 SSH 인증 실패")" \
+      "$(i18n "SSH key not authorized or wrong key path — last error: ${last_ssh_err}" "SSH 키가 승인되지 않았거나 키 경로가 잘못됨 — 마지막 오류: ${last_ssh_err}")" \
+      "$(i18n "Check SSH_KEY_PATH in credentials/.env and ensure the key is in ${bastion}:~/.ssh/authorized_keys" \
+         "credentials/.env의 SSH_KEY_PATH를 확인하고 키가 ${bastion}:~/.ssh/authorized_keys에 있는지 확인하세요")"
+  elif echo "$last_ssh_err" | grep -qi "connection refused\|no route\|network unreachable\|timed out"; then
+    error_msg \
+      "$(i18n "Cannot reach bastion '${bastion}' on SSH port" "SSH 포트로 bastion '${bastion}'에 접근할 수 없음")" \
+      "$(i18n "Network unreachable or SSH port closed — last error: ${last_ssh_err}" "네트워크에 접근할 수 없거나 SSH 포트가 닫혀 있음 — 마지막 오류: ${last_ssh_err}")" \
+      "$(i18n "Verify bastion IP in credentials/.baremetal-init.yaml and check network connectivity" \
+         "credentials/.baremetal-init.yaml의 bastion IP를 확인하고 네트워크 연결을 점검하세요")"
+  elif [[ -n "$last_ssh_err" ]]; then
+    error_msg \
+      "$(i18n "SSH tunnel to '${bastion}' failed (localhost:${local_port} → ${server_ip}:${server_port})" \
+         "SSH 터널 실패 '${bastion}' (localhost:${local_port} → ${server_ip}:${server_port})")" \
+      "$(i18n "SSH error: ${last_ssh_err}" "SSH 오류: ${last_ssh_err}")" \
+      "$(i18n "Check ~/.ssh/config, credentials/.env, and SSH access to ${bastion}" \
+         "~/.ssh/config, credentials/.env 및 ${bastion}에 대한 SSH 접근을 확인하세요")"
+  fi
+  return 1
+}
+
+# start_tunnel_watchdog: Background watchdog that monitors tunnel processes and auto-restarts
+# any that have died. Reads per-tunnel conf files from TUNNEL_CONF_DIR.
+# Conf file format: LOCAL_PORT:SERVER_IP:SERVER_PORT:BASTION:PID  (one tunnel per file)
+start_tunnel_watchdog() {
+  [[ -z "$TUNNEL_CONF_DIR" || ! -d "$TUNNEL_CONF_DIR" ]] && return 0
+  local parent_pid=$$
+  (
+    while true; do
+      sleep 10
+      # Exit watchdog when parent installer exits
+      kill -0 "$parent_pid" 2>/dev/null || exit 0
+      for conf_file in "$TUNNEL_CONF_DIR"/*.conf; do
+        [[ -f "$conf_file" ]] || continue
+        IFS=: read -r lp sip sp bt tpid < "$conf_file" 2>/dev/null || continue
+        [[ -z "$tpid" || -z "$lp" ]] && continue
+        if ! kill -0 "$tpid" 2>/dev/null; then
+          # Tunnel process gone — restart non-interactively (no known_hosts prompt)
+          ssh -N \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o BatchMode=yes \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            -o ConnectTimeout=10 \
+            -L "${lp}:${sip}:${sp}" \
+            "$bt" >/dev/null 2>/dev/null &
+          local new_pid=$!
+          sleep 3
+          if kill -0 "$new_pid" 2>/dev/null; then
+            printf '%s:%s:%s:%s:%s\n' "$lp" "$sip" "$sp" "$bt" "$new_pid" > "$conf_file"
+          fi
+        fi
+      done
+    done
+  ) &
+  TUNNEL_WATCHDOG_PID=$!
+  log_info "$(i18n "Tunnel watchdog started (PID: $TUNNEL_WATCHDOG_PID)" \
+    "터널 watchdog 시작 (PID: $TUNNEL_WATCHDOG_PID)")"
+}
+
+# stop_tunnel_watchdog: Stop the background watchdog and clean up conf files.
+stop_tunnel_watchdog() {
+  if [[ -n "$TUNNEL_WATCHDOG_PID" ]]; then
+    kill "$TUNNEL_WATCHDOG_PID" 2>/dev/null || true
+    TUNNEL_WATCHDOG_PID=""
+  fi
+  if [[ -n "$TUNNEL_CONF_DIR" && -d "$TUNNEL_CONF_DIR" ]]; then
+    rm -f "$TUNNEL_CONF_DIR"/*.conf 2>/dev/null || true
+  fi
+}
+
+# wait_for_tunnel_port: Actively poll until local TCP port is bound (tunnel is listening).
+# Returns 0 when port is listening, 1 on timeout or process death.
+# Args: port pid cluster_name [max_wait_seconds]
+wait_for_tunnel_port() {
+  local port="$1" pid="$2" cluster_name="$3" max_wait="${4:-30}"
+  local elapsed=0
+
+  log_info "$(i18n "${cluster_name}: waiting for tunnel port ${port} to be ready (up to ${max_wait}s)..." \
+    "${cluster_name}: 터널 포트 ${port} 준비 대기 중 (최대 ${max_wait}초)...")"
+
+  while [[ $elapsed -lt $max_wait ]]; do
+    # Check tunnel process is still alive first
+    if ! kill -0 "$pid" 2>/dev/null; then
+      log_error "$(i18n "${cluster_name}: SSH tunnel process (PID $pid) died before port ${port} became ready" \
+        "${cluster_name}: SSH 터널 프로세스 (PID $pid) 포트 ${port} 준비 전 종료됨")"
+      return 1
+    fi
+    # Check if local port is now listening (try nc first, then ss, then /dev/tcp)
+    if nc -z localhost "$port" 2>/dev/null; then
+      log_info "$(i18n "${cluster_name}: tunnel port ${port} is listening (${elapsed}s)" \
+        "${cluster_name}: 터널 포트 ${port} 수신 준비 완료 (${elapsed}초)")"
+      return 0
+    elif command -v ss &>/dev/null && ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+      log_info "$(i18n "${cluster_name}: tunnel port ${port} is listening (${elapsed}s)" \
+        "${cluster_name}: 터널 포트 ${port} 수신 준비 완료 (${elapsed}초)")"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  log_error "$(i18n "${cluster_name}: tunnel port ${port} not listening after ${max_wait}s — SSH tunnel failed to bind" \
+    "${cluster_name}: ${max_wait}초 후에도 터널 포트 ${port} 수신 안됨 — SSH 터널 바인딩 실패")"
+  return 1
+}
+
+# validate_tunnel_conf: Verify a written tunnel conf file has all required fields
+# (LOCAL_PORT, SERVER_IP, SERVER_PORT, BASTION, PID) and that each is non-empty and
+# syntactically valid.  Produces an actionable error message on failure.
+# Args: conf_file cluster_name
+# Returns: 0 if valid, 1 if any field is missing/empty/malformed
+validate_tunnel_conf() {
+  local conf_file="$1" cluster_name="${2:-unknown}"
+
+  if [[ ! -f "$conf_file" ]]; then
+    log_error "$(i18n "${cluster_name}: tunnel conf file not found after write: $conf_file" \
+      "${cluster_name}: 쓰기 후 터널 설정 파일 없음: $conf_file")"
+    return 1
+  fi
+
+  local lp sip sp bt tpid
+  IFS=: read -r lp sip sp bt tpid < "$conf_file" 2>/dev/null || {
+    log_error "$(i18n "${cluster_name}: tunnel conf file is unreadable or malformed: $conf_file" \
+      "${cluster_name}: 터널 설정 파일 읽기 불가 또는 형식 오류: $conf_file")"
+    return 1
+  }
+
+  # Validate LOCAL_PORT: must be a non-empty integer
+  if [[ -z "$lp" ]] || ! [[ "$lp" =~ ^[0-9]+$ ]]; then
+    log_error "$(i18n "${cluster_name}: tunnel conf LOCAL_PORT is missing or non-numeric ('${lp}') in $conf_file — re-run install.sh or check SSH connectivity" \
+      "${cluster_name}: 터널 설정 LOCAL_PORT 없거나 숫자 아님 ('${lp}') in $conf_file — install.sh 재실행 또는 SSH 연결 확인")"
+    return 1
+  fi
+
+  # Validate SERVER_IP: must be non-empty (may be hostname or IP)
+  if [[ -z "$sip" ]]; then
+    log_error "$(i18n "${cluster_name}: tunnel conf SERVER_IP is empty in $conf_file — kubeconfig may lack a valid server URL" \
+      "${cluster_name}: 터널 설정 SERVER_IP가 비어 있음 in $conf_file — kubeconfig에 유효한 서버 URL이 없을 수 있습니다")"
+    return 1
+  fi
+
+  # Validate SERVER_PORT: must be a non-empty integer
+  if [[ -z "$sp" ]] || ! [[ "$sp" =~ ^[0-9]+$ ]]; then
+    log_error "$(i18n "${cluster_name}: tunnel conf SERVER_PORT is missing or non-numeric ('${sp}') in $conf_file" \
+      "${cluster_name}: 터널 설정 SERVER_PORT 없거나 숫자 아님 ('${sp}') in $conf_file")"
+    return 1
+  fi
+
+  # Validate BASTION: must be non-empty
+  if [[ -z "$bt" ]]; then
+    log_error "$(i18n "${cluster_name}: tunnel conf BASTION is empty in $conf_file — credentials/.baremetal-init.yaml must contain at least one node with a name" \
+      "${cluster_name}: 터널 설정 BASTION이 비어 있음 in $conf_file — credentials/.baremetal-init.yaml에 name 필드가 있는 노드가 있어야 합니다")"
+    return 1
+  fi
+
+  # Validate PID: must be a non-empty integer
+  if [[ -z "$tpid" ]] || ! [[ "$tpid" =~ ^[0-9]+$ ]]; then
+    log_error "$(i18n "${cluster_name}: tunnel conf PID is missing or non-numeric ('${tpid}') in $conf_file — SSH tunnel may have failed to start" \
+      "${cluster_name}: 터널 설정 PID 없거나 숫자 아님 ('${tpid}') in $conf_file — SSH 터널이 시작되지 않았을 수 있습니다")"
+    return 1
+  fi
+
+  log_info "$(i18n "${cluster_name}: tunnel conf validated (port=${lp}, target=${sip}:${sp}, bastion=${bt}, pid=${tpid})" \
+    "${cluster_name}: 터널 설정 검증 완료 (port=${lp}, target=${sip}:${sp}, bastion=${bt}, pid=${tpid})")"
+  return 0
+}
+
+# verify_api_tunnels_ready: Verify all established SSH tunnels are alive, ports bound,
+# and API servers reachable. Used in --auto mode before steps requiring kubectl/helm.
+# Phase 1: Targeted per-tunnel restart via conf files (avoids full tear-down/rebuild).
+# Phase 2: Verifies each cluster API server is reachable through its tunnel endpoint.
+# Args: repo_dir [max_api_wait_seconds]
+verify_api_tunnels_ready() {
+  local repo_dir="$1" max_api_wait="${2:-120}"
+  local clusters_dir="$repo_dir/_generated/clusters"
+
+  # Phase 1: Targeted per-tunnel liveness check + restart using conf files.
+  # Preferred: conf files available from setup_api_tunnels → restart only dead tunnels.
+  # Fallback: full tear-down/rebuild if conf files unavailable.
+  if [[ -n "$TUNNEL_CONF_DIR" && -d "$TUNNEL_CONF_DIR" ]] && \
+     compgen -G "$TUNNEL_CONF_DIR/*.conf" &>/dev/null; then
+    for conf_file in "$TUNNEL_CONF_DIR"/*.conf; do
+      [[ -f "$conf_file" ]] || continue
+      local lp sip sp bt tpid
+      IFS=: read -r lp sip sp bt tpid < "$conf_file" 2>/dev/null || continue
+      [[ -z "$tpid" || -z "$lp" ]] && continue
+      if ! kill -0 "$tpid" 2>/dev/null; then
+        log_warn "$(i18n "Tunnel localhost:${lp}→${sip}:${sp} (PID $tpid) died — restarting" \
+          "터널 localhost:${lp}→${sip}:${sp} (PID $tpid) 종료됨 — 재시작")"
+        local new_pid
+        new_pid=$(_ssh_tunnel_start "$lp" "$sip" "$sp" "$bt") || {
+          log_error "$(i18n "Failed to restart tunnel localhost:${lp}→${sip}:${sp}" \
+            "터널 재시작 실패: localhost:${lp}→${sip}:${sp}")"
+          return 1
+        }
+        printf '%s:%s:%s:%s:%s\n' "$lp" "$sip" "$sp" "$bt" "$new_pid" > "$conf_file"
+        # Update API_TUNNEL_PIDS: replace old PID with new PID
+        local i
+        for i in "${!API_TUNNEL_PIDS[@]}"; do
+          [[ "${API_TUNNEL_PIDS[$i]}" == "$tpid" ]] && API_TUNNEL_PIDS[$i]="$new_pid"
+        done
+        wait_for_tunnel_port "$lp" "$new_pid" "$(basename "$conf_file" .conf)" 30 || true
+        log_info "$(i18n "Tunnel restarted (localhost:${lp}, PID: $new_pid)" \
+          "터널 재시작됨 (localhost:${lp}, PID: $new_pid)")"
+      fi
+    done
+  else
+    # Fallback: full re-setup when conf files are not available
+    local need_re_setup=false
+    for tpid in "${API_TUNNEL_PIDS[@]}"; do
+      if ! kill -0 "$tpid" 2>/dev/null; then
+        log_warn "$(i18n "SSH tunnel (PID $tpid) died — will re-establish all tunnels" \
+          "SSH 터널 (PID $tpid) 종료됨 — 모든 터널 재수립 예정")"
+        need_re_setup=true
+        break
+      fi
+    done
+    if $need_re_setup; then
+      log_info "$(i18n "Re-establishing SSH tunnels (full re-setup)..." "SSH 터널 전체 재수립 중...")"
+      for kc in "${API_TUNNEL_BACKUPS[@]}"; do
+        [[ -f "${kc}.bak" ]] && mv "${kc}.bak" "$kc"
+      done
+      API_TUNNEL_PIDS=()
+      API_TUNNEL_BACKUPS=()
+      if ! setup_api_tunnels "$repo_dir"; then
+        log_error "$(i18n "Failed to re-establish SSH tunnels — cannot proceed" \
+          "SSH 터널 재수립 실패 — 진행 불가")"
+        return 1
+      fi
+    fi
+  fi
+
+  # Phase 2: Verify API server reachable through each tunnel
+  local all_ready=true
+  for kc in "$clusters_dir"/*/kubeconfig.yaml; do
+    [[ -f "$kc" ]] || continue
+    local cn; cn=$(basename "$(dirname "$kc")")
+    local sv; sv=$(grep 'server:' "$kc" | head -1 | awk '{print $2}' | tr -d '"')
+    local elapsed=0 interval=5 api_ready=false
+
+    log_info "$(i18n "Verifying ${cn} API reachable through tunnel (${sv})..." \
+      "${cn} API 터널 접근 확인 중 (${sv})...")"
+    while [[ $elapsed -lt $max_api_wait ]]; do
+      if curl -sk --connect-timeout 3 "${sv}/healthz" &>/dev/null; then
+        log_info "$(i18n "${cn} API ready (${elapsed}s)" "${cn} API 준비 완료 (${elapsed}초)")"
+        api_ready=true
+        break
+      fi
+      sleep $interval
+      elapsed=$((elapsed + interval))
+      log_info "$(i18n "  ${cn}: still waiting for API (${elapsed}s / ${max_api_wait}s)..." \
+        "  ${cn}: API 대기 중 (${elapsed}초 / ${max_api_wait}초)...")"
+    done
+
+    if ! $api_ready; then
+      log_error "$(i18n "${cn} API not reachable after ${max_api_wait}s — aborting" \
+        "${cn} API ${max_api_wait}초 후에도 접근 불가 — 중단")"
+      all_ready=false
+    fi
+  done
+
+  $all_ready || return 1
+  log_info "$(i18n "All API tunnels verified ready" "모든 API 터널 준비 완료 확인")"
+  return 0
+}
+
+# verify_exit_tunnel_connectivity: Final pre-exit connectivity check — verifies all
+# established tunnels are reachable BEFORE cleanup_api_tunnels kills SSH processes.
+# Designed to be called after bootstrap completes, while SSH tunnels are still alive.
+#
+# Strategy 1 (preferred): `scalex tunnel status --state-file TUNNEL_STATE_FILE`
+#   Reads TUNNEL_STATE_FILE, probes each cluster's endpoint, reports state=connected.
+#   Retries up to max_wait seconds (default 30s) with 5s intervals.
+#
+# Strategy 2 (fallback): Direct port probe via nc/ss against TUNNEL_CONF_DIR entries.
+#   Used when scalex binary is not available or lacks the `tunnel status` subcommand.
+#
+# Non-fatal: logs a warning if connectivity cannot be confirmed, but never aborts the
+# install.  By the time this runs, bootstrap has already succeeded — the install is
+# functionally complete.
+#
+# Usage: verify_exit_tunnel_connectivity [max_wait_seconds]
+verify_exit_tunnel_connectivity() {
+  local max_wait="${1:-30}"
+
+  # Locate scalex binary (prefer release build, fall back to installed copies)
+  local scalex_bin=""
+  local _candidates=(
+    "${REPO_DIR}/scalex-cli/target/release/scalex"
+    "${HOME}/.local/bin/scalex"
+    "${HOME}/.cargo/bin/scalex"
+  )
+  for _c in "${_candidates[@]}"; do
+    if [[ -x "$_c" ]]; then scalex_bin="$_c"; break; fi
+  done
+  if [[ -z "$scalex_bin" ]] && command -v scalex &>/dev/null; then
+    scalex_bin="$(command -v scalex)"
+  fi
+
+  # Nothing to verify if TUNNEL_STATE_FILE does not exist
+  if [[ ! -f "$TUNNEL_STATE_FILE" ]]; then
+    log_info "$(i18n "verify_exit_tunnel_connectivity: no state file — skip" \
+      "verify_exit_tunnel_connectivity: 상태 파일 없음 — 건너뜀")"
+    return 0
+  fi
+
+  # ── Strategy 1: scalex tunnel status ────────────────────────────────────────
+  local _has_tunnel_status=false
+  if [[ -n "$scalex_bin" ]] && \
+     "$scalex_bin" tunnel status --help &>/dev/null 2>&1; then
+    _has_tunnel_status=true
+  fi
+
+  if $_has_tunnel_status; then
+    log_info "$(i18n "Final tunnel connectivity check (scalex tunnel status, up to ${max_wait}s)..." \
+      "최종 터널 연결 확인 (scalex tunnel status, 최대 ${max_wait}초)...")"
+    local elapsed=0 interval=5 _out=""
+    while [[ $elapsed -lt $max_wait ]]; do
+      _out=$("$scalex_bin" tunnel status \
+        --state-file "$TUNNEL_STATE_FILE" \
+        --connect-timeout 2 2>/dev/null) || true
+      if echo "$_out" | grep -q 'state=connected'; then
+        log_info "$(i18n "Exit tunnel connectivity: PASSED (state=connected, ${elapsed}s)" \
+          "종료 터널 연결: 통과 (state=connected, ${elapsed}초)")"
+        return 0
+      fi
+      sleep "$interval"
+      elapsed=$(( elapsed + interval ))
+      log_info "$(i18n "  Tunnel status: ${_out:-pending} — retrying (${elapsed}s/${max_wait}s)..." \
+        "  터널 상태: ${_out:-대기 중} — 재시도 (${elapsed}초/${max_wait}초)...")"
+    done
+    log_warn "$(i18n "Exit tunnel connectivity: tunnels not yet connected after ${max_wait}s (last: ${_out:-no output}) — scalex CLI will auto-tunnel on next use" \
+      "종료 터널 연결: ${max_wait}초 후에도 미연결 (마지막: ${_out:-출력 없음}) — scalex CLI 다음 사용 시 자동 터널")"
+    return 0  # Non-fatal
+  fi
+
+  # ── Strategy 2: direct port probe ───────────────────────────────────────────
+  if [[ -n "$TUNNEL_CONF_DIR" && -d "$TUNNEL_CONF_DIR" ]] && \
+     compgen -G "$TUNNEL_CONF_DIR/*.conf" &>/dev/null; then
+    log_info "$(i18n "Final tunnel connectivity check (port probe, scalex not available)..." \
+      "최종 터널 연결 확인 (포트 프로브, scalex 없음)...")"
+    local _all_ok=true
+    for _conf in "$TUNNEL_CONF_DIR"/*.conf; do
+      [[ -f "$_conf" ]] || continue
+      local _lp _sip _sp _bt _tpid
+      IFS=: read -r _lp _sip _sp _bt _tpid < "$_conf" 2>/dev/null || continue
+      [[ -z "$_lp" || -z "$_tpid" ]] && continue
+      # Verify process is alive
+      if ! kill -0 "$_tpid" 2>/dev/null; then
+        log_warn "$(i18n "Exit check: tunnel PID $_tpid (port $_lp) is not alive" \
+          "종료 확인: 터널 PID $_tpid (포트 $_lp) 비활성")"
+        _all_ok=false
+        continue
+      fi
+      # Verify port is listening (with retry up to max_wait)
+      local _pelapsed=0
+      local _port_ok=false
+      while [[ $_pelapsed -lt $max_wait ]]; do
+        if nc -z localhost "$_lp" 2>/dev/null; then
+          _port_ok=true; break
+        elif command -v ss &>/dev/null && ss -tlnp 2>/dev/null | grep -q ":${_lp} "; then
+          _port_ok=true; break
+        fi
+        sleep 5; _pelapsed=$(( _pelapsed + 5 ))
+      done
+      if $_port_ok; then
+        log_info "$(i18n "Exit check: tunnel port $_lp responding (PID $_tpid)" \
+          "종료 확인: 터널 포트 $_lp 응답 중 (PID $_tpid)")"
+      else
+        log_warn "$(i18n "Exit check: tunnel port $_lp not responding after ${max_wait}s (PID $_tpid)" \
+          "종료 확인: 터널 포트 $_lp ${max_wait}초 후 무응답 (PID $_tpid)")"
+        _all_ok=false
+      fi
+    done
+    if $_all_ok; then
+      log_info "$(i18n "Exit tunnel connectivity: PASSED (all ports responding)" \
+        "종료 터널 연결: 통과 (모든 포트 응답)")"
+    else
+      log_warn "$(i18n "Exit tunnel connectivity: some ports not responding — scalex CLI will auto-tunnel on next use" \
+        "종료 터널 연결: 일부 포트 무응답 — scalex CLI 다음 사용 시 자동 터널")"
+    fi
+    return 0  # Non-fatal
+  fi
+
+  log_info "$(i18n "verify_exit_tunnel_connectivity: no conf files or scalex binary — skip" \
+    "verify_exit_tunnel_connectivity: 설정 파일 또는 scalex 바이너리 없음 — 건너뜀")"
+  return 0
+}
+
+# validate_tunnel_credentials: Pre-flight check for tunnel credentials in --auto mode.
+# Validates SSH key and/or Cloudflare Tunnel credentials exist and are non-placeholder.
+# Exits with code 2 if any required credential is missing or contains a placeholder value.
+# Usage: validate_tunnel_credentials REPO_DIR
+validate_tunnel_credentials() {
+  local repo_dir="$1"
+  local env_file="$repo_dir/credentials/.env"
+  local bm_yaml="$repo_dir/credentials/.baremetal-init.yaml"
+  local cf_json="$repo_dir/credentials/cloudflare-tunnel.json"
+
+  # --- SSH key validation ---
+  # Determine if any node uses key-based auth (sshAuthMode: key)
+  local uses_key_auth=false
+  if [[ -f "$bm_yaml" ]]; then
+    if grep -q 'sshAuthMode:.*key' "$bm_yaml" 2>/dev/null; then
+      uses_key_auth=true
+    fi
+  fi
+
+  if $uses_key_auth; then
+    # Resolve SSH key path from .env
+    local ssh_key="$HOME/.ssh/id_ed25519"
+    if [[ -f "$env_file" ]]; then
+      local key_val; key_val=$(grep '^SSH_KEY_PATH=' "$env_file" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+      # Expand tilde
+      [[ -n "$key_val" ]] && ssh_key="${key_val/#\~/$HOME}"
+    fi
+
+    if [[ ! -f "$ssh_key" ]]; then
+      error_msg \
+        "$(i18n "Missing SSH key credential: SSH_KEY_PATH=$ssh_key" "SSH 키 자격 증명 없음: SSH_KEY_PATH=$ssh_key")" \
+        "$(i18n "SSH key file does not exist — required for key-based tunnel authentication" "SSH 키 파일이 존재하지 않음 — 키 기반 터널 인증에 필요")" \
+        "$(i18n "Generate a key (ssh-keygen -t ed25519) or set SSH_KEY_PATH in credentials/.env to a valid private key path" \
+           "키 생성 (ssh-keygen -t ed25519) 또는 credentials/.env의 SSH_KEY_PATH를 유효한 개인 키 경로로 설정하세요")"
+      exit 2
+    fi
+
+    # Verify the file is a private key (not a placeholder)
+    if ! grep -q 'BEGIN.*PRIVATE KEY' "$ssh_key" 2>/dev/null; then
+      error_msg \
+        "$(i18n "Invalid SSH key credential: SSH_KEY_PATH=$ssh_key" "잘못된 SSH 키 자격 증명: SSH_KEY_PATH=$ssh_key")" \
+        "$(i18n "File exists but does not appear to be a valid SSH private key" "파일은 존재하지만 유효한 SSH 개인 키가 아닙니다")" \
+        "$(i18n "Provide a valid SSH private key at SSH_KEY_PATH in credentials/.env" \
+           "credentials/.env의 SSH_KEY_PATH에 유효한 SSH 개인 키를 제공하세요")"
+      exit 2
+    fi
+    log_info "$(i18n "SSH key credential verified: $ssh_key" "SSH 키 자격 증명 확인: $ssh_key")"
+  fi
+
+  # --- Cloudflare Tunnel credential validation ---
+  # Only validate if cloudflare-tunnel.json is referenced (credentials_file set in secrets.yaml)
+  local secrets_yaml="$repo_dir/credentials/secrets.yaml"
+  local cf_enabled=false
+  if [[ -f "$secrets_yaml" ]] && grep -q 'credentials_file:' "$secrets_yaml" 2>/dev/null; then
+    local cf_path; cf_path=$(grep 'credentials_file:' "$secrets_yaml" | head -1 | awk '{print $2}' | tr -d '"')
+    # Non-empty, non-placeholder path means CF Tunnel is configured
+    if [[ -n "$cf_path" && "$cf_path" != '""' && "$cf_path" != "''" ]]; then
+      cf_enabled=true
+    fi
+  fi
+  # Also treat it as enabled if cloudflare-tunnel.json is present
+  [[ -f "$cf_json" ]] && cf_enabled=true
+
+  if $cf_enabled; then
+    if [[ ! -f "$cf_json" ]]; then
+      error_msg \
+        "$(i18n "Missing Cloudflare Tunnel credential: credentials/cloudflare-tunnel.json" \
+           "Cloudflare Tunnel 자격 증명 없음: credentials/cloudflare-tunnel.json")" \
+        "$(i18n "CF Tunnel is configured (secrets.yaml references it) but the credential file is absent" \
+           "CF Tunnel이 구성되었지만 (secrets.yaml 참조) 자격 증명 파일이 없습니다")" \
+        "$(i18n "Download cloudflare-tunnel.json from the Cloudflare dashboard and place it at credentials/cloudflare-tunnel.json" \
+           "Cloudflare 대시보드에서 cloudflare-tunnel.json을 다운로드하여 credentials/cloudflare-tunnel.json에 배치하세요")"
+      exit 2
+    fi
+
+    # Validate required fields are present and non-placeholder
+    local cf_account cf_secret cf_tunnel_id
+    cf_account=$(python3 -c "import json,sys; d=json.load(open('$cf_json')); print(d.get('AccountTag',''))" 2>/dev/null || true)
+    cf_secret=$(python3 -c "import json,sys; d=json.load(open('$cf_json')); print(d.get('TunnelSecret',''))" 2>/dev/null || true)
+    cf_tunnel_id=$(python3 -c "import json,sys; d=json.load(open('$cf_json')); print(d.get('TunnelID',''))" 2>/dev/null || true)
+
+    local -A _cf_fields
+    _cf_fields=( ["AccountTag"]="$cf_account" ["TunnelSecret"]="$cf_secret" ["TunnelID"]="$cf_tunnel_id" )
+    local _cf_field_order=( "AccountTag" "TunnelSecret" "TunnelID" )
+    local _fn _fv
+    for _fn in "${_cf_field_order[@]}"; do
+      _fv="${_cf_fields[$_fn]}"
+      if [[ -z "$_fv" ]] || echo "$_fv" | grep -qiE '<YOUR_|changeme|placeholder'; then
+        error_msg \
+          "$(i18n "Missing or invalid Cloudflare Tunnel credential: $_fn in credentials/cloudflare-tunnel.json" \
+             "Cloudflare Tunnel 자격 증명 없음/잘못됨: credentials/cloudflare-tunnel.json의 $_fn")" \
+          "$(i18n "Field '$_fn' is empty or contains a placeholder value" \
+             "'$_fn' 필드가 비어 있거나 플레이스홀더 값을 포함합니다")" \
+          "$(i18n "Edit credentials/cloudflare-tunnel.json and set a real value for '$_fn'" \
+             "credentials/cloudflare-tunnel.json을 편집하여 '$_fn'에 실제 값을 설정하세요")"
+        exit 2
+      fi
+    done
+    log_info "$(i18n "Cloudflare Tunnel credentials verified (TunnelID: $cf_tunnel_id)" \
+      "Cloudflare Tunnel 자격 증명 확인 완료 (TunnelID: $cf_tunnel_id)")"
+  fi
+
+  return 0
+}
+
+# write_tunnel_config: Record tunnel transport details to TUNNEL_STATE_FILE after
+# successful tunnel establishment. Idempotent — updates an existing cluster entry or
+# appends a new one. Called by setup_api_tunnels (SSH bastion) and cleanup_api_tunnels
+# Phase 2 (CF Tunnel domain rewrite).
+#
+# Args: cluster_name transport_type endpoint auth_method
+#   transport_type : "ssh_bastion" | "cf_tunnel"
+#   endpoint       : e.g. "localhost:16443" or "https://api.cluster.example.com"
+#   auth_method    : "ssh_key" | "ssh_default_key" | "cf_token"
+#
+# File format (YAML):
+#   clusters:
+#     <cluster_name>:
+#       transport_type: ssh_bastion
+#       endpoint: "localhost:16443"
+#       auth_method: ssh_key
+#       established_at: "2026-03-18T12:00:00Z"
+write_tunnel_config() {
+  local cluster_name="$1" transport_type="$2" endpoint="$3" auth_method="$4"
+  local ts; ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')
+
+  # Validate required args — produce actionable error if missing
+  if [[ -z "$cluster_name" || -z "$transport_type" || -z "$endpoint" || -z "$auth_method" ]]; then
+    error_msg \
+      "$(i18n "write_tunnel_config: missing required argument" "write_tunnel_config: 필수 인수 누락")" \
+      "$(i18n "cluster_name, transport_type, endpoint, auth_method are all required" "cluster_name, transport_type, endpoint, auth_method 모두 필수")" \
+      "$(i18n "Check install.sh for the caller and ensure all 4 args are supplied" "install.sh 호출부를 확인하고 4개 인수를 모두 제공하세요")"
+    return 1
+  fi
+
+  # Validate transport_type is one of the explicit allowed values
+  case "$transport_type" in
+    ssh_bastion|cf_tunnel) ;;
+    *)
+      error_msg \
+        "$(i18n "write_tunnel_config: unknown transport_type '${transport_type}'" "write_tunnel_config: 알 수 없는 transport_type '${transport_type}'")" \
+        "$(i18n "transport_type must be 'ssh_bastion' or 'cf_tunnel' — never silently inferred" "transport_type은 'ssh_bastion' 또는 'cf_tunnel'이어야 합니다 — 묵시적 추론 불가")" \
+        "$(i18n "Pass the explicit transport_type when calling write_tunnel_config" "write_tunnel_config 호출 시 transport_type을 명시적으로 전달하세요")"
+      return 1
+      ;;
+  esac
+
+  # Ensure parent directory exists and is secure
+  mkdir -p "$(dirname "$TUNNEL_STATE_FILE")"
+  chmod 700 "$(dirname "$TUNNEL_STATE_FILE")" 2>/dev/null || true
+
+  # Create the file with a header if it does not exist
+  if [[ ! -f "$TUNNEL_STATE_FILE" ]]; then
+    cat > "$TUNNEL_STATE_FILE" << 'TSEOF'
+# ScaleX tunnel state — written by install.sh --auto
+# transport_type: ssh_bastion | cf_tunnel
+# auth_method:    ssh_key | ssh_default_key | cf_token
+---
+clusters: {}
+TSEOF
+    chmod 600 "$TUNNEL_STATE_FILE"
+  fi
+
+  # Idempotent YAML update via Python: upsert cluster entry under clusters:
+  # Uses PyYAML if available, otherwise falls back to a safe awk-based rewrite.
+  if python3 -c "import yaml" 2>/dev/null; then
+    python3 - "$TUNNEL_STATE_FILE" "$cluster_name" "$transport_type" "$endpoint" "$auth_method" "$ts" << 'PYEOF'
+import sys, yaml, os
+
+state_file, cluster_name, transport_type, endpoint, auth_method, ts = sys.argv[1:]
+
+with open(state_file) as f:
+    doc = yaml.safe_load(f) or {}
+
+if 'clusters' not in doc or not isinstance(doc['clusters'], dict):
+    doc['clusters'] = {}
+
+doc['clusters'][cluster_name] = {
+    'transport_type': transport_type,
+    'endpoint': endpoint,
+    'auth_method': auth_method,
+    'established_at': ts,
+}
+
+# Write atomically via a temp file in the same directory
+tmp = state_file + '.tmp'
+with open(tmp, 'w') as f:
+    f.write("# ScaleX tunnel state — written by install.sh --auto\n")
+    f.write("# transport_type: ssh_bastion | cf_tunnel\n")
+    f.write("# auth_method:    ssh_key | ssh_default_key | cf_token\n")
+    f.write("---\n")
+    yaml.dump(doc, f, default_flow_style=False, sort_keys=True)
+os.chmod(tmp, 0o600)
+os.replace(tmp, state_file)
+PYEOF
+    if [[ $? -ne 0 ]]; then
+      error_msg \
+        "$(i18n "Failed to write tunnel state for cluster '${cluster_name}'" "클러스터 '${cluster_name}' 터널 상태 쓰기 실패")" \
+        "$(i18n "Python YAML write to ${TUNNEL_STATE_FILE} failed" "Python YAML을 ${TUNNEL_STATE_FILE}에 쓰기 실패")" \
+        "$(i18n "Check disk space and permissions on $(dirname "$TUNNEL_STATE_FILE")" "$(dirname "$TUNNEL_STATE_FILE") 의 디스크 공간과 권한을 확인하세요")"
+      return 1
+    fi
+  else
+    # Fallback: append a new cluster block if the cluster is not already present.
+    # This avoids duplicates on re-run while keeping the file parseable.
+    if grep -q "^  ${cluster_name}:" "$TUNNEL_STATE_FILE" 2>/dev/null; then
+      # Cluster already present — replace its 4 fields using sed (line-by-line safe update)
+      # We use a unique marker approach: remove the old block then re-append.
+      python3 - "$TUNNEL_STATE_FILE" "$cluster_name" "$transport_type" "$endpoint" "$auth_method" "$ts" << 'SEDEOF' 2>/dev/null || true
+import sys, re
+
+state_file, cluster_name, transport_type, endpoint, auth_method, ts = sys.argv[1:]
+with open(state_file) as f:
+    content = f.read()
+
+# Remove the existing cluster block (4 lines under "  cluster_name:")
+block_re = re.compile(
+    r'^  ' + re.escape(cluster_name) + r':.*?\n(?:    \S.*?\n){0,6}',
+    re.MULTILINE
+)
+content = block_re.sub('', content)
+
+new_block = (
+    f"  {cluster_name}:\n"
+    f"    transport_type: {transport_type}\n"
+    f"    endpoint: \"{endpoint}\"\n"
+    f"    auth_method: {auth_method}\n"
+    f"    established_at: \"{ts}\"\n"
+)
+# Insert before the final newline of the clusters: section
+if 'clusters: {}' in content:
+    content = content.replace('clusters: {}', f'clusters:\n{new_block}')
+else:
+    content = content.rstrip('\n') + '\n' + new_block
+
+with open(state_file + '.tmp', 'w') as f:
+    f.write(content)
+import os; os.chmod(state_file + '.tmp', 0o600); os.replace(state_file + '.tmp', state_file)
+SEDEOF
+    else
+      # Append new cluster block at end of file
+      {
+        printf '  %s:\n' "$cluster_name"
+        printf '    transport_type: %s\n' "$transport_type"
+        printf '    endpoint: "%s"\n' "$endpoint"
+        printf '    auth_method: %s\n' "$auth_method"
+        printf '    established_at: "%s"\n' "$ts"
+      } >> "$TUNNEL_STATE_FILE"
+      chmod 600 "$TUNNEL_STATE_FILE"
+    fi
+  fi
+
+  log_info "$(i18n "Tunnel config written: ${cluster_name} transport=${transport_type} endpoint=${endpoint} auth=${auth_method}" \
+    "터널 설정 저장됨: ${cluster_name} transport=${transport_type} endpoint=${endpoint} auth=${auth_method}")"
+  log_info "$(i18n "  → ${TUNNEL_STATE_FILE}" "  → ${TUNNEL_STATE_FILE}")"
+}
+
 # Sets up SSH port-forward tunnels through a bastion node to reach cluster API servers.
 # Only needed when installer can't directly reach VM IPs (e.g., remote via Tailscale).
+# Transport selection is EXPLICIT:
+#   - If api_endpoint configured AND reachable  → CF Tunnel transport (log + skip SSH tunnel)
+#   - If api_endpoint configured but unreachable → SSH bastion transport (with warning)
+#   - If no api_endpoint configured             → SSH bastion transport
+#   - Idempotent: if a live tunnel already exists for a cluster, it is reused
 setup_api_tunnels() {
   local repo_dir="$1"
   local clusters_dir="$repo_dir/_generated/clusters"
@@ -256,53 +987,243 @@ setup_api_tunnels() {
     return 0
   fi
 
+  # Determine SSH auth_method: ssh_key (custom path from .env) or ssh_default_key
+  local ssh_auth_method="ssh_default_key"
+  local env_file="$repo_dir/credentials/.env"
+  if [[ -f "$env_file" ]]; then
+    local _key_val; _key_val=$(grep '^SSH_KEY_PATH=' "$env_file" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+    [[ -n "$_key_val" ]] && ssh_auth_method="ssh_key"
+  fi
+
+  # Set up tunnel conf dir up front so it's available for idempotency checks
+  TUNNEL_CONF_DIR="${TUNNEL_CONF_DIR:-$INSTALLER_DIR/tunnels}"
+  mkdir -p "$TUNNEL_CONF_DIR"
+
+  # Extract api_endpoint mappings from k8s-clusters.yaml for explicit transport selection
+  local api_endpoints_map=""
+  local _clusters_yaml="$repo_dir/config/k8s-clusters.yaml"
+  if [[ -f "$_clusters_yaml" ]]; then
+    api_endpoints_map=$(python3 -c "
+import yaml, sys
+try:
+    with open('$_clusters_yaml') as f:
+        data = yaml.safe_load(f)
+    for c in data.get('config', {}).get('clusters', []):
+        name = c.get('cluster_name', '')
+        ep = c.get('api_endpoint', '')
+        if name and ep:
+            print(f'{name} {ep}')
+except: pass
+" 2>/dev/null || true)
+  fi
+
   for kc in "$clusters_dir"/*/kubeconfig.yaml; do
     [[ -f "$kc" ]] || continue
     local cluster_name; cluster_name=$(basename "$(dirname "$kc")")
 
-    # Extract server URL from kubeconfig
+    # --- Idempotency: restore kubeconfig if stuck at localhost URL from crashed run ---
+    # If kubeconfig server URL is localhost (i.e., a previous run rewrote it but cleanup
+    # didn't run), restore from .bak to get the real CP IP before proceeding.
+    local _raw_url; _raw_url=$(grep 'server:' "$kc" | head -1 | awk '{print $2}' | tr -d '"')
+    local _raw_ip; _raw_ip=$(echo "$_raw_url" | sed 's|https://||; s|:.*||')
+    if [[ "$_raw_ip" == "127.0.0.1" || "$_raw_ip" == "localhost" ]]; then
+      if [[ -f "${kc}.bak" ]]; then
+        log_info "$(i18n "${cluster_name}: kubeconfig has stale tunnel URL — restoring from backup for re-run" \
+          "${cluster_name}: kubeconfig에 낡은 터널 URL — 재실행을 위해 백업에서 복원")"
+        cp "${kc}.bak" "$kc"
+        rm -f "${kc}.bak"
+      else
+        # No backup — try SDI state for real IP
+        local _sdi_ip; _sdi_ip=$(python3 -c "
+import json, sys
+try:
+    with open('${repo_dir}/_generated/sdi/sdi-state.json') as f:
+        pools = json.load(f)
+    if not isinstance(pools, list): pools = [pools]
+    for pool in pools:
+        for node in pool.get('nodes', []):
+            if node.get('node_name','').startswith('${cluster_name}-cp'):
+                print(node['ip']); sys.exit(0)
+except: pass
+" 2>/dev/null || true)
+        if [[ -n "$_sdi_ip" ]]; then
+          log_info "$(i18n "${cluster_name}: kubeconfig has stale tunnel URL — rewriting to SDI IP ${_sdi_ip}" \
+            "${cluster_name}: kubeconfig에 낡은 터널 URL — SDI IP ${_sdi_ip}로 재작성")"
+          sed -i "s|${_raw_url}|https://${_sdi_ip}:6443|g" "$kc"
+        else
+          log_warn "$(i18n "${cluster_name}: kubeconfig has stale tunnel URL (localhost) and no backup — tunnel may target wrong host" \
+            "${cluster_name}: kubeconfig에 낡은 터널 URL이 있고 백업도 없음 — 터널이 잘못된 호스트를 대상으로 할 수 있음")"
+        fi
+      fi
+    fi
+
+    # Extract server URL from kubeconfig (now fresh after idempotency restore)
     local server_url; server_url=$(grep 'server:' "$kc" | head -1 | awk '{print $2}' | tr -d '"')
     local server_ip; server_ip=$(echo "$server_url" | sed 's|https://||; s|:.*||')
     local server_port; server_port=$(echo "$server_url" | sed 's|.*:||')
     [[ -z "$server_port" ]] && server_port=6443
 
-    # Check direct connectivity first
-    if curl -sk --connect-timeout 3 "${server_url}/healthz" &>/dev/null; then
-      log_info "$(i18n "${cluster_name}: API directly accessible — tunnel not needed" "${cluster_name}: API 직접 접근 가능 — 터널 불필요")"
-      continue
+    # --- Explicit transport selection ---
+    # Look up api_endpoint for this cluster (from k8s-clusters.yaml)
+    local cluster_api_endpoint=""
+    if [[ -n "$api_endpoints_map" ]]; then
+      cluster_api_endpoint=$(echo "$api_endpoints_map" | awk -v cn="$cluster_name" '$1==cn{print $2; exit}')
     fi
 
-    # Set up SSH tunnel: localhost:<port> → <vm-ip>:6443 via bastion
-    # Use background ssh -N (not -f) for reliable PID capture and set -e compatibility
-    log_info "$(i18n "${cluster_name}: SSH tunnel setup (localhost:${local_port} → ${server_ip}:${server_port} via ${bastion_target})" "${cluster_name}: SSH 터널 설정 (localhost:${local_port} → ${server_ip}:${server_port} via ${bastion_target})")"
-    ssh -N \
-      -o StrictHostKeyChecking=no \
-      -o BatchMode=yes \
-      -o ExitOnForwardFailure=yes \
-      -o ServerAliveInterval=30 \
-      -L "${local_port}:${server_ip}:${server_port}" \
-      "$bastion_target" 2>/dev/null &
-    local tpid=$!
-    sleep 1
+    if [[ -n "$cluster_api_endpoint" ]]; then
+      # Explicit CF Tunnel transport selected (api_endpoint configured in k8s-clusters.yaml)
+      if curl -sk --connect-timeout 5 "${cluster_api_endpoint}/healthz" &>/dev/null; then
+        log_info "$(i18n "${cluster_name}: TRANSPORT=cf_tunnel (api_endpoint=${cluster_api_endpoint}) — CF Tunnel reachable, no SSH bastion needed" \
+          "${cluster_name}: TRANSPORT=cf_tunnel (api_endpoint=${cluster_api_endpoint}) — CF 터널 접근 가능, SSH bastion 불필요")"
+        continue
+      else
+        log_info "$(i18n "${cluster_name}: TRANSPORT=ssh_bastion — api_endpoint ${cluster_api_endpoint} configured but not yet reachable (CF Tunnel not deployed yet); falling back to SSH bastion" \
+          "${cluster_name}: TRANSPORT=ssh_bastion — api_endpoint ${cluster_api_endpoint} 설정됐지만 아직 접근 불가 (CF 터널 미배포); SSH bastion으로 폴백")"
+      fi
+    else
+      # Explicit SSH bastion transport (no api_endpoint configured)
+      # Check direct connectivity first (same-LAN scenario)
+      if curl -sk --connect-timeout 3 "${server_url}/healthz" &>/dev/null; then
+        log_info "$(i18n "${cluster_name}: TRANSPORT=direct (API reachable at ${server_url}) — SSH bastion not needed" \
+          "${cluster_name}: TRANSPORT=direct (API ${server_url}에서 접근 가능) — SSH bastion 불필요")"
+        continue
+      fi
+      log_info "$(i18n "${cluster_name}: TRANSPORT=ssh_bastion (no api_endpoint configured; direct API unreachable)" \
+        "${cluster_name}: TRANSPORT=ssh_bastion (api_endpoint 미설정; 직접 API 접근 불가)")"
+    fi
 
-    # Verify tunnel process is still alive (ExitOnForwardFailure kills it on bind failure)
-    if ! kill -0 "$tpid" 2>/dev/null; then
-      log_error "$(i18n "${cluster_name}: SSH tunnel setup failed (PID $tpid terminated)" "${cluster_name}: SSH 터널 설정 실패 (PID $tpid 종료됨)")"
+    # --- Idempotency: reuse existing live tunnel if available ---
+    local _conf_file="$TUNNEL_CONF_DIR/${cluster_name}.conf"
+    if [[ -f "$_conf_file" ]]; then
+      local _elp _esip _esp _ebt _epid
+      IFS=: read -r _elp _esip _esp _ebt _epid < "$_conf_file" 2>/dev/null || true
+      if [[ -n "$_epid" ]] && kill -0 "$_epid" 2>/dev/null && \
+         [[ "$_esip" == "$server_ip" && "$_esp" == "$server_port" ]]; then
+        log_info "$(i18n "${cluster_name}: SSH tunnel already running (PID=${_epid}, localhost:${_elp} → ${_esip}:${_esp}) — reusing" \
+          "${cluster_name}: SSH 터널 이미 실행 중 (PID=${_epid}, localhost:${_elp} → ${_esip}:${_esp}) — 재사용")"
+        API_TUNNEL_PIDS+=("$_epid")
+        local_port="$_elp"
+        # Ensure kubeconfig points to the running tunnel
+        if ! grep -q "localhost:${_elp}" "$kc" 2>/dev/null; then
+          cp "$kc" "${kc}.bak"
+          API_TUNNEL_BACKUPS+=("$kc")
+          sed -i "s|${server_url}|https://localhost:${_elp}|g" "$kc"
+        else
+          # Kubeconfig already points to tunnel — still track for cleanup
+          [[ ! -f "${kc}.bak" ]] && cp "$kc" "${kc}.bak"
+          API_TUNNEL_BACKUPS+=("$kc")
+        fi
+        write_tunnel_config "$cluster_name" "ssh_bastion" "localhost:${_elp}" "$ssh_auth_method"
+        local_port=$(( _elp + 1 ))
+        continue
+      fi
+    fi
+
+    # --- Find next available port (skip ports already in use) ---
+    while nc -z localhost "$local_port" 2>/dev/null || \
+          (command -v ss &>/dev/null && ss -tlnp 2>/dev/null | grep -q ":${local_port} "); do
+      log_info "$(i18n "Port ${local_port} already in use — trying $((local_port + 1))" \
+        "포트 ${local_port} 이미 사용 중 — $((local_port + 1)) 시도")"
+      local_port=$((local_port + 1))
+    done
+
+    # Set up SSH tunnel: localhost:<port> → <vm-ip>:6443 via bastion
+    # Transport is EXPLICIT: ssh_bastion (logged above before this point)
+    log_info "$(i18n "${cluster_name}: establishing SSH bastion tunnel (localhost:${local_port} → ${server_ip}:${server_port} via ${bastion_target})" \
+      "${cluster_name}: SSH bastion 터널 설정 중 (localhost:${local_port} → ${server_ip}:${server_port} via ${bastion_target})")"
+    local tpid
+    tpid=$(_ssh_tunnel_start "$local_port" "$server_ip" "$server_port" "$bastion_target") || {
+      log_error "$(i18n "${cluster_name}: SSH tunnel failed after retries (localhost:${local_port} → ${server_ip}:${server_port})" \
+        "${cluster_name}: SSH 터널 재시도 후 실패 (localhost:${local_port} → ${server_ip}:${server_port})")"
+      return 1
+    }
+
+    # Wait for tunnel port to be bound (more reliable than static sleep)
+    if ! wait_for_tunnel_port "$local_port" "$tpid" "$cluster_name" 30; then
+      log_error "$(i18n "${cluster_name}: SSH tunnel failed to bind port ${local_port}" \
+        "${cluster_name}: SSH 터널 포트 ${local_port} 바인딩 실패")"
+      kill "$tpid" 2>/dev/null || true
       return 1
     fi
     API_TUNNEL_PIDS+=("$tpid")
+
+    # Persist tunnel config for watchdog (LOCAL_PORT:SERVER_IP:SERVER_PORT:BASTION:PID)
+    # Watchdog reads these files to detect and restart dead tunnels automatically.
+    printf '%s:%s:%s:%s:%s\n' "$local_port" "$server_ip" "$server_port" "$bastion_target" "$tpid" \
+      > "$TUNNEL_CONF_DIR/${cluster_name}.conf"
+    # Validate the written conf file immediately — catch partial writes or empty fields early
+    validate_tunnel_conf "$TUNNEL_CONF_DIR/${cluster_name}.conf" "$cluster_name" || {
+      log_error "$(i18n "${cluster_name}: tunnel conf validation failed — aborting tunnel setup for this cluster" \
+        "${cluster_name}: 터널 설정 검증 실패 — 이 클러스터의 터널 설정 중단")"
+      kill "$tpid" 2>/dev/null || true
+      return 1
+    }
 
     # Backup kubeconfig and rewrite server URL to tunnel
     cp "$kc" "${kc}.bak"
     API_TUNNEL_BACKUPS+=("$kc")
     sed -i "s|${server_url}|https://localhost:${local_port}|g" "$kc"
-    log_info "${cluster_name}: kubeconfig → localhost:${local_port}"
+
+    # Verify API is reachable through tunnel (wait up to 60s, restart tunnel on death)
+    local api_ok=false
+    for _try in $(seq 1 12); do
+      if curl -sk --connect-timeout 3 "https://localhost:${local_port}/healthz" &>/dev/null; then
+        api_ok=true
+        break
+      fi
+      # Check tunnel is still alive; use _ssh_tunnel_start() for reliable restart
+      if ! kill -0 "$tpid" 2>/dev/null; then
+        log_warn "$(i18n "${cluster_name}: tunnel died during API verify — restarting..." "${cluster_name}: API 확인 중 터널 종료 — 재시작...")"
+        tpid=$(_ssh_tunnel_start "$local_port" "$server_ip" "$server_port" "$bastion_target") || {
+          log_error "$(i18n "${cluster_name}: tunnel restart failed" "${cluster_name}: 터널 재시작 실패")"
+          break
+        }
+        API_TUNNEL_PIDS[-1]="$tpid"
+        # Update conf file with new PID
+        printf '%s:%s:%s:%s:%s\n' "$local_port" "$server_ip" "$server_port" "$bastion_target" "$tpid" \
+          > "$TUNNEL_CONF_DIR/${cluster_name}.conf"
+        # Validate updated conf — warn on failure but do not abort (api_ok=false will surface it)
+        validate_tunnel_conf "$TUNNEL_CONF_DIR/${cluster_name}.conf" "$cluster_name" || \
+          log_warn "$(i18n "${cluster_name}: restarted tunnel conf validation failed — watchdog may not be able to manage this tunnel" \
+            "${cluster_name}: 재시작된 터널 설정 검증 실패 — watchdog이 이 터널을 관리하지 못할 수 있습니다")"
+        # Log if port doesn't bind but don't abort here — api_ok=false will surface the failure
+        wait_for_tunnel_port "$local_port" "$tpid" "$cluster_name" 20 || \
+          log_warn "$(i18n "${cluster_name}: restarted tunnel port ${local_port} not bound — API check will likely fail" \
+            "${cluster_name}: 재시작된 터널 포트 ${local_port} 바인딩 안됨 — API 확인 실패 예상")"
+      fi
+      sleep 3
+    done
+    if $api_ok; then
+      log_info "${cluster_name}: kubeconfig → localhost:${local_port} (API verified)"
+    else
+      log_warn "$(i18n "${cluster_name}: API not reachable through tunnel — continuing anyway" "${cluster_name}: 터널을 통한 API 접근 불가 — 계속 진행")"
+      log_info "${cluster_name}: kubeconfig → localhost:${local_port}"
+    fi
+
+    # Record established SSH bastion tunnel to persistent state file.
+    # scalex dash --headless reads this file to discover active tunnels.
+    # Called after port is bound (not on direct-access skip above) so the
+    # entry is only written when a tunnel was actually established.
+    write_tunnel_config \
+      "$cluster_name" \
+      "ssh_bastion" \
+      "localhost:${local_port}" \
+      "$ssh_auth_method"
 
     local_port=$((local_port + 1))
   done
+
+  # Start background watchdog to keep tunnels alive during long operations
+  # (cluster init ~25min, bootstrap ~15min — tunnels may die without watchdog)
+  if [[ ${#API_TUNNEL_PIDS[@]} -gt 0 ]]; then
+    start_tunnel_watchdog
+  fi
 }
 
 cleanup_api_tunnels() {
+  # Stop watchdog first (before killing tunnel PIDs it monitors)
+  stop_tunnel_watchdog
+
   # Kill tunnel processes (bootstrap is done, scalex CLI will auto-tunnel when needed)
   for pid in "${API_TUNNEL_PIDS[@]}"; do
     kill "$pid" 2>/dev/null || true
@@ -325,10 +1246,11 @@ cleanup_api_tunnels() {
       if [[ "$cp_ip" == "127.0.0.1" ]]; then
         # Backup still has localhost — look up actual CP IP from SDI state
         local cluster_name; cluster_name=$(basename "$(dirname "$kc")")
+        local _sdi_state_path="${REPO_DIR:-.}/_generated/sdi/sdi-state.json"
         local sdi_ip; sdi_ip=$(python3 -c "
 import json, sys
 try:
-    with open('_generated/sdi/sdi-state.json') as f:
+    with open('${_sdi_state_path}') as f:
         pools = json.load(f)
     if not isinstance(pools, list): pools = [pools]
     for pool in pools:
@@ -360,46 +1282,69 @@ except: pass
   # --- Phase 2: Rewrite kubeconfigs with domain URLs (if api_endpoint configured) ---
   # When Cloudflare Tunnel provides stable domain URLs, kubeconfigs should use them
   # so they work from any network without SSH tunnels.
-  local clusters_yaml="config/k8s-clusters.yaml"
+  local _repo_root="${REPO_DIR:-.}"
+  local clusters_yaml="${_repo_root}/config/k8s-clusters.yaml"
   if [[ -f "$clusters_yaml" ]]; then
-    local clusters_dir="_generated/clusters"
-    # Extract cluster_name + api_endpoint pairs from YAML
-    local current_cluster="" current_endpoint=""
-    while IFS= read -r line; do
-      local trimmed; trimmed=$(echo "$line" | sed 's/^[[:space:]]*//')
-      if [[ "$trimmed" == cluster_name:* ]]; then
-        current_cluster=$(echo "$trimmed" | sed 's/cluster_name:[[:space:]]*//; s/"//g; s/'\''//g')
-        current_endpoint=""
-      elif [[ "$trimmed" == api_endpoint:* ]]; then
-        current_endpoint=$(echo "$trimmed" | sed 's/api_endpoint:[[:space:]]*//; s/"//g; s/'\''//g')
-      fi
+    local clusters_dir="${_repo_root}/_generated/clusters"
+    # Extract cluster_name + api_endpoint pairs using Python (safe YAML parsing)
+    local pairs; pairs=$(python3 -c "
+import yaml, sys
+try:
+    with open('$clusters_yaml') as f:
+        data = yaml.safe_load(f)
+    for c in data.get('config', {}).get('clusters', []):
+        name = c.get('cluster_name', '')
+        ep = c.get('api_endpoint', '')
+        if name and ep:
+            print(f'{name} {ep}')
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+" 2>/dev/null)
+    while IFS=' ' read -r current_cluster current_endpoint; do
+      [[ -z "$current_cluster" || -z "$current_endpoint" ]] && continue
+      local kc_path="${clusters_dir}/${current_cluster}/kubeconfig.yaml"
+      if [[ -f "$kc_path" ]]; then
+        # Save original kubeconfig with VM IP for fallback
+        cp "$kc_path" "${kc_path}.original"
 
-      # When we have both, process the pair
-      if [[ -n "$current_cluster" && -n "$current_endpoint" ]]; then
-        local kc_path="${clusters_dir}/${current_cluster}/kubeconfig.yaml"
-        if [[ -f "$kc_path" ]]; then
-          # Save original kubeconfig with VM IP for fallback
-          cp "$kc_path" "${kc_path}.original"
-
-          # Probe domain URL (retry up to 60s — CF Tunnel needs ArgoCD sync time)
-          log_info "$(i18n "Probing domain endpoint for ${current_cluster}: ${current_endpoint}" \
-            "${current_cluster} 도메인 엔드포인트 확인 중: ${current_endpoint}")"
-          if curl -sk --connect-timeout 5 --retry 6 --retry-delay 5 --retry-max-time 60 \
-            "${current_endpoint}/healthz" >/dev/null 2>&1; then
-            # Rewrite kubeconfig server field to domain URL
-            local current_url; current_url=$(grep 'server:' "$kc_path" | head -1 | awk '{print $2}' | tr -d '"')
-            sed -i "s|${current_url}|${current_endpoint}|g" "$kc_path"
-            log_info "$(i18n "kubeconfig ${current_cluster}: server → ${current_endpoint}" \
-              "kubeconfig ${current_cluster}: server → ${current_endpoint}")"
-          else
-            log_warn "$(i18n "Domain endpoint unreachable for ${current_cluster} — keeping CP IP" \
-              "${current_cluster} 도메인 엔드포인트 접근 불가 — CP IP 유지")"
-          fi
+        # Probe domain URL — CF Tunnel needs time for ArgoCD to sync the cloudflared deployment.
+        # Default: 180s (36 retries × 5s). Override with SCALEX_CF_TUNNEL_WAIT env var.
+        local _cf_wait="${SCALEX_CF_TUNNEL_WAIT:-180}"
+        local _cf_retries=$(( (_cf_wait + 4) / 5 ))  # ceil(wait/5)
+        log_info "$(i18n "Probing domain endpoint for ${current_cluster}: ${current_endpoint} (up to ${_cf_wait}s)" \
+          "${current_cluster} 도메인 엔드포인트 확인 중: ${current_endpoint} (최대 ${_cf_wait}초)")"
+        # Determine CF Tunnel auth_method: cf_token (credentials.json present) or cf_token_missing
+        local cf_auth_method="cf_token"
+        if [[ ! -f "credentials/cloudflare-tunnel.json" ]]; then
+          cf_auth_method="cf_token_missing"
+          error_msg \
+            "$(i18n "CF Tunnel credentials not found for ${current_cluster}" "CF 터널 자격증명 없음: ${current_cluster}")" \
+            "$(i18n "credentials/cloudflare-tunnel.json is required for CF Tunnel auth" "CF 터널 인증에 credentials/cloudflare-tunnel.json이 필요합니다")" \
+            "$(i18n "Run: scalex secrets apply or copy credentials/cloudflare-tunnel.json from your CF dashboard" "실행: scalex secrets apply 또는 CF 대시보드에서 credentials/cloudflare-tunnel.json 복사")"
         fi
-        current_cluster=""
-        current_endpoint=""
+
+        if curl -sk --connect-timeout 5 --retry "$_cf_retries" --retry-delay 5 \
+          --retry-max-time "$_cf_wait" \
+          "${current_endpoint}/healthz" >/dev/null 2>&1; then
+          # Rewrite kubeconfig server field to domain URL
+          local current_url; current_url=$(grep 'server:' "$kc_path" | head -1 | awk '{print $2}' | tr -d '"')
+          sed -i "s|${current_url}|${current_endpoint}|g" "$kc_path"
+          log_info "$(i18n "kubeconfig ${current_cluster}: server → ${current_endpoint}" \
+            "kubeconfig ${current_cluster}: server → ${current_endpoint}")"
+
+          # Record CF Tunnel state for scalex CLI (overrides any prior ssh_bastion entry
+          # for this cluster — CF Tunnel is the preferred persistent transport).
+          write_tunnel_config \
+            "$current_cluster" \
+            "cf_tunnel" \
+            "$current_endpoint" \
+            "$cf_auth_method"
+        else
+          log_warn "$(i18n "Domain endpoint unreachable for ${current_cluster} — keeping CP IP" \
+            "${current_cluster} 도메인 엔드포인트 접근 불가 — CP IP 유지")"
+        fi
       fi
-    done < "$clusters_yaml"
+    done <<< "$pairs"
   fi
 }
 
@@ -451,7 +1396,9 @@ generate_ssh_config() {
         config_block+="    User $user"$'\n'
         [[ "$auth_mode" == "key" ]] && config_block+="    IdentityFile $ssh_key"$'\n'
         [[ -n "$via" ]] && config_block+="    ProxyJump $via"$'\n'
-        config_block+="    StrictHostKeyChecking no"$'\n'$'\n'
+        config_block+="    StrictHostKeyChecking no"$'\n'
+        config_block+="    ServerAliveInterval 30"$'\n'
+        config_block+="    ServerAliveCountMax 10"$'\n'$'\n'
       fi
       name="${BASH_REMATCH[1]}"
       ip="" reachable_ip="" user="" auth_mode="" via=""
@@ -1318,6 +2265,11 @@ phase_provision() {
   if [[ -d "$REPO_DIR/scalex-cli" ]]; then
     (cd "$REPO_DIR/scalex-cli" && cargo build --release 2>&1 | tail -3) || {
       error_msg "$(i18n "scalex CLI build failed" "scalex CLI 빌드 실패")" "$(i18n "Rust compilation error" "Rust 컴파일 오류")" "$(i18n "Check cargo build logs" "cargo build 로그를 확인하세요")"
+      # In auto mode: scalex CLI is required for all provisioning steps — fail fast with non-zero exit
+      if [[ "$AUTO_MODE" == "true" ]]; then
+        log_error "$(i18n "Auto mode: scalex CLI build is required for provisioning — aborting" "자동 모드: 프로비저닝에 scalex CLI 빌드가 필요함 — 중단")"
+        return 1
+      fi
       if ! tui_yesno "$(i18n "Continue" "계속")" "$(i18n "Build failed. Continue anyway?" "빌드 실패. 그래도 계속하시겠습니까?")"; then return 1; fi
     }
     mkdir -p "$HOME/.local/bin"
@@ -1343,7 +2295,7 @@ phase_provision() {
 
     if [[ "$AUTO_MODE" == "true" ]]; then
       # --- Auto mode: explicit step ordering with API tunnel lifecycle ---
-      local ps_total=7
+      local ps_total=9
 
       echo -e "  ${CYAN}[1/${ps_total}]${NC} scalex facts --all..."
       if ! (cd "$REPO_DIR" && scalex facts --all 2>&1 | tee -a "$LOG_FILE" | tail -5); then
@@ -1372,26 +2324,51 @@ phase_provision() {
         log_error "$(i18n "Auto mode: API tunnel setup failed — aborting provisioning" "자동 모드: API 터널 설정 실패 — 프로비저닝 중단")"
         return 1
       fi
+      # Tunnel readiness health-check: verify all tunnels are live and accepting connections
+      # before proceeding to any step requiring kubectl/API access.
+      echo -e "  ${CYAN}[5/${ps_total}]${NC} $(i18n "Tunnel readiness check — verifying tunnels live and API servers reachable..." \
+        "터널 준비 상태 확인 — 터널 활성 및 API 서버 접근 가능 여부 확인...")"
+      if ! verify_api_tunnels_ready "$REPO_DIR" 120; then
+        log_error "$(i18n "Auto mode: tunnel readiness check failed — aborting provisioning" \
+          "자동 모드: 터널 준비 상태 확인 실패 — 프로비저닝 중단")"
+        return 1
+      fi
       echo -e "  ${GREEN}OK${NC}"
 
-      echo -e "  ${CYAN}[5/${ps_total}]${NC} scalex secrets apply (management)..."
+      echo -e "  ${CYAN}[6/${ps_total}]${NC} scalex secrets apply (management)..."
       if ! (cd "$REPO_DIR" && scalex secrets apply --role management 2>&1 | tee -a "$LOG_FILE" | tail -5); then
         log_error "$(i18n "Auto mode: management cluster secrets apply failed — aborting provisioning" "자동 모드: 관리 클러스터 시크릿 적용 실패 — 프로비저닝 중단")"
         return 1
       fi
       echo -e "  ${GREEN}OK${NC}"
 
-      echo -e "  ${CYAN}[6/${ps_total}]${NC} scalex secrets apply (workload)..."
+      echo -e "  ${CYAN}[7/${ps_total}]${NC} scalex secrets apply (workload)..."
       if ! (cd "$REPO_DIR" && scalex secrets apply --role workload 2>&1 | tee -a "$LOG_FILE" | tail -5); then
         log_warn "$(i18n "Workload secrets apply failed — continuing" "워크로드 시크릿 적용 실패 — 계속 진행")"
       fi
       echo -e "  ${GREEN}OK${NC}"
 
-      echo -e "  ${CYAN}[7/${ps_total}]${NC} scalex bootstrap..."
+      # Verify API tunnels are alive + API servers ready before bootstrap (second gate)
+      echo -e "  ${CYAN}[8/${ps_total}]${NC} $(i18n "Pre-bootstrap tunnel gate + scalex bootstrap..." \
+        "부트스트랩 전 터널 게이트 확인 + scalex bootstrap...")"
+      if ! verify_api_tunnels_ready "$REPO_DIR" 120; then
+        log_error "$(i18n "Auto mode: pre-bootstrap tunnel readiness check failed — aborting" \
+          "자동 모드: 부트스트랩 전 터널 준비 상태 확인 실패 — 중단")"
+        return 1
+      fi
       if ! (cd "$REPO_DIR" && scalex bootstrap 2>&1 | tee -a "$LOG_FILE" | tail -5); then
         log_error "$(i18n "Auto mode: bootstrap failed — aborting provisioning" "자동 모드: 부트스트랩 실패 — 프로비저닝 중단")"
         return 1
       fi
+      echo -e "  ${GREEN}OK${NC}"
+
+      # Step 9: Final pre-exit tunnel connectivity verification.
+      # Called BEFORE cleanup_api_tunnels so SSH tunnel processes are still alive.
+      # Uses scalex tunnel status (preferred) or direct port probe (fallback).
+      # Non-fatal: warns if connectivity cannot be confirmed but does not abort.
+      echo -e "  ${CYAN}[9/${ps_total}]${NC} $(i18n "Verifying tunnel connectivity before exit..." \
+        "종료 전 터널 연결 확인...")"
+      verify_exit_tunnel_connectivity 30
       echo -e "  ${GREEN}OK${NC}"
 
       # Clean up API tunnels — restore original kubeconfigs with real CP IPs
@@ -1561,7 +2538,6 @@ post_install_summary() {
   echo -e "    scalex status              # $(i18n "Cluster status" "클러스터 상태")"
   echo ""
   echo -e "  ${BOLD}$(i18n "ArgoCD dashboard:" "ArgoCD 대시보드:")${NC}"
-  local argo_domain; argo_domain=$(state_get "" "")
   echo -e "    https://$(grep -o 'argocd:.*' "$GEN_DIR/config/k8s-clusters.yaml" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"' || echo "cd.example.com")"
   echo ""
 }
@@ -1635,15 +2611,24 @@ main() {
     done
     log_info "$(i18n "Required config files verified" "필수 구성 파일 확인 완료")"
 
+    # Pre-flight: validate tunnel credentials (SSH key + CF Tunnel)
+    # Exits with code 2 if any required credential is missing or invalid.
+    validate_tunnel_credentials "$repo"
+
     # Generate ~/.ssh/config for ProxyJump nodes (required by libvirt qemu+ssh://)
     generate_ssh_config "$repo"
 
     # Clone kubespray if not present (not a submodule — runtime dependency)
     if [[ -n "$repo" && ! -f "$repo/kubespray/kubespray/cluster.yml" ]]; then
       log_info "$(i18n "Cloning Kubespray v2.30.0..." "Kubespray v2.30.0 클론 중...")"
-      git clone --branch v2.30.0 --depth 1 \
+      if ! git clone --branch v2.30.0 --depth 1 \
         https://github.com/kubernetes-sigs/kubespray.git \
-        "$repo/kubespray/kubespray" 2>&1 | tail -3
+        "$repo/kubespray/kubespray" 2>&1 | tail -3; then
+        error_msg "$(i18n "Kubespray clone failed" "Kubespray 클론 실패")" \
+          "$(i18n "git clone error — check network connectivity and GitHub availability" "git clone 오류 — 네트워크 연결 및 GitHub 가용성 확인")" \
+          "$(i18n "Retry: git clone --branch v2.30.0 https://github.com/kubernetes-sigs/kubespray.git $repo/kubespray/kubespray" "재시도: git clone --branch v2.30.0 https://github.com/kubernetes-sigs/kubespray.git $repo/kubespray/kubespray")"
+        return 1
+      fi
     fi
 
     # Ensure sudo access upfront (single prompt, then cached for entire run)
@@ -1656,7 +2641,15 @@ main() {
     phase_deps
     REPO_DIR="${repo:-$HOME/ScaleX-POD-mini}"
     state_set REPO_DIR "$REPO_DIR"
-    phase_provision
+    if ! phase_provision; then
+      error_msg \
+        "$(i18n "Auto mode: provisioning failed" "자동 모드: 프로비저닝 실패")" \
+        "$(i18n "One or more provisioning steps failed (API tunnel setup, cluster init, etc.)" \
+           "하나 이상의 프로비저닝 단계가 실패했습니다 (API 터널 설정, 클러스터 초기화 등)")" \
+        "$(i18n "Review the installer log for details: $LOG_FILE" \
+           "설치 로그를 확인하세요: $LOG_FILE")"
+      return 1
+    fi
 
     show_dashboard
     post_install_summary

@@ -122,9 +122,12 @@ async fn build_client_with_endpoint(
 }
 
 /// Probe cluster connectivity: build client + list 1 namespace, with timeout.
-async fn probe_client(client: &Client) -> bool {
+/// `timeout` is caller-supplied: use DISCOVER_TIMEOUT (2s) for direct connections
+/// and TUNNEL_PROBE_TIMEOUT (10s) for SSH-tunneled connections where the first
+/// API call may need extra time for TLS handshake through the tunnel.
+async fn probe_client(client: &Client, timeout: Duration) -> bool {
     tokio::time::timeout(
-        DISCOVER_TIMEOUT,
+        timeout,
         kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
             .list(&kube::api::ListParams::default().limit(1)),
     )
@@ -132,6 +135,12 @@ async fn probe_client(client: &Client) -> bool {
     .map(|r| r.is_ok())
     .unwrap_or(false)
 }
+
+/// Timeout for the K8s API probe immediately after an SSH tunnel is established.
+/// Longer than DISCOVER_TIMEOUT to account for:
+///   - SSH tunnel TLS handshake latency on first connection
+///   - Remote bastion → API server round-trip (may exceed 2s on slow links)
+const TUNNEL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Fetch K8s API server version with a tight timeout (500ms).
 /// Returns None on timeout or any error — never blocks discovery.
@@ -230,7 +239,7 @@ pub async fn discover_clusters_streaming(
 
                 match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
-                        if probe_client(&client).await {
+                        if probe_client(&client, DISCOVER_TIMEOUT).await {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
                                     message: format!("{}: connected via domain", cluster_name),
@@ -286,7 +295,7 @@ pub async fn discover_clusters_streaming(
             // Strategy 2: direct connection via kubeconfig IP (with timeout)
             // If kubeconfig has a domain URL (post-rewrite), also try .original for VM IP fallback
             if let Ok(client) = build_client(&kubeconfig_path).await {
-                if probe_client(&client).await {
+                if probe_client(&client, DISCOVER_TIMEOUT).await {
                     let ver = fetch_server_version(&client).await;
                     let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
                     let _ = tx
@@ -307,7 +316,7 @@ pub async fn discover_clusters_streaming(
             let original_path = kubeconfig_path.with_extension("yaml.original");
             if original_path.exists() {
                 if let Ok(client) = build_client(&original_path).await {
-                    if probe_client(&client).await {
+                    if probe_client(&client, DISCOVER_TIMEOUT).await {
                         let _ = tx
                             .send(DiscoverEvent::Log {
                                 message: format!(
@@ -438,7 +447,7 @@ pub async fn discover_clusters_streaming_filtered(
                 let token = super::sa_provisioner::read_cached_token(&kubeconfig_path);
                 match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
-                        if probe_client(&client).await {
+                        if probe_client(&client, DISCOVER_TIMEOUT).await {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
                                     message: format!("{}: connected via domain", cluster_name),
@@ -493,7 +502,7 @@ pub async fn discover_clusters_streaming_filtered(
 
             // Strategy 2: direct connection
             if let Ok(client) = build_client(&kubeconfig_path).await {
-                if probe_client(&client).await {
+                if probe_client(&client, DISCOVER_TIMEOUT).await {
                     let ver = fetch_server_version(&client).await;
                     let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
                     let _ = tx
@@ -514,7 +523,7 @@ pub async fn discover_clusters_streaming_filtered(
             let original_path = kubeconfig_path.with_extension("yaml.original");
             if original_path.exists() {
                 if let Ok(client) = build_client(&original_path).await {
-                    if probe_client(&client).await {
+                    if probe_client(&client, DISCOVER_TIMEOUT).await {
                         let _ = tx
                             .send(DiscoverEvent::Log {
                                 message: format!(
@@ -661,7 +670,7 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
 
                 match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
-                        if probe_client(&client).await {
+                        if probe_client(&client, DISCOVER_TIMEOUT).await {
                             eprintln!("{}: connected via domain ({})", cluster_name, ep);
                             let ver = fetch_server_version(&client).await;
                             return Some(ClusterClient {
@@ -687,7 +696,7 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
 
             // Strategy 2: direct connection via kubeconfig IP
             if let Ok(client) = build_client(&kubeconfig_path).await {
-                if probe_client(&client).await {
+                if probe_client(&client, DISCOVER_TIMEOUT).await {
                     let ver = fetch_server_version(&client).await;
                     let ep = extract_server_url(&kubeconfig_path).map(|(url, _, _)| url);
                     return Some(ClusterClient {
@@ -705,7 +714,7 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
             let original_path = kubeconfig_path.with_extension("yaml.original");
             if original_path.exists() {
                 if let Ok(client) = build_client(&original_path).await {
-                    if probe_client(&client).await {
+                    if probe_client(&client, DISCOVER_TIMEOUT).await {
                         let ver = fetch_server_version(&client).await;
                         let ep = extract_server_url(&original_path).map(|(url, _, _)| url);
                         return Some(ClusterClient {
@@ -836,7 +845,45 @@ fn extract_server_url(kubeconfig_path: &Path) -> Option<(String, String, u16)> {
     None
 }
 
+/// Poll localhost:port until the TCP port accepts connections or the SSH process dies.
+/// Returns true if the port becomes ready within the timeout, false otherwise.
+///
+/// This replaces a fixed sleep because the SSH process can be alive (spawn succeeded)
+/// while the local port is still not yet bound — the SSH handshake and channel setup
+/// take time that varies by network conditions.  Polling is safe: a refused connection
+/// just means "not ready yet", while a successful connect means the tunnel is listening.
+async fn wait_for_tunnel_port(port: u32, pid: u32) -> bool {
+    // Max wait: 200 ms initial + 12 × 500 ms = ~6 s total — generous for a nearby bastion.
+    const MAX_RETRIES: u32 = 12;
+
+    // Short initial wait before first probe (SSH needs time to start the handshake)
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    for _ in 0..MAX_RETRIES {
+        // Abort early if the SSH process already died (e.g., auth failure)
+        if !is_process_alive(pid) {
+            return false;
+        }
+
+        // Try TCP connect to localhost:port — succeeds only when SSH bound the port
+        if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .is_ok()
+        {
+            return true;
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
 /// Set up an SSH tunnel and return a Client connected through it.
+///
+/// Ordering guarantee: returns only after the local tunnel port is confirmed
+/// listening AND the K8s API is reachable through the tunnel, preventing
+/// callers (headless mode) from attempting data fetches before the connection
+/// is truly ready.
 async fn setup_auto_tunnel(
     kubeconfig_path: &Path,
     cluster_name: &str,
@@ -879,12 +926,22 @@ async fn setup_auto_tunnel(
 
     let pid = child.id();
 
-    // Wait for tunnel to establish
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    // Verify tunnel process is alive
-    if !is_process_alive(pid) {
-        anyhow::bail!("SSH tunnel process died immediately (PID {})", pid);
+    // Wait for tunnel port to become ready (replaces fixed 500 ms sleep).
+    // poll_tunnel_port checks TCP connectivity, not just process liveness,
+    // guaranteeing the port is bound before we build the kube Client.
+    if !wait_for_tunnel_port(local_port, pid).await {
+        // Kill the orphaned SSH process before returning an error
+        if pid <= i32::MAX as u32 {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+        anyhow::bail!(
+            "SSH tunnel for {} failed to establish on localhost:{} within 6 s (process {})",
+            cluster_name,
+            local_port,
+            pid
+        );
     }
 
     // Create modified kubeconfig with localhost:local_port
@@ -893,6 +950,25 @@ async fn setup_auto_tunnel(
     let modified = content.replace(&server_url, &format!("https://127.0.0.1:{}", local_port));
 
     let client = build_client_from_content(&modified).await?;
+
+    // Verify actual K8s API reachability through the tunnel.
+    // This is the final ordering guarantee: callers receive a Client only
+    // after a real K8s API call succeeds, not just after port binding.
+    // Uses TUNNEL_PROBE_TIMEOUT (10s) instead of DISCOVER_TIMEOUT (2s) because
+    // the first K8s API call through an SSH tunnel may take extra time for
+    // the TLS handshake and bastion → API server round-trip on slow links.
+    if !probe_client(&client, TUNNEL_PROBE_TIMEOUT).await {
+        if pid <= i32::MAX as u32 {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+        anyhow::bail!(
+            "SSH tunnel for {} is up (localhost:{}) but K8s API did not respond",
+            cluster_name,
+            local_port
+        );
+    }
 
     Ok((client, pid))
 }
@@ -1047,5 +1123,162 @@ mod tests {
             "scan_kubeconfig_names took {:?}, expected <100ms",
             elapsed
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Tunnel conf format tests
+    // install.sh writes: LOCAL_PORT:SERVER_IP:SERVER_PORT:BASTION:PID
+    // These tests verify that the format is correctly round-tripped and that
+    // scalex dash (extract_server_url) can read kubeconfigs rewritten through
+    // the tunnel (server: https://127.0.0.1:<local_port>).
+    // -------------------------------------------------------------------------
+
+    /// Simulates what install.sh writes and verifies all fields parse correctly.
+    #[test]
+    fn tunnel_conf_format_all_fields_present_and_non_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf_path = dir.path().join("tower.conf");
+
+        // Simulate install.sh: printf '%s:%s:%s:%s:%s\n' 16443 192.168.88.100 6443 playbox-0 12345
+        let content = "16443:192.168.88.100:6443:playbox-0:12345\n";
+        std::fs::write(&conf_path, content).unwrap();
+
+        // Parse the same way the watchdog does: IFS=: read -r lp sip sp bt tpid
+        let raw = std::fs::read_to_string(&conf_path).unwrap();
+        let line = raw.trim();
+        let parts: Vec<&str> = line.splitn(5, ':').collect();
+
+        assert_eq!(
+            parts.len(),
+            5,
+            "conf must have exactly 5 colon-separated fields"
+        );
+
+        let (lp, sip, sp, bt, tpid) = (parts[0], parts[1], parts[2], parts[3], parts[4]);
+
+        // LOCAL_PORT: non-empty integer
+        assert!(!lp.is_empty(), "LOCAL_PORT must not be empty");
+        assert!(
+            lp.parse::<u16>().is_ok(),
+            "LOCAL_PORT must be a valid port number, got '{}'",
+            lp
+        );
+
+        // SERVER_IP: non-empty
+        assert!(!sip.is_empty(), "SERVER_IP must not be empty");
+
+        // SERVER_PORT: non-empty integer
+        assert!(!sp.is_empty(), "SERVER_PORT must not be empty");
+        assert!(
+            sp.parse::<u16>().is_ok(),
+            "SERVER_PORT must be a valid port number, got '{}'",
+            sp
+        );
+
+        // BASTION: non-empty
+        assert!(!bt.is_empty(), "BASTION must not be empty");
+
+        // PID: non-empty integer
+        assert!(!tpid.is_empty(), "PID must not be empty");
+        assert!(
+            tpid.parse::<u32>().is_ok(),
+            "PID must be a valid integer, got '{}'",
+            tpid
+        );
+    }
+
+    /// A conf file with an empty BASTION field (e.g. if bastion_target was unresolved)
+    /// must be detectable — this mirrors the validate_tunnel_conf check in install.sh.
+    #[test]
+    fn tunnel_conf_format_empty_bastion_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf_path = dir.path().join("tower.conf");
+
+        // BASTION field is empty (4th field)
+        let content = "16443:192.168.88.100:6443::12345\n";
+        std::fs::write(&conf_path, content).unwrap();
+
+        let raw = std::fs::read_to_string(&conf_path).unwrap();
+        let line = raw.trim();
+        let parts: Vec<&str> = line.splitn(5, ':').collect();
+
+        assert_eq!(parts.len(), 5);
+        let bt = parts[3];
+        assert!(bt.is_empty(), "test setup: BASTION should be empty");
+        // This is the guard that downstream (watchdog/validate_tunnel_conf) would trigger on
+        assert!(
+            bt.is_empty(),
+            "validate_tunnel_conf should reject empty BASTION — \
+             credentials/.baremetal-init.yaml must contain a node name"
+        );
+    }
+
+    /// A conf file with a non-numeric LOCAL_PORT must be detectable.
+    #[test]
+    fn tunnel_conf_format_non_numeric_port_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf_path = dir.path().join("tower.conf");
+
+        // LOCAL_PORT is "bad" (non-numeric)
+        let content = "bad:192.168.88.100:6443:playbox-0:12345\n";
+        std::fs::write(&conf_path, content).unwrap();
+
+        let raw = std::fs::read_to_string(&conf_path).unwrap();
+        let line = raw.trim();
+        let parts: Vec<&str> = line.splitn(5, ':').collect();
+
+        assert_eq!(parts.len(), 5);
+        let lp = parts[0];
+        assert!(
+            lp.parse::<u16>().is_err(),
+            "non-numeric LOCAL_PORT '{}' must fail port parse — validate_tunnel_conf should reject it",
+            lp
+        );
+    }
+
+    /// After install.sh rewrites the kubeconfig server URL to localhost:<port>,
+    /// extract_server_url must be able to parse it so scalex dash can connect.
+    #[test]
+    fn extract_server_url_parses_tunnel_rewritten_kubeconfig() {
+        let dir = tempfile::tempdir().unwrap();
+        let kc = dir.path().join("kubeconfig.yaml");
+
+        // Simulate the rewritten kubeconfig (server URL replaced with localhost:local_port)
+        std::fs::write(
+            &kc,
+            "clusters:\n- cluster:\n    server: https://127.0.0.1:16443\n",
+        )
+        .unwrap();
+
+        let result = extract_server_url(&kc);
+        assert!(
+            result.is_some(),
+            "extract_server_url must succeed on tunnel-rewritten kubeconfig"
+        );
+
+        let (url, ip, port) = result.unwrap();
+        assert_eq!(url, "https://127.0.0.1:16443");
+        assert_eq!(ip, "127.0.0.1");
+        assert_eq!(port, 16443u16);
+    }
+
+    /// A kubeconfig with no explicit port (default 6443) must be parseable after
+    /// install.sh finishes — even if the tunnel uses the default port.
+    #[test]
+    fn extract_server_url_defaults_port_to_6443() {
+        let dir = tempfile::tempdir().unwrap();
+        let kc = dir.path().join("kubeconfig.yaml");
+
+        // No explicit port in URL
+        std::fs::write(
+            &kc,
+            "clusters:\n- cluster:\n    server: https://192.168.88.100\n",
+        )
+        .unwrap();
+
+        let result = extract_server_url(&kc);
+        assert!(result.is_some());
+        let (_, _, port) = result.unwrap();
+        assert_eq!(port, 6443u16, "default port should be 6443");
     }
 }

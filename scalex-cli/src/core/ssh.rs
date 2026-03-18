@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn test_build_ssh_direct() {
         let node = make_node("n0", true, "10.0.0.1");
-        let cmd = build_ssh_command(&node, "hostname", &[node.clone()]).unwrap();
+        let cmd = build_ssh_command(&node, "hostname", std::slice::from_ref(&node)).unwrap();
         assert!(!cmd.use_sshpass);
         assert!(cmd.args.contains(&"admin@10.0.0.1".to_string()));
         assert!(cmd.args.contains(&"hostname".to_string()));
@@ -267,7 +267,7 @@ mod tests {
             ssh_key_path_of_reachable_node: None,
         };
 
-        let cmd = build_ssh_command(&node, "hostname", &[node.clone()]).unwrap();
+        let cmd = build_ssh_command(&node, "hostname", std::slice::from_ref(&node)).unwrap();
         // Key should be in the outer SSH args
         assert!(
             cmd.args.contains(&"-i".to_string())

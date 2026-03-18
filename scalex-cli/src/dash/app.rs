@@ -433,6 +433,7 @@ fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
 
 impl App {
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn new(clusters: Vec<ClusterClient>, refresh_secs: u64) -> Self {
         let mut tree = vec![TreeNode {
             label: "ScaleX".to_string(),
@@ -2676,6 +2677,7 @@ impl App {
 // Tests
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5845,9 +5847,9 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
             }
         }
 
-        // --- is_fetching timeout defense (30s) ---
+        // --- is_fetching timeout defense (HEADLESS_API_TIMEOUT) ---
         if let Some(started) = app.fetch_started_at {
-            if started.elapsed() > Duration::from_secs(30) {
+            if started.elapsed() > data::HEADLESS_API_TIMEOUT {
                 app.is_fetching = false;
                 app.fetch_started_at = None;
                 app.fetch_timed_out = true;
@@ -5957,6 +5959,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                             &name,
                             cluster_ns.as_deref(),
                             active_res,
+                            data::API_CALL_TIMEOUT,
                         )
                         .await
                         .ok()

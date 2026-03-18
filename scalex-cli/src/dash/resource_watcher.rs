@@ -533,9 +533,9 @@ mod tests {
     /// Ensures debounce constants are reasonable values.
     #[test]
     fn debounce_constants_are_reasonable() {
-        assert!(DEBOUNCE_MS >= 100, "debounce too aggressive (< 100ms)");
-        assert!(DEBOUNCE_MS <= 500, "debounce too slow (> 500ms)");
-        assert!(MAX_DEBOUNCE_BATCH >= 50, "batch too small");
-        assert!(MAX_DEBOUNCE_BATCH <= 1000, "batch too large");
+        const { assert!(DEBOUNCE_MS >= 100, "debounce too aggressive (< 100ms)") };
+        const { assert!(DEBOUNCE_MS <= 500, "debounce too slow (> 500ms)") };
+        const { assert!(MAX_DEBOUNCE_BATCH >= 50, "batch too small") };
+        const { assert!(MAX_DEBOUNCE_BATCH <= 1000, "batch too large") };
     }
 }

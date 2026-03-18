@@ -921,14 +921,14 @@ dns_domain: "tower.local"
         // The config-files check list must include all 4 user-provided files
         // and 3 generated directories = 9 total entries.
         // We verify by checking the hardcoded list in get_config_files covers them.
-        let required_user_files = vec![
+        let required_user_files = [
             "credentials/.baremetal-init.yaml",
             "credentials/.env",
             "credentials/secrets.yaml",
             "credentials/cloudflare-tunnel.json",
         ];
-        let required_config_files = vec!["config/sdi-specs.yaml", "config/k8s-clusters.yaml"];
-        let required_generated_dirs = vec![
+        let required_config_files = ["config/sdi-specs.yaml", "config/k8s-clusters.yaml"];
+        let required_generated_dirs = [
             "_generated/facts/",
             "_generated/sdi/",
             "_generated/clusters/",
