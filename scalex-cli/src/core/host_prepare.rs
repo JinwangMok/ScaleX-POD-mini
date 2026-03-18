@@ -305,9 +305,13 @@ echo "[scalex] === KVM/libvirt teardown complete. ==="
     .to_string()
 }
 
-/// Generate the shell script to fully clean a node (remove K8s, KVM, bridge).
+/// Generate the shell script to fully clean a node (remove K8s, KVM packages).
 /// Used by `sdi clean --hard` to reset nodes to bare-metal state.
 /// Pure function. Preserves SSH access and basic networking.
+///
+/// SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
+/// The script ONLY removes K8s/KVM software and their virtual interfaces (Cilium,
+/// lxc*, veth*). It never touches br0, bond0, physical NICs, or netplan config.
 ///
 /// K8s teardown phases: (1) kubeadm reset with CRI socket auto-detection and
 /// `--cleanup-tmp-dir`, (1a) Cilium CNI cleanup — virtual interfaces + eBPF maps +
@@ -318,6 +322,7 @@ pub fn generate_node_cleanup_script() -> String {
 set -euo pipefail
 
 echo "[scalex] === Node Cleanup: Resetting to bare-metal state ==="
+# SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
 
 # ─── Phase 1: Kubernetes cluster teardown ───
 echo "[scalex] Phase 1: K8s cluster teardown..."
@@ -350,6 +355,16 @@ for iface in $(ip link show 2>/dev/null | grep -oP '(?<=\d: )lxc[^\s@:]+' 2>/dev
     sudo ip link set "$iface" down 2>/dev/null || true
     sudo ip link delete "$iface" 2>/dev/null || true
 done
+
+# Remove CNI/overlay virtual interfaces (Flannel VXLAN, Calico VXLAN, veth pairs, dummy)
+# SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
+# Only matches prefixes that are exclusively K8s/CNI-created (never physical or bridge).
+while IFS= read -r virt_iface; do
+    [ -z "$virt_iface" ] && continue
+    sudo ip link set "$virt_iface" down 2>/dev/null || true
+    sudo ip link delete "$virt_iface" 2>/dev/null || true
+done < <(sudo ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d'@' -f1 | \
+    grep -E '^(flannel\.|vxlan\.|veth[0-9a-f]|dummy)' 2>/dev/null || true)
 
 # Detach eBPF programs and remove Cilium pinned maps from BPF filesystem
 if command -v bpftool &>/dev/null; then
@@ -462,89 +477,15 @@ sudo apt-get purge -y -qq qemu-kvm libvirt-daemon-system libvirt-clients virtins
 sudo rm -rf /var/lib/libvirt || true
 sudo rm -rf /etc/libvirt || true
 
-# ─── Phase 3: Bridge and virtual network interface cleanup ───
-echo "[scalex] Phase 3: Removing bridge and virtual network interfaces..."
-
-# Check if br0 exists before attempting bridge cleanup
-if ip link show br0 &>/dev/null; then
-    echo "[scalex]   ScaleX bridge br0 detected, will remove"
-fi
-
-# Enumerate and remove ALL bridge-type interfaces:
-# br0 (ScaleX SDI bridge), virbrX (libvirt default), cni0, docker0, etc.
-echo "[scalex]   Removing all bridge-type interfaces..."
-while IFS= read -r br_iface; do
-    [ -z "$br_iface" ] && continue
-    echo "[scalex]   Removing bridge: $br_iface"
-    sudo ip link set "$br_iface" down 2>/dev/null || true
-    sudo ip link delete "$br_iface" type bridge 2>/dev/null || true
-done < <(sudo ip link show type bridge 2>/dev/null | grep -oP '(?<=\d: )\S+(?=:)' | cut -d'@' -f1 || true)
-
-# Remove remaining CNI/overlay virtual interfaces not caught by the bridge loop
-# (Flannel VXLAN, Calico VXLAN, remaining veth pairs, dummy interfaces)
-echo "[scalex]   Removing remaining CNI and overlay virtual interfaces..."
-while IFS= read -r virt_iface; do
-    [ -z "$virt_iface" ] && continue
-    sudo ip link set "$virt_iface" down 2>/dev/null || true
-    sudo ip link delete "$virt_iface" 2>/dev/null || true
-done < <(sudo ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d'@' -f1 | \
-    grep -E '^(flannel\.|vxlan\.|veth[0-9a-f]|dummy)' 2>/dev/null || true)
-
-# Remove netplan bridge/SDI config files written by ScaleX
-sudo rm -f /etc/netplan/50-scalex-bridge.yaml
-sudo rm -f /etc/netplan/99-scalex-dhcp-fallback.yaml
-
-# ─── Phase 4: Restore default networking ───
-echo "[scalex] Phase 4: Restoring default networking..."
-
-if [ -d /etc/netplan/backup ] && sudo ls /etc/netplan/backup/*.yaml >/dev/null 2>&1; then
-    echo "[scalex]   Restoring netplan configuration from backup..."
-    sudo cp /etc/netplan/backup/*.yaml /etc/netplan/ 2>/dev/null || true
-    sudo netplan apply 2>/dev/null || true
-else
-    echo "[scalex]   No netplan backup found — enabling DHCP fallback on primary interface..."
-    # Detect primary interface: first UP non-loopback physical or bond NIC
-    PRIMARY_IF=""
-    for candidate in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d'@' -f1); do
-        case "$candidate" in
-            lo|br*|virbr*|veth*|cni*|flannel*|cilium*|lxc*|dummy*) continue ;;
-        esac
-        if ip link show "$candidate" 2>/dev/null | grep -q 'state UP'; then
-            PRIMARY_IF="$candidate"
-            break
-        fi
-    done
-    # Fallback: first non-loopback, non-virtual interface regardless of link state
-    if [ -z "$PRIMARY_IF" ]; then
-        PRIMARY_IF=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | \
-            cut -d'@' -f1 | grep -v '^lo$' | \
-            grep -vE '^(br|virbr|veth|cni|flannel|cilium|lxc|dummy)' | \
-            head -1 || true)
-    fi
-    if [ -n "$PRIMARY_IF" ]; then
-        echo "[scalex]   Enabling DHCP on $PRIMARY_IF (netplan fallback config)..."
-        sudo bash -c "cat > /etc/netplan/99-scalex-dhcp-fallback.yaml << DHCP_EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${PRIMARY_IF}:
-      dhcp4: true
-      dhcp6: false
-DHCP_EOF
-chmod 600 /etc/netplan/99-scalex-dhcp-fallback.yaml"
-        sudo netplan apply 2>/dev/null || true
-    else
-        echo "[scalex]   WARNING: Could not detect primary interface — manual network restore may be required"
-    fi
-fi
-
-# ─── Phase 5: Final cleanup ───
-echo "[scalex] Phase 5: Cleaning up remaining packages..."
+# ─── Phase 3: Final cleanup ───
+# SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
+# Only libvirt's own virtual network interfaces (virbr*, vnet*) were already
+# removed above by virsh net-destroy. br0, bond0, and physical NICs are untouched.
+echo "[scalex] Phase 3: Cleaning up remaining packages..."
 sudo apt-get autoremove -y -qq 2>/dev/null || true
 sudo apt-get clean
 
-echo "[scalex] === Node cleanup complete. SSH access preserved. ==="
+echo "[scalex] === Node cleanup complete. Network interfaces (br0/bond) preserved. ==="
 "#
     .to_string()
 }
@@ -745,8 +686,13 @@ mod tests {
         // Must clean up KVM/libvirt
         assert!(script.contains("libvirt"));
         assert!(script.contains("qemu"));
-        // Must remove bridge configuration
-        assert!(script.contains("br0"));
+        // Must NOT remove bridge configuration — br0/bond are network infrastructure
+        assert!(
+            !script.contains("ip link delete") || !script.contains("type bridge"),
+            "cleanup must never delete bridge interfaces"
+        );
+        // Safety comment must be present
+        assert!(script.contains("SAFETY: Never modify network interfaces"));
         // Must clean up data directories
         assert!(script.contains("/etc/cni"));
         assert!(script.contains("/var/lib/kubelet"));
@@ -803,11 +749,10 @@ mod tests {
         let k8s_pos = script.find("kubeadm reset").unwrap();
         let kvm_pos = script.find("libvirt").unwrap();
         assert!(k8s_pos < kvm_pos, "k8s cleanup must precede KVM cleanup");
-        // Bridge removal must come after KVM cleanup
-        let bridge_pos = script.find("br0").unwrap();
+        // Bridge interfaces (br0/bond) must NEVER be deleted — network safety
         assert!(
-            kvm_pos < bridge_pos,
-            "KVM cleanup must precede bridge removal"
+            !script.contains("ip link delete br0"),
+            "cleanup must never delete br0 — SSH depends on it"
         );
     }
 
@@ -1069,11 +1014,6 @@ mod tests {
                 || script.contains("iptables -F 2>/dev/null || true"),
             "iptables flush must use || true"
         );
-        // netplan apply must be soft (netplan may not be present after deep clean)
-        assert!(
-            script.contains("netplan apply 2>/dev/null || true"),
-            "netplan apply must use || true"
-        );
         // apt-get autoremove must be soft
         assert!(
             script.contains("apt-get autoremove -y -qq 2>/dev/null || true"),
@@ -1109,23 +1049,32 @@ mod tests {
         }
     }
 
-    /// Sub-AC 4/5: Bridge removal uses generic type-based enumeration so the second
-    /// run with all bridges already gone does not fail — the loop body simply never executes.
+    /// SAFETY: cleanup must never delete bridge interfaces (br0, bond0) — SSH depends on them.
     #[test]
-    fn test_cleanup_script_bridge_removal_is_conditional() {
+    fn test_cleanup_script_never_deletes_bridge_interfaces() {
         let script = generate_node_cleanup_script();
-        // Must enumerate bridges generically via `ip link show type bridge`
-        // (naturally idempotent on re-run: if no bridges exist, the loop body never runs).
-        // Script uses `ip -o link show type bridge` (with the -o one-line-per-entry flag);
-        // check for the common substring "link show type bridge" to match either form.
+        // Must NOT enumerate or delete bridge-type interfaces
         assert!(
-            script.contains("link show type bridge"),
-            "bridge removal must enumerate all bridge-type interfaces via 'ip[-o] link show type bridge'"
+            !script.contains("link show type bridge"),
+            "cleanup must never enumerate bridge interfaces for deletion"
         );
-        // Netplan scalex bridge file uses rm -f (idempotent on missing file)
         assert!(
-            script.contains("rm -f /etc/netplan/50-scalex-bridge.yaml"),
-            "must remove scalex bridge netplan config with rm -f (idempotent)"
+            !script.contains("ip link delete") || script.find("ip link delete").map(|p| !script[p..].starts_with("ip link delete br")).unwrap_or(true),
+            "cleanup must never delete br0 or other bridge interfaces"
+        );
+        // Must NOT touch netplan config — network changes break SSH
+        assert!(
+            !script.contains("rm -f /etc/netplan/50-scalex-bridge.yaml"),
+            "cleanup must never remove netplan bridge config"
+        );
+        assert!(
+            !script.contains("netplan apply"),
+            "cleanup must never run netplan apply — network changes break SSH"
+        );
+        // Safety comment must be present
+        assert!(
+            script.contains("SAFETY: Never modify network interfaces"),
+            "cleanup script must contain safety comment"
         );
     }
 
@@ -1236,43 +1185,26 @@ mod tests {
         );
     }
 
-    /// Sub-AC 4: DHCP fallback config must be written when no netplan backup exists.
+    /// SAFETY: cleanup must never modify netplan config or write DHCP fallback.
+    /// Network changes would break SSH connectivity to the node.
     #[test]
-    fn test_cleanup_script_writes_dhcp_fallback_when_no_backup() {
+    fn test_cleanup_script_never_modifies_network_config() {
         let script = generate_node_cleanup_script();
         assert!(
-            script.contains("99-scalex-dhcp-fallback.yaml"),
-            "must write DHCP fallback netplan config when backup is absent"
+            !script.contains("99-scalex-dhcp-fallback.yaml"),
+            "cleanup must never write a DHCP fallback netplan config"
         );
         assert!(
-            script.contains("dhcp4: true"),
-            "DHCP fallback config must enable DHCPv4"
+            !script.contains("dhcp4: true"),
+            "cleanup must never write DHCP config"
         );
         assert!(
-            script.contains("rm -f /etc/netplan/99-scalex-dhcp-fallback.yaml"),
-            "must remove stale DHCP fallback config from previous cleanup run"
+            !script.contains("/etc/netplan/backup"),
+            "cleanup must never restore netplan backup"
         );
-    }
-
-    /// Sub-AC 4: Network restore must prefer backup over DHCP fallback.
-    #[test]
-    fn test_cleanup_script_prefers_netplan_backup_over_dhcp_fallback() {
-        let script = generate_node_cleanup_script();
-        let backup_pos = script.find("/etc/netplan/backup").unwrap();
-        let dhcp_pos = script.find("dhcp4: true").unwrap();
         assert!(
-            backup_pos < dhcp_pos,
-            "netplan backup restore must be checked before DHCP fallback"
-        );
-    }
-
-    /// Sub-AC 4: Primary interface detection must skip virtual/bridge interfaces.
-    #[test]
-    fn test_cleanup_script_primary_if_detection_skips_virtual_ifaces() {
-        let script = generate_node_cleanup_script();
-        assert!(
-            script.contains("lo|br*|virbr*|veth*|cni*|flannel*|cilium*|lxc*|dummy*"),
-            "primary interface detection must skip all virtual/bridge interface prefixes"
+            !script.contains("netplan apply"),
+            "cleanup must never run netplan apply"
         );
     }
 
@@ -1520,10 +1452,10 @@ mod tests {
             script.contains("sudo iptables -t"),
             "iptables flush must use sudo (table-based loop pattern)"
         );
-        // netplan apply must use sudo
+        // netplan apply must NOT be called — network changes would break SSH
         assert!(
-            script.contains("sudo netplan apply"),
-            "netplan apply must use sudo"
+            !script.contains("netplan apply"),
+            "cleanup must never run netplan apply"
         );
     }
 

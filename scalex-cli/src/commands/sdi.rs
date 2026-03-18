@@ -42,9 +42,9 @@ enum SdiCommand {
         #[arg(long, default_value_t = false)]
         dry_run: bool,
     },
-    /// Remove all SDI resources (VMs, bridges, etc.)
+    /// Remove all SDI resources (VMs, storage pools, K8s/KVM packages). Network interfaces are never touched.
     Clean {
-        /// Hard clean: remove everything except SSH access (K8s, KVM, bridge, iptables)
+        /// Hard clean: remove K8s, KVM packages and all VMs/storage. Never removes br0/bond — SSH stays up.
         #[arg(long)]
         hard: bool,
         /// Confirmation flag
@@ -808,10 +808,11 @@ fn run_clean(
     }
 
     if hard {
-        // Step 3: SSH into each target node and run full cleanup (K8s, KVM, bridge).
+        // Step 3: SSH into each target node and run full cleanup (K8s, KVM).
+        // SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
         // Cleanup is sequenced in three phases to avoid dependency failures:
         //   Phase A — KVM/libvirt teardown (stops VMs, removes storage pools/volumes)
-        //   Phase B — Full node cleanup (removes K8s, KVM packages, bridge config)
+        //   Phase B — Full node cleanup (removes K8s, KVM packages)
         //   Phase C — Per-node result summary
         if !config_path.exists() || !env_path.exists() {
             println!(
@@ -863,7 +864,7 @@ fn run_clean(
             let mut kvm_results: Vec<(String, Result<(), String>)> = Vec::new();
             for (idx, node) in target_nodes.iter().enumerate() {
                 println!(
-                    "[sdi]   [{}/{}] {} — destroying VMs, storage pools, network...",
+                    "[sdi]   [{}/{}] {} — destroying VMs and storage pools...",
                     idx + 1,
                     total,
                     node.name
@@ -896,17 +897,18 @@ fn run_clean(
                 }
             }
 
-            // Phase B: Full node cleanup — removes K8s components, KVM packages, bridge config.
+            // Phase B: Full node cleanup — removes K8s components and KVM packages.
+            // SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
             // Runs after KVM teardown to avoid removing packages while VMs are still active.
             let cleanup_script = host_prepare::generate_node_cleanup_script();
             println!(
-                "[sdi]   Phase B: Full node cleanup (K8s + KVM packages + bridge) on all nodes..."
+                "[sdi]   Phase B: Full node cleanup (K8s + KVM packages) on all nodes..."
             );
 
             let mut cleanup_results: Vec<(String, Result<(), String>)> = Vec::new();
             for (idx, node) in target_nodes.iter().enumerate() {
                 println!(
-                    "[sdi]   [{}/{}] {} — removing K8s, KVM packages, bridge...",
+                    "[sdi]   [{}/{}] {} — removing K8s, KVM packages...",
                     idx + 1,
                     total,
                     node.name
@@ -918,8 +920,7 @@ fn run_clean(
                     );
                     cleanup_results.push((node.name.clone(), Ok(())));
                 } else {
-                    // Wrap cleanup in nohup so it survives SSH disconnection
-                    // (bridge removal kills the SSH session on non-direct nodes)
+                    // Wrap cleanup in nohup so it completes even if SSH times out
                     let wrapped_script = format!(
                         "nohup bash -c '{}' > /tmp/scalex-cleanup.log 2>&1 &\n\
                          CLEANUP_PID=$!\n\
@@ -946,15 +947,15 @@ fn run_clean(
                                 cleanup_results.push((node.name.clone(), Ok(())));
                             }
                             Err(e) => {
-                                // SSH disconnection during cleanup is expected (bridge removal).
-                                // The nohup ensures cleanup completes in background.
+                                // SSH disconnection during cleanup may occur if the session
+                                // times out; nohup ensures cleanup completes in background.
                                 let msg = e.to_string();
                                 if msg.contains("Timeout")
                                     || msg.contains("closed")
                                     || msg.contains("reset")
                                 {
                                     eprintln!(
-                                        "[sdi]   WARNING on {} (cleanup): SSH disconnected (bridge removal), cleanup continues in background",
+                                        "[sdi]   WARNING on {} (cleanup): SSH disconnected, cleanup continues in background",
                                         node.name
                                     );
                                     cleanup_results.push((node.name.clone(), Ok(())));
