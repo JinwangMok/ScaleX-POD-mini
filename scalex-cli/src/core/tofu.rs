@@ -216,7 +216,8 @@ runcmd:
   - systemctl disable apparmor || true
   - aa-teardown || true
   - mkdir -p /opt/cni/bin
-  - chmod 755 /opt/cni/bin
+  - chmod 777 /opt/cni/bin
+  - apt-get purge -y apparmor 2>/dev/null || true
 EOF
 }}
 "#,

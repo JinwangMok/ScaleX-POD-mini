@@ -15,36 +15,11 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: scalex-dash-view
+  name: scalex-dash-admin
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: view
-subjects:
-  - kind: ServiceAccount
-    name: scalex-dash
-    namespace: scalex-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: scalex-dash-extra
-rules:
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["metrics.k8s.io"]
-    resources: ["nodes", "pods"]
-    verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: scalex-dash-extra
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: scalex-dash-extra
+  name: cluster-admin
 subjects:
   - kind: ServiceAccount
     name: scalex-dash
@@ -63,7 +38,9 @@ type: kubernetes.io/service-account-token
 /// Read cached SA token from `_generated/clusters/{name}/dash-token`.
 pub fn read_cached_token(kubeconfig_path: &Path) -> Option<String> {
     let token_path = kubeconfig_path.parent()?.join("dash-token");
-    std::fs::read_to_string(token_path).ok().map(|t| t.trim().to_string())
+    std::fs::read_to_string(token_path)
+        .ok()
+        .map(|t| t.trim().to_string())
 }
 
 /// Cache SA token to `_generated/clusters/{name}/dash-token`.
@@ -88,9 +65,12 @@ pub async fn provision_dash_sa(
     // Step 1: Apply SA manifest via kubectl
     let apply_output = std::process::Command::new("ssh")
         .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "BatchMode=yes",
-            "-o", &format!("ProxyJump={bastion}"),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            &format!("ProxyJump={bastion}"),
             &format!("ubuntu@{cp_ip}"),
             "sudo kubectl apply -f -",
         ])
@@ -140,7 +120,9 @@ pub async fn provision_dash_sa(
         );
     }
 
-    let token = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
+    let token = String::from_utf8_lossy(&token_output.stdout)
+        .trim()
+        .to_string();
     if token.is_empty() {
         anyhow::bail!("Empty token returned for {}", cluster_name);
     }
@@ -153,16 +135,23 @@ pub async fn provision_dash_sa(
 fn extract_cp_ip(kubeconfig_path: &Path) -> Result<String> {
     // Try .original first (has VM IP even after domain rewrite)
     let original = kubeconfig_path.with_extension("yaml.original");
-    let path = if original.exists() { &original } else { kubeconfig_path };
+    let path = if original.exists() {
+        &original
+    } else {
+        kubeconfig_path
+    };
 
-    let content = std::fs::read_to_string(path)
-        .context(format!("Reading kubeconfig {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).context(format!("Reading kubeconfig {}", path.display()))?;
 
     // Parse server: https://IP:PORT
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("server:") {
-            let url = trimmed.trim_start_matches("server:").trim().trim_matches('"');
+            let url = trimmed
+                .trim_start_matches("server:")
+                .trim()
+                .trim_matches('"');
             let host = url
                 .strip_prefix("https://")
                 .or_else(|| url.strip_prefix("http://"))
@@ -177,8 +166,5 @@ fn extract_cp_ip(kubeconfig_path: &Path) -> Result<String> {
         }
     }
 
-    anyhow::bail!(
-        "Cannot extract control plane IP from {}",
-        path.display()
-    )
+    anyhow::bail!("Cannot extract control plane IP from {}", path.display())
 }

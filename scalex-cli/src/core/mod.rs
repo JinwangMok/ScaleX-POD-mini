@@ -8,6 +8,7 @@ pub mod gitops;
 pub mod host_prepare;
 pub mod kernel;
 pub mod kubespray;
+pub mod placement;
 #[allow(dead_code)]
 pub mod resource_planner;
 pub mod resource_pool;

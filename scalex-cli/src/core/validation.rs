@@ -2651,15 +2651,20 @@ spec:
     fn test_clean_operations_plan_covers_all_branches() {
         use crate::commands::sdi::{plan_clean_operations, CleanOperation};
 
-        // Full hard clean with everything present (no host-infra)
+        // Full hard clean with everything present (no host-infra):
+        // TofuDestroy → KvmTeardown → NodeCleanup → RemoveStateDir
         let full = plan_clean_operations(true, true, true, false, Some(4));
-        assert_eq!(full.len(), 3);
+        assert_eq!(full.len(), 4, "hard clean must produce 4 operations: tofu destroy, kvm teardown, node cleanup, remove state");
         assert!(matches!(full[0], CleanOperation::TofuDestroy));
         assert!(matches!(
             full[1],
+            CleanOperation::KvmTeardown { node_count: 4 }
+        ));
+        assert!(matches!(
+            full[2],
             CleanOperation::NodeCleanup { node_count: 4 }
         ));
-        assert!(matches!(full[2], CleanOperation::RemoveStateDir));
+        assert!(matches!(full[3], CleanOperation::RemoveStateDir));
 
         // Soft clean (no --hard) should only destroy tofu
         let soft = plan_clean_operations(false, true, true, false, Some(4));
@@ -2671,11 +2676,25 @@ spec:
         assert_eq!(empty.len(), 1);
         assert!(matches!(empty[0], CleanOperation::NoState));
 
-        // Hard clean with host-infra — should destroy host-infra first, then main
+        // Hard clean with host-infra — should destroy host-infra first, then main:
+        // TofuDestroyHostInfra → TofuDestroy → KvmTeardown → NodeCleanup → RemoveStateDir
         let with_hi = plan_clean_operations(true, true, true, true, Some(4));
-        assert_eq!(with_hi.len(), 4);
+        assert_eq!(
+            with_hi.len(),
+            5,
+            "hard clean with host-infra must produce 5 operations"
+        );
         assert!(matches!(with_hi[0], CleanOperation::TofuDestroyHostInfra));
         assert!(matches!(with_hi[1], CleanOperation::TofuDestroy));
+        assert!(matches!(
+            with_hi[2],
+            CleanOperation::KvmTeardown { node_count: 4 }
+        ));
+        assert!(matches!(
+            with_hi[3],
+            CleanOperation::NodeCleanup { node_count: 4 }
+        ));
+        assert!(matches!(with_hi[4], CleanOperation::RemoveStateDir));
     }
 
     // ========================================================================
@@ -3172,7 +3191,7 @@ spec:
             "vars missing k8s version"
         );
         assert!(
-            vars.contains("kube_network_plugin: cni"),
+            vars.contains("kube_network_plugin: cilium"),
             "vars missing CNI config (cilium)"
         );
         assert!(
