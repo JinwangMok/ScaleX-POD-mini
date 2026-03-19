@@ -1906,6 +1906,42 @@ check_nodes_ssh_health() {
   return 0
 }
 
+# =============================================================================
+# check_ssh_health — Public SSH health-check API.
+#
+# Primary entry point for verifying SSH connectivity to a set of nodes before
+# or after any remote operation (feedback_network_safety_critical compliance).
+#
+# All nodes are probed IN PARALLEL (one background job per node).
+# SSH check = real login + `echo ok` — NOT a mere TCP/port-22 check.
+#
+# Per-node retry with exponential backoff:
+#   attempt 1 → 2 (wait 5 s) → 3 (wait 10 s) → 4 (wait 20 s) → 5 (wait 40 s)
+# First SSH failure after all retries triggers abort; all sibling probes are killed.
+#
+# Configurable via environment variables:
+#   SSH_HEALTH_TIMEOUT         — overall per-node ceiling in seconds (default 300 = 5 min)
+#   SSH_HEALTH_CONNECT_TIMEOUT — per-attempt ConnectTimeout           (default 15 s)
+#   SSH_HEALTH_USER            — SSH user for bare hostnames           (default: $USER)
+#
+# Usage:
+#   check_ssh_health LABEL [USER@]HOST [[USER@]HOST ...]
+#   check_ssh_health "pre-SDI"   root@10.0.0.10 root@10.0.0.11
+#   check_ssh_health "post-install"  admin@node1 admin@node2 admin@node3
+#
+# Returns:
+#   0  — ALL nodes passed SSH login + echo-ok within the timeout
+#   1  — ANY node failed after all retries (caller should abort or log warning)
+# =============================================================================
+check_ssh_health() {
+  local label="${1:?check_ssh_health requires a LABEL as first argument}"
+  shift
+  # Delegate to the core parallel-probe orchestrator.
+  # check_nodes_ssh_health handles: parallel launch, fail-fast polling,
+  # per-node summary table, and structured error_msg on failure.
+  check_nodes_ssh_health "$label" "$@"
+}
+
 # phase_ssh_check — Inter-phase SSH health-check wrapper.
 #
 # Reads bare-metal nodes from .baremetal-init.yaml, ensures ~/.ssh/config has
