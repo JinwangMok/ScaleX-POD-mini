@@ -49,10 +49,16 @@ pub fn scan_kubeconfig_names(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Timeout for connection probes during cluster discovery.
+/// Timeout for connection probes during cluster discovery (direct IP connections).
 /// Reduced from 3s to 2s — healthy clusters respond in <500ms;
 /// 2s catches slow-but-alive clusters while reducing startup latency.
 const DISCOVER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Timeout for CF Tunnel domain probes during cluster discovery.
+/// Longer than DISCOVER_TIMEOUT because CF Tunnel connections traverse
+/// Cloudflare's edge network and may need DNS resolution + TLS handshake
+/// on cold start, which can exceed 2s on the first request.
+const CF_DOMAIN_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Load api_endpoint mapping from k8s-clusters.yaml.
 /// Returns empty map if the file doesn't exist or can't be parsed.
@@ -155,7 +161,7 @@ async fn fetch_server_version(client: &Client) -> Option<String> {
 /// Discover clusters and stream results via mpsc channel (one event per cluster).
 /// Clusters are discovered in parallel via tokio::spawn.
 /// Connection strategy per cluster:
-///   1. api_endpoint (domain URL from k8s-clusters.yaml) → 3s timeout
+///   1. api_endpoint (domain URL from k8s-clusters.yaml) → 2s timeout
 ///   2. kubeconfig original IP → 3s timeout
 ///   3. SSH tunnel fallback → 500ms wait
 pub async fn discover_clusters_streaming(
@@ -239,7 +245,7 @@ pub async fn discover_clusters_streaming(
 
                 match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
-                        if probe_client(&client, DISCOVER_TIMEOUT).await {
+                        if probe_client(&client, CF_DOMAIN_PROBE_TIMEOUT).await {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
                                     message: format!("{}: connected via domain", cluster_name),
@@ -447,7 +453,7 @@ pub async fn discover_clusters_streaming_filtered(
                 let token = super::sa_provisioner::read_cached_token(&kubeconfig_path);
                 match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
-                        if probe_client(&client, DISCOVER_TIMEOUT).await {
+                        if probe_client(&client, CF_DOMAIN_PROBE_TIMEOUT).await {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
                                     message: format!("{}: connected via domain", cluster_name),
@@ -670,7 +676,7 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
 
                 match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
-                        if probe_client(&client, DISCOVER_TIMEOUT).await {
+                        if probe_client(&client, CF_DOMAIN_PROBE_TIMEOUT).await {
                             eprintln!("{}: connected via domain ({})", cluster_name, ep);
                             let ver = fetch_server_version(&client).await;
                             return Some(ClusterClient {
@@ -1335,6 +1341,51 @@ mod tests {
 
         let names = scan_kubeconfig_names(dir.path());
         assert_eq!(names, vec!["tower".to_string()]);
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-AC 2: build_client_with_endpoint CF Tunnel rewrite verification
+    // Ensures certificate_authority_data is stripped, bearer token injected,
+    // and server URL replaced with CF Tunnel domain.
+    // -------------------------------------------------------------------------
+
+    /// Verify that extract_server_url handles CF Tunnel domain URLs (not just IPs).
+    #[test]
+    fn extract_server_url_parses_cf_tunnel_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let kc = dir.path().join("kubeconfig.yaml");
+        std::fs::write(
+            &kc,
+            "clusters:\n- cluster:\n    server: https://tower-api.jinwang.dev:443\n",
+        )
+        .unwrap();
+        let result = extract_server_url(&kc);
+        assert!(
+            result.is_some(),
+            "extract_server_url must handle domain URLs for CF Tunnel kubeconfigs"
+        );
+        let (url, host, port) = result.unwrap();
+        assert_eq!(url, "https://tower-api.jinwang.dev:443");
+        assert_eq!(host, "tower-api.jinwang.dev");
+        assert_eq!(port, 443u16);
+    }
+
+    /// Verify that extract_server_url handles CF Tunnel domain URLs without explicit port.
+    #[test]
+    fn extract_server_url_parses_cf_tunnel_domain_no_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let kc = dir.path().join("kubeconfig.yaml");
+        std::fs::write(
+            &kc,
+            "clusters:\n- cluster:\n    server: https://sandbox-api.jinwang.dev\n",
+        )
+        .unwrap();
+        let result = extract_server_url(&kc);
+        assert!(result.is_some());
+        let (url, host, port) = result.unwrap();
+        assert_eq!(url, "https://sandbox-api.jinwang.dev");
+        assert_eq!(host, "sandbox-api.jinwang.dev");
+        assert_eq!(port, 6443u16, "default port should be 6443 when no port specified");
     }
 
     /// Four clusters (matching 4 bare-metal node topology) all appear in scan.

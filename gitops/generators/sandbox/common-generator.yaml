@@ -21,6 +21,9 @@ spec:
           - appName: kyverno-policies
             namespace: kyverno
             syncWave: "2"
+          - appName: scalex-dash-rbac
+            namespace: scalex-system
+            syncWave: "4"
   template:
     metadata:
       name: "sandbox-{{.appName}}"
