@@ -23,6 +23,7 @@ Evidence freshness constraint (project-wide): MAX_EVIDENCE_AGE_S = 600 (10 min).
 from __future__ import annotations
 
 import time
+import uuid
 import logging
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -32,6 +33,27 @@ from typing import Callable, Dict, List, Optional, Set
 MAX_EVIDENCE_AGE_S: int = 600  # 10 minutes
 
 logger = logging.getLogger("task_model")
+
+
+@dataclass
+class RunContext:
+    """
+    Captures the identity and wall-clock start time of a single executor run.  [Sub-AC 2a]
+
+    Every evidence artifact produced during this run is tagged with run_id so
+    that artifacts from separate runs are never confused.
+
+    Attributes:
+        run_id:     UUID4 string uniquely identifying this executor run.
+        started_at: Unix wall-clock timestamp (time.time()) when the run began.
+    """
+    run_id: str
+    started_at: float
+
+
+def _new_run_context() -> RunContext:
+    """Factory — create a fresh RunContext with a unique run_id and current wall time."""
+    return RunContext(run_id=str(uuid.uuid4()), started_at=time.time())
 
 
 class TaskStatus(Enum):
@@ -52,10 +74,15 @@ class Evidence:
         captured_at: Unix timestamp when evidence was collected.
         raw_output:  Raw command output (stdout/stderr).
         summary:     One-line human summary.
+        run_id:      Run-scoped UUID set by TaskExecutor when the evidence is
+                     stored.  None only for evidence created outside an executor
+                     context (e.g. in unit-test stubs or pre-seeded test state).
+                     [Sub-AC 2a] All executor-produced artifacts carry run_id.
     """
     captured_at: float
     raw_output: str
     summary: str
+    run_id: Optional[str] = None  # tagged by executor; None for externally-created stubs
 
     def is_fresh(self, max_age_s: int = MAX_EVIDENCE_AGE_S) -> bool:
         return (time.time() - self.captured_at) <= max_age_s
@@ -175,6 +202,10 @@ class TaskExecutor:
         self.dry_run = dry_run
         self._results: Dict[str, TaskResult] = {}
 
+        # Run-scoped context: unique run_id + wall-clock start time.  [Sub-AC 2a]
+        # Every evidence artifact produced during this run is tagged with run_id.
+        self.run_context: RunContext = _new_run_context()
+
         # Evidence store: maps evidence_key → Evidence
         # Populated when tasks run (or pre-seeded with stale evidence for testing).
         self._evidence_store: Dict[str, Evidence] = {}
@@ -185,6 +216,12 @@ class TaskExecutor:
             handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
             logger.addHandler(handler)
         logger.setLevel(log_level)
+
+        logger.info(
+            "[RUN_CONTEXT] run_id=%s started_at=%.3f",
+            self.run_context.run_id,
+            self.run_context.started_at,
+        )
 
         self._validate_graph()
 
@@ -431,13 +468,16 @@ class TaskExecutor:
 
         try:
             fresh_ev = source_task.run_fn()
+            # Tag re-captured evidence with this run's identity.  [Sub-AC 2a]
+            fresh_ev.run_id = self.run_context.run_id
             self._evidence_store[evidence_key] = fresh_ev
             logger.info(
                 "[RECHECK_OK] '%s' re-executed — evidence '%s' is now FRESH "
-                "(captured_at=%.0f summary=%s)",
+                "(captured_at=%.0f run_id=%s summary=%s)",
                 source_task_name,
                 evidence_key,
                 fresh_ev.captured_at,
+                fresh_ev.run_id,
                 fresh_ev.summary,
             )
         except Exception as exc:  # noqa: BLE001
@@ -485,12 +525,16 @@ class TaskExecutor:
         try:
             evidence = task.run_fn()
             finished = time.time()
+            # Tag evidence with run-scoped identity.  [Sub-AC 2a]
+            evidence.run_id = self.run_context.run_id
             logger.info("[OK] %s → %s", task.name, evidence.summary)
             # Store produced evidence so downstream tasks can use it
             ev_key = task.evidence_store_key()
             self._evidence_store[ev_key] = evidence
             logger.debug(
-                "[EVIDENCE_STORED] key=%r age=0s (just captured)", ev_key
+                "[EVIDENCE_STORED] key=%r run_id=%s age=0s (just captured)",
+                ev_key,
+                evidence.run_id,
             )
             return TaskResult(
                 task=task,
