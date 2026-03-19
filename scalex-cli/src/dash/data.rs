@@ -1004,14 +1004,16 @@ pub struct CheckReport {
     pub checks: Vec<CheckResult>,
 }
 
-/// Run all 5 E2E health checks against the fetched cluster snapshots.
+/// Run all 7 E2E health checks against the fetched cluster snapshots.
 ///
-/// The 5 checks are:
+/// The 7 checks are:
 /// 1. cluster_api_reachable  — both clusters discovered and API connectable
 /// 2. all_nodes_ready        — every node in every cluster reports Ready
 /// 3. namespaces_listed      — namespace listing non-empty on both clusters
 /// 4. argocd_synced          — ArgoCD server deployment available in tower
 /// 5. cf_tunnel_running      — cloudflared pod Running in tower cluster
+/// 6. cilium_healthy         — hubble-relay pod Running on all clusters (resolves DNS timeout)
+/// 7. kyverno_healthy        — kyverno admission controller pods Running on all clusters
 pub fn run_e2e_checks(
     snapshots: &[ClusterSnapshot],
     expected_clusters: &[&str],
@@ -1022,6 +1024,8 @@ pub fn run_e2e_checks(
         check_namespaces_listed(snapshots),
         check_argocd_synced(snapshots),
         check_cf_tunnel_running(snapshots),
+        check_cilium_healthy(snapshots),
+        check_kyverno_healthy(snapshots),
     ];
     let passed = checks.iter().filter(|c| c.status == CheckStatus::Pass).count();
     let failed = checks
@@ -1322,6 +1326,187 @@ fn check_cf_tunnel_running(snapshots: &[ClusterSnapshot]) -> CheckResult {
                 }],
             }
         }
+    }
+}
+
+/// Check 6: Cilium CNI is healthy — hubble-relay pods are Running on every cluster.
+///
+/// This check specifically catches the hubble-relay DNS timeout regression where
+/// hubble-relay enters CrashLoopBackOff when `peerService.clusterDomain` does not
+/// match the cluster's actual DNS domain (set by Kubespray `dns_domain` variable).
+/// Skips clusters where hubble-relay is not deployed (Hubble may be disabled).
+fn check_cilium_healthy(snapshots: &[ClusterSnapshot]) -> CheckResult {
+    let mut details = Vec::new();
+    let mut any_deployed = false;
+    let mut all_ok = true;
+
+    for snap in snapshots {
+        let hubble_pods: Vec<&PodInfo> = snap
+            .pods
+            .iter()
+            .filter(|p| p.name.contains("hubble-relay"))
+            .collect();
+
+        if hubble_pods.is_empty() {
+            // hubble-relay not deployed on this cluster — skip (Hubble may be disabled)
+            details.push(CheckDetail {
+                cluster: snap.name.clone(),
+                passed: true,
+                message: "hubble-relay not deployed (Hubble may be disabled)".to_string(),
+            });
+        } else {
+            any_deployed = true;
+            let running = hubble_pods.iter().filter(|p| p.status == "Running").count();
+            let total = hubble_pods.len();
+            let passed = running == total;
+            if !passed {
+                all_ok = false;
+            }
+            let detail_msg = if passed {
+                format!("{}/{} hubble-relay pod(s) Running", running, total)
+            } else {
+                let not_running: Vec<String> = hubble_pods
+                    .iter()
+                    .filter(|p| p.status != "Running")
+                    .map(|p| format!("{}={}", p.name, p.status))
+                    .collect();
+                format!(
+                    "{}/{} Running; degraded: {}",
+                    running,
+                    total,
+                    not_running.join(", ")
+                )
+            };
+            details.push(CheckDetail {
+                cluster: snap.name.clone(),
+                passed,
+                message: detail_msg,
+            });
+        }
+    }
+
+    // If hubble-relay is not deployed on any cluster, skip the check
+    if !any_deployed {
+        return CheckResult {
+            name: "cilium_healthy".to_string(),
+            status: CheckStatus::Skip,
+            message: "hubble-relay not deployed on any cluster — skipping Cilium check"
+                .to_string(),
+            details,
+        };
+    }
+
+    CheckResult {
+        name: "cilium_healthy".to_string(),
+        status: if all_ok {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        message: if all_ok {
+            format!(
+                "Cilium/hubble-relay healthy across {} cluster(s)",
+                snapshots.len()
+            )
+        } else {
+            "hubble-relay not Running on one or more clusters (DNS timeout regression?)".to_string()
+        },
+        details,
+    }
+}
+
+/// Check 7: Kyverno admission controller is healthy — kyverno pods are Running on all clusters.
+///
+/// This check reflects the resolved kyverno-policies ArgoCD OutOfSync state.
+/// When kyverno policy YAML is out of sync (e.g., Kyverno injects `background: true`
+/// defaults not present in git), kyverno webhooks may still function but ArgoCD
+/// will flag OutOfSync; after the fix the kyverno pods should remain Running.
+/// Skips clusters where kyverno is not deployed.
+fn check_kyverno_healthy(snapshots: &[ClusterSnapshot]) -> CheckResult {
+    let mut details = Vec::new();
+    let mut any_deployed = false;
+    let mut all_ok = true;
+
+    for snap in snapshots {
+        // Match kyverno admission controller pods in the kyverno namespace.
+        // Exclude kyverno-test / kyverno-cleanup pods (short-lived jobs).
+        let kyverno_pods: Vec<&PodInfo> = snap
+            .pods
+            .iter()
+            .filter(|p| {
+                p.namespace == "kyverno"
+                    && (p.name.starts_with("kyverno-admission")
+                        || p.name.starts_with("kyverno-background")
+                        || p.name.starts_with("kyverno-reports")
+                        || p.name == "kyverno"
+                        || (p.name.starts_with("kyverno-") && !p.name.contains("cleanup") && !p.name.contains("test")))
+            })
+            .collect();
+
+        if kyverno_pods.is_empty() {
+            details.push(CheckDetail {
+                cluster: snap.name.clone(),
+                passed: true,
+                message: "kyverno not deployed (policies may be disabled)".to_string(),
+            });
+        } else {
+            any_deployed = true;
+            let running = kyverno_pods.iter().filter(|p| p.status == "Running").count();
+            let total = kyverno_pods.len();
+            // Require at least one Running kyverno pod (admission controller)
+            let passed = running > 0;
+            if !passed {
+                all_ok = false;
+            }
+            let detail_msg = if passed {
+                format!("{}/{} kyverno pod(s) Running", running, total)
+            } else {
+                let not_running: Vec<String> = kyverno_pods
+                    .iter()
+                    .filter(|p| p.status != "Running")
+                    .map(|p| format!("{}={}", p.name, p.status))
+                    .collect();
+                format!(
+                    "{}/{} Running; degraded: {}",
+                    running,
+                    total,
+                    not_running.join(", ")
+                )
+            };
+            details.push(CheckDetail {
+                cluster: snap.name.clone(),
+                passed,
+                message: detail_msg,
+            });
+        }
+    }
+
+    // If kyverno is not deployed on any cluster, skip the check
+    if !any_deployed {
+        return CheckResult {
+            name: "kyverno_healthy".to_string(),
+            status: CheckStatus::Skip,
+            message: "kyverno not deployed on any cluster — skipping Kyverno check".to_string(),
+            details,
+        };
+    }
+
+    CheckResult {
+        name: "kyverno_healthy".to_string(),
+        status: if all_ok {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        message: if all_ok {
+            format!(
+                "Kyverno admission controller healthy across {} cluster(s)",
+                snapshots.len()
+            )
+        } else {
+            "kyverno not Running on one or more clusters".to_string()
+        },
+        details,
     }
 }
 
@@ -2459,7 +2644,14 @@ mod tests {
 
     // --- E2E checks tests ---
 
-    fn make_check_snapshot(name: &str, nodes_ready: bool, with_argocd: bool, with_cf_tunnel: bool) -> ClusterSnapshot {
+    fn make_check_snapshot(
+        name: &str,
+        nodes_ready: bool,
+        with_argocd: bool,
+        with_cf_tunnel: bool,
+        with_hubble_relay: bool,
+        with_kyverno: bool,
+    ) -> ClusterSnapshot {
         let nodes = vec![
             NodeInfo {
                 name: format!("{}-cp-0", name),
@@ -2529,6 +2721,32 @@ mod tests {
                 containers: vec!["cloudflared".into()],
             });
         }
+        if with_hubble_relay {
+            pods.push(PodInfo {
+                name: format!("hubble-relay-{}-abc", name),
+                namespace: "kube-system".into(),
+                status: "Running".into(),
+                ready: "1/1".into(),
+                restarts: 0,
+                restarts_display: "0".into(),
+                age: "1h".into(),
+                node: format!("{}-cp-0", name),
+                containers: vec!["hubble-relay".into()],
+            });
+        }
+        if with_kyverno {
+            pods.push(PodInfo {
+                name: "kyverno-admission-controller-xyz".into(),
+                namespace: "kyverno".into(),
+                status: "Running".into(),
+                ready: "1/1".into(),
+                restarts: 0,
+                restarts_display: "0".into(),
+                age: "1h".into(),
+                node: format!("{}-cp-0", name),
+                containers: vec!["kyverno".into()],
+            });
+        }
 
         ClusterSnapshot {
             name: name.into(),
@@ -2546,14 +2764,15 @@ mod tests {
 
     #[test]
     fn e2e_checks_all_pass() {
-        let tower = make_check_snapshot("tower", true, true, true);
-        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        // All 7 checks: both clusters have hubble-relay and kyverno deployed and Running
+        let tower = make_check_snapshot("tower", true, true, true, true, true);
+        let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
         let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
         assert_eq!(report.overall, CheckStatus::Pass);
-        assert_eq!(report.passed, 5);
+        assert_eq!(report.passed, 7);
         assert_eq!(report.failed, 0);
-        assert_eq!(report.total, 5);
+        assert_eq!(report.total, 7);
         for check in &report.checks {
             assert_eq!(
                 check.status, CheckStatus::Pass,
@@ -2566,7 +2785,7 @@ mod tests {
     #[test]
     fn e2e_checks_cluster_unreachable() {
         // Only tower available, sandbox expected but missing
-        let tower = make_check_snapshot("tower", true, true, true);
+        let tower = make_check_snapshot("tower", true, true, true, true, true);
         let snapshots = vec![tower];
         let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
         assert_eq!(report.overall, CheckStatus::Fail);
@@ -2577,8 +2796,8 @@ mod tests {
 
     #[test]
     fn e2e_checks_nodes_not_ready() {
-        let tower = make_check_snapshot("tower", false, true, true);
-        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let tower = make_check_snapshot("tower", false, true, true, true, true);
+        let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
         let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
         let node_check = &report.checks[1];
@@ -2588,8 +2807,8 @@ mod tests {
 
     #[test]
     fn e2e_checks_no_argocd() {
-        let tower = make_check_snapshot("tower", true, false, true);
-        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let tower = make_check_snapshot("tower", true, false, true, true, true);
+        let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
         let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
         let argocd_check = &report.checks[3];
@@ -2599,8 +2818,8 @@ mod tests {
 
     #[test]
     fn e2e_checks_no_cf_tunnel() {
-        let tower = make_check_snapshot("tower", true, true, false);
-        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let tower = make_check_snapshot("tower", true, true, false, true, true);
+        let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
         let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
         let cf_check = &report.checks[4];
@@ -2610,19 +2829,19 @@ mod tests {
 
     #[test]
     fn e2e_checks_serializes_to_json() {
-        let tower = make_check_snapshot("tower", true, true, true);
-        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let tower = make_check_snapshot("tower", true, true, true, true, true);
+        let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
         let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
         let json = serde_json::to_string_pretty(&report).unwrap();
         // Verify it's valid JSON with expected fields
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["overall"].as_str().unwrap(), "pass");
-        assert_eq!(parsed["passed"].as_u64().unwrap(), 5);
-        assert_eq!(parsed["total"].as_u64().unwrap(), 5);
+        assert_eq!(parsed["passed"].as_u64().unwrap(), 7);
+        assert_eq!(parsed["total"].as_u64().unwrap(), 7);
         let checks = parsed["checks"].as_array().unwrap();
-        assert_eq!(checks.len(), 5);
-        // Verify check names
+        assert_eq!(checks.len(), 7);
+        // Verify check names in order
         let names: Vec<&str> = checks.iter().map(|c| c["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
@@ -2632,13 +2851,15 @@ mod tests {
                 "namespaces_listed",
                 "argocd_synced",
                 "cf_tunnel_running",
+                "cilium_healthy",
+                "kyverno_healthy",
             ]
         );
     }
 
     #[test]
     fn e2e_checks_empty_namespaces_fails() {
-        let mut tower = make_check_snapshot("tower", true, true, true);
+        let mut tower = make_check_snapshot("tower", true, true, true, true, true);
         tower.namespaces.clear();
         let snapshots = vec![tower];
         let report = run_e2e_checks(&snapshots, &["tower"]);
@@ -2650,12 +2871,101 @@ mod tests {
     #[test]
     fn e2e_checks_tower_missing_skips_argocd_and_cf() {
         // Only sandbox available — ArgoCD and CF Tunnel checks should skip (tower-only)
-        let sandbox = make_check_snapshot("sandbox", true, false, false);
+        let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![sandbox];
         let report = run_e2e_checks(&snapshots, &["sandbox"]);
         let argocd_check = &report.checks[3];
         assert_eq!(argocd_check.status, CheckStatus::Skip);
         let cf_check = &report.checks[4];
         assert_eq!(cf_check.status, CheckStatus::Skip);
+    }
+
+    #[test]
+    fn e2e_checks_cilium_healthy_passes_when_hubble_relay_running() {
+        let tower = make_check_snapshot("tower", true, false, false, true, false);
+        let snapshots = vec![tower];
+        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let cilium_check = &report.checks[5];
+        assert_eq!(cilium_check.name, "cilium_healthy");
+        assert_eq!(cilium_check.status, CheckStatus::Pass);
+        assert!(cilium_check.message.contains("healthy"));
+    }
+
+    #[test]
+    fn e2e_checks_cilium_healthy_fails_when_hubble_relay_crashloop() {
+        let mut tower = make_check_snapshot("tower", true, false, false, false, false);
+        // Add a CrashLoopBackOff hubble-relay pod (DNS timeout regression)
+        tower.pods.push(PodInfo {
+            name: "hubble-relay-crashloop".into(),
+            namespace: "kube-system".into(),
+            status: "CrashLoopBackOff".into(),
+            ready: "0/1".into(),
+            restarts: 5,
+            restarts_display: "5".into(),
+            age: "10m".into(),
+            node: "tower-cp-0".into(),
+            containers: vec!["hubble-relay".into()],
+        });
+        let snapshots = vec![tower];
+        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let cilium_check = &report.checks[5];
+        assert_eq!(cilium_check.name, "cilium_healthy");
+        assert_eq!(cilium_check.status, CheckStatus::Fail);
+        assert!(cilium_check.message.contains("DNS timeout") || cilium_check.message.contains("not Running"));
+    }
+
+    #[test]
+    fn e2e_checks_cilium_skips_when_hubble_not_deployed() {
+        // No hubble-relay pods → check should Skip, not Fail
+        let tower = make_check_snapshot("tower", true, false, false, false, false);
+        let snapshots = vec![tower];
+        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let cilium_check = &report.checks[5];
+        assert_eq!(cilium_check.name, "cilium_healthy");
+        assert_eq!(cilium_check.status, CheckStatus::Skip);
+    }
+
+    #[test]
+    fn e2e_checks_kyverno_healthy_passes_when_admission_controller_running() {
+        let tower = make_check_snapshot("tower", true, false, false, false, true);
+        let snapshots = vec![tower];
+        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let kyverno_check = &report.checks[6];
+        assert_eq!(kyverno_check.name, "kyverno_healthy");
+        assert_eq!(kyverno_check.status, CheckStatus::Pass);
+        assert!(kyverno_check.message.contains("healthy"));
+    }
+
+    #[test]
+    fn e2e_checks_kyverno_healthy_fails_when_pods_not_running() {
+        let mut tower = make_check_snapshot("tower", true, false, false, false, false);
+        // Add a non-running kyverno pod
+        tower.pods.push(PodInfo {
+            name: "kyverno-admission-controller-xyz".into(),
+            namespace: "kyverno".into(),
+            status: "CrashLoopBackOff".into(),
+            ready: "0/1".into(),
+            restarts: 3,
+            restarts_display: "3".into(),
+            age: "5m".into(),
+            node: "tower-cp-0".into(),
+            containers: vec!["kyverno".into()],
+        });
+        let snapshots = vec![tower];
+        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let kyverno_check = &report.checks[6];
+        assert_eq!(kyverno_check.name, "kyverno_healthy");
+        assert_eq!(kyverno_check.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn e2e_checks_kyverno_skips_when_not_deployed() {
+        // No kyverno pods → check should Skip, not Fail
+        let tower = make_check_snapshot("tower", true, false, false, false, false);
+        let snapshots = vec![tower];
+        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let kyverno_check = &report.checks[6];
+        assert_eq!(kyverno_check.name, "kyverno_healthy");
+        assert_eq!(kyverno_check.status, CheckStatus::Skip);
     }
 }
