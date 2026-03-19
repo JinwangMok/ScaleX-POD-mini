@@ -1,0 +1,395 @@
+# docs/ac7b-artifact-domain-gap-report.yaml
+#
+# Sub-AC 7b: Artifact domain gap report
+# Audit of all existing task records for artifact domain references that are
+# missing, unregistered, or lack a granularity level.
+#
+# Scope boundary (declared before evaluation):
+#   - Python task records only: tests/task_model/scalex_tasks.py (13 tasks)
+#   - Vocabulary registry: ops/artifact_vocabulary.py (evidence keys)
+#   - Scope registry: ops/artifact_registry.py (scope_artifact_ids)
+#   - Test-scaffold tasks (test_dep_graph_enforcement.py, test_causal_deps.py)
+#     are OUT OF SCOPE — those use synthetic scope strings by design.
+#   - No network calls, no SSH, no VMs, no Kubernetes.
+#
+# Evidence freshness: captured 2026-03-19T12:00:14Z (within session, <10 min).
+#
+# Audit method:
+#   1. Iterated all 13 tasks returned by build_task_graph()
+#   2. Checked produces_evidence_key against ops/artifact_vocabulary.ARTIFACT_REGISTRY
+#   3. Checked EvidentialDep.evidence_key for each dep against same registry
+#   4. Checked scope_artifact_ids entries against ops/artifact_registry.parse_artifact_ref()
+#   5. Flagged: MISSING (empty/None), UNREGISTERED (not in registry),
+#      BANNED_ASPECT (lifecycle verb — granularity-defeating vague noun)
+#
+# Audit execution evidence (raw output):
+#   === CURRENT ARTIFACT DOMAIN AUDIT (live run) ===
+#   Tasks audited: 13
+#   PASS: check_ssh_connectivity
+#   PASS: gather_hardware_facts
+#   PASS: sdi_init
+#   PASS: sdi_verify_vms
+#   PASS: sdi_health_check
+#   PASS: kubespray_tower
+#   PASS: tower_post_install_verify
+#   PASS: kubespray_sandbox
+#   PASS: gitops_bootstrap
+#   PASS: argocd_sync_healthy
+#   PASS: cf_tunnel_healthy
+#   PASS: dash_headless_verify
+#   PASS: scalex_dash_token_provisioned
+#   Total gaps found: 0
+
+audit_metadata:
+  sub_ac: "7b"
+  description: >-
+    Audit all existing task records to identify artifact domain references that
+    are missing, unregistered, or lack a granularity level — producing a gap
+    report with specific record locations.
+  scope_boundary: >-
+    tests/task_model/scalex_tasks.py (13 operational task records);
+    ops/artifact_vocabulary.py (evidence-key controlled vocabulary);
+    ops/artifact_registry.py (scope-level artifact registry).
+    Test-scaffold tasks are explicitly out of scope.
+  evidence_captured_at: "2026-03-19T12:00:14Z"
+  audit_command: "python -m pytest tests/test_ac7b_artifact_domain_audit.py -v"
+  total_tasks_audited: 13
+  total_gaps_found_live: 0
+  total_historical_gaps_documented: 3
+  current_state: CLEAN
+
+# -----------------------------------------------------------------------------
+# HISTORICAL GAP FINDINGS
+# These 3 gaps were identified during the Sub-AC 7b audit by tracing the
+# controlled vocabulary and comparing it against the task record fields.
+# They were remediated in the same session (Sub-AC 7c key update).
+# They are preserved here as the audit record with specific file:line locations.
+# -----------------------------------------------------------------------------
+
+historical_gaps:
+
+  - id: GAP-001
+    status: REMEDIATED
+    remediated_in: "Sub-AC 7c (same session)"
+    gap_type: UNREGISTERED_PRODUCES_KEY
+    severity: HIGH
+    file: tests/task_model/scalex_tasks.py
+    line: 194
+    task: sdi_init
+    field: produces_evidence_key
+    found_value: "sdi_init:completion"
+    reason: >-
+      The aspect "completion" is a banned lifecycle verb per
+      ops/artifact_vocabulary.ArtifactDescriptor.__post_init__ (banned set:
+      completion, done, finished, ran, executed, ok).  This key was not registered
+      in ARTIFACT_REGISTRY.  The controlled vocabulary registered "sdi_init:vm_list"
+      (GranularityLevel.FINE) as the correct produces_evidence_key for this task.
+    registered_alternative: "sdi_init:vm_list"
+    registered_alternative_granularity: FINE
+    registered_alternative_file: ops/artifact_vocabulary.py
+    registered_alternative_line: 154
+    fix_applied: >-
+      Changed produces_evidence_key from "sdi_init:completion" to "sdi_init:vm_list"
+      at tests/task_model/scalex_tasks.py (now at line ~214, annotated with
+      "# [Sub-AC 7c] was sdi_init:completion -- replaced with registered identifier").
+    note: >-
+      The module docstring diagram at line 25 correctly showed
+      "sdi_verify_vms evidence_deps: [sdi_init:vm_list]" — confirming the
+      diagram was authoritative and the code had drifted.
+
+  - id: GAP-002
+    status: REMEDIATED
+    remediated_in: "Sub-AC 7c (same session)"
+    gap_type: UNREGISTERED_EVIDENTIAL_DEP_KEY
+    severity: HIGH
+    file: tests/task_model/scalex_tasks.py
+    line: 212
+    task: sdi_verify_vms
+    field: "evidence_deps[0].evidence_key"
+    found_value: "sdi_init:completion"
+    reason: >-
+      The EvidentialDep for sdi_verify_vms referenced "sdi_init:completion"
+      which was not in the artifact vocabulary (banned aspect "completion").
+      The vocabulary registered "sdi_init:vm_list" as the artifact produced by
+      sdi_init.  This dep had to reference the registered key so the executor
+      can check freshness and trigger re-check against the correct vocabulary entry.
+    registered_alternative: "sdi_init:vm_list"
+    registered_alternative_granularity: FINE
+    root_cause: GAP-001
+    fix_applied: >-
+      Changed evidence_key from "sdi_init:completion" to "sdi_init:vm_list"
+      at tests/task_model/scalex_tasks.py (now at line ~230, annotated with
+      "# [Sub-AC 7c] was sdi_init:completion -- updated to registered key").
+
+  - id: GAP-003
+    status: REMEDIATED
+    remediated_in: "Sub-AC 7c (same session)"
+    gap_type: UNREGISTERED_EVIDENTIAL_DEP_KEY
+    severity: HIGH
+    file: tests/task_model/scalex_tasks.py
+    line: 241
+    task: sdi_health_check
+    field: "evidence_deps[0].evidence_key"
+    found_value: "sdi_init:completion"
+    reason: >-
+      The EvidentialDep for sdi_health_check referenced "sdi_init:completion"
+      which was not in the artifact vocabulary (banned aspect "completion").
+    registered_alternative: "sdi_init:vm_list"
+    registered_alternative_granularity: FINE
+    root_cause: GAP-001
+    fix_applied: >-
+      Changed evidence_key from "sdi_init:completion" to "sdi_init:vm_list"
+      at tests/task_model/scalex_tasks.py (now at line ~256, annotated with
+      "# [Sub-AC 7c] was sdi_init:completion -- updated to registered key").
+
+# -----------------------------------------------------------------------------
+# TASK INVENTORY — CURRENT STATE (all PASS)
+# -----------------------------------------------------------------------------
+
+task_inventory:
+
+  - task: check_ssh_connectivity
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 120
+    line_produces_key: 131
+    scope: "bare-metal: all playbox nodes reachable via SSH"
+    produces_evidence_key: "check_ssh_connectivity:reachability"
+    produces_key_registered: true
+    produces_key_granularity: ATOMIC
+    scope_artifact_ids: ["network:ssh:reachability", "node:playbox-0", "node:playbox-1",
+                         "node:playbox-2", "node:playbox-3"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+  - task: gather_hardware_facts
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 145
+    line_produces_key: 162
+    scope: "bare-metal: CPU/RAM/disk/GPU facts for all nodes"
+    produces_evidence_key: "gather_hardware_facts:hw_facts"
+    produces_key_registered: true
+    produces_key_granularity: FINE
+    scope_artifact_ids: ["node:playbox-0", "node:playbox-1", "node:playbox-2",
+                         "node:playbox-3", "module:scalex-cli"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+  - task: sdi_init
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 174
+    line_produces_key: 214
+    scope: "sdi: libvirt VM pool creation on all bare-metal nodes"
+    produces_evidence_key: "sdi_init:vm_list"
+    produces_key_registered: true
+    produces_key_granularity: FINE
+    scope_artifact_ids: ["sdi:vm-pool:creation", "file:config/sdi-specs.yaml",
+                         "module:scalex-cli"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+    note: "GAP-001 remediated: was 'sdi_init:completion' (banned aspect), now 'sdi_init:vm_list'"
+
+  - task: sdi_verify_vms
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 203
+    line_produces_key: 222
+    scope: "sdi: verify all VMs are running post-init"
+    produces_evidence_key: "sdi_verify_vms:vm_ready"
+    produces_key_registered: true
+    produces_key_granularity: ATOMIC
+    scope_artifact_ids: ["sdi:vm-pool", "sdi:libvirt-domain"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+    note: "GAP-002 remediated: EvidentialDep was 'sdi_init:completion', now 'sdi_init:vm_list'"
+
+  - task: sdi_health_check
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 232
+    line_produces_key: 251
+    scope: "sdi: libvirt domain health on all bare-metal nodes"
+    produces_evidence_key: "sdi_health_check:virsh_status"
+    produces_key_registered: true
+    produces_key_granularity: FINE
+    scope_artifact_ids: ["sdi:libvirt-domain", "network:ssh:virsh-status"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+    note: "GAP-003 remediated: EvidentialDep was 'sdi_init:completion', now 'sdi_init:vm_list'"
+
+  - task: kubespray_tower
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 262
+    line_produces_key: 282
+    scope: "k8s-tower: Kubespray provision of tower cluster VMs"
+    produces_evidence_key: "kubespray_tower:cluster_healthy"
+    produces_key_registered: true
+    produces_key_granularity: COARSE
+    scope_artifact_ids: ["cluster:tower:provisioning", "module:kubespray",
+                         "file:config/k8s-clusters.yaml"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+  - task: tower_post_install_verify
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 291
+    line_produces_key: 304
+    scope: "k8s-tower: API server reachable, all nodes Ready"
+    produces_evidence_key: "tower_post_install_verify:api_reachable"
+    produces_key_registered: true
+    produces_key_granularity: ATOMIC
+    scope_artifact_ids: ["cluster:tower:api-reachable"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+  - task: kubespray_sandbox
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 313
+    line_produces_key: 333
+    scope: "k8s-sandbox: Kubespray provision of sandbox cluster VMs"
+    produces_evidence_key: "kubespray_sandbox:cluster_healthy"
+    produces_key_registered: true
+    produces_key_granularity: COARSE
+    scope_artifact_ids: ["cluster:sandbox:provisioning", "module:kubespray",
+                         "file:config/k8s-clusters.yaml"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+  - task: gitops_bootstrap
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 343
+    line_produces_key: 359
+    scope: "gitops: ArgoCD bootstrap via spread.yaml on tower cluster"
+    produces_evidence_key: "gitops_bootstrap:spread_applied"
+    produces_key_registered: true
+    produces_key_granularity: ATOMIC
+    scope_artifact_ids: ["module:gitops", "file:gitops/bootstrap/spread.yaml",
+                         "service:argocd:bootstrap", "cluster:tower"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+  - task: argocd_sync_healthy
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 368
+    line_produces_key: 378
+    scope: "gitops: all ArgoCD Applications in Synced+Healthy state"
+    produces_evidence_key: "argocd_sync_healthy:all_synced"
+    produces_key_registered: true
+    produces_key_granularity: COARSE
+    scope_artifact_ids: ["service:argocd:sync-state", "cluster:tower"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+  - task: cf_tunnel_healthy
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 388
+    line_produces_key: 403
+    scope: "cf-tunnel: cloudflared pod running and API accessible"
+    produces_evidence_key: "cf_tunnel_healthy:tunnel_up"
+    produces_key_registered: true
+    produces_key_granularity: ATOMIC
+    scope_artifact_ids: ["service:cloudflared:tunnel-up", "network:cf-tunnel",
+                         "cluster:tower"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+  - task: dash_headless_verify
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 413
+    line_produces_key: 423
+    scope: "dash: scalex dash --headless returns valid cluster snapshot"
+    produces_evidence_key: "dash_headless_verify:snapshot_valid"
+    produces_key_registered: true
+    produces_key_granularity: FINE
+    scope_artifact_ids: ["module:scalex-cli", "network:cf-tunnel", "cluster:tower",
+                         "cluster:sandbox"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+  - task: scalex_dash_token_provisioned
+    file: tests/task_model/scalex_tasks.py
+    line_scope: 432
+    line_produces_key: 442
+    scope: "dash: scalex-dash SA token cached at _generated/clusters/*/dash-token"
+    produces_evidence_key: "scalex_dash_token_provisioned:token_valid"
+    produces_key_registered: true
+    produces_key_granularity: ATOMIC
+    scope_artifact_ids: ["service:scalex-dash:token", "cluster:tower",
+                         "cluster:sandbox"]
+    scope_artifact_ids_all_registered: true
+    evidential_deps_all_registered: true
+    verdict: PASS
+
+# -----------------------------------------------------------------------------
+# ADDITIONAL OBSERVATIONS (informational, not counted as gaps)
+# -----------------------------------------------------------------------------
+
+observations:
+
+  - id: OBS-001
+    topic: docstring_diagram_was_correct
+    file: tests/task_model/scalex_tasks.py
+    line: 25
+    detail: >-
+      The module docstring diagram at line 25 shows
+      "sdi_verify_vms evidence_deps: [sdi_init:vm_list]" which is the CORRECT
+      registered key.  The diagram was authoritative; the code had drifted to
+      "sdi_init:completion" in three places (GAP-001, GAP-002, GAP-003).
+      The fix aligned the code back to the diagram's intent.
+
+  - id: OBS-002
+    topic: ops_task_model_no_scope_artifact_ids
+    file: ops/task_model.py
+    line: 164
+    detail: >-
+      The ops-layer Task dataclass (ops/task_model.py) does not have a
+      scope_artifact_ids field.  Only the tests/task_model/model.py Task has
+      this field.  The ops executor (ops/executor.py) therefore cannot validate
+      artifact domain references at execution time.  Not counted as a gap in
+      the existing task records (those are in tests/task_model/scalex_tasks.py),
+      but is a structural gap in the ops layer for future unification work.
+
+  - id: OBS-003
+    topic: test_scaffold_generic_scopes
+    detail: >-
+      Test-scaffold tasks in tests/test_dep_graph_enforcement.py and
+      tests/task_model/test_causal_deps.py use generic scope strings
+      ("scope", "unit-test scope", "test-scope:A", etc.) without structured
+      artifact domain references.  This is intentional — scaffold tasks test
+      the model machinery, not operational domains.  Explicitly out of scope
+      for this audit per the declared scope boundary above.
+
+# -----------------------------------------------------------------------------
+# SUMMARY
+# -----------------------------------------------------------------------------
+
+summary:
+  tasks_audited: 13
+  current_gaps: 0
+  tasks_currently_clean: 13
+  historical_gaps_total: 3
+  historical_gaps_by_type:
+    UNREGISTERED_PRODUCES_KEY: 1
+    UNREGISTERED_EVIDENTIAL_DEP_KEY: 2
+  root_cause_of_historical_gaps: >-
+    All 3 gaps shared the same root cause: sdi_init.produces_evidence_key was
+    set to "sdi_init:completion" (a banned lifecycle-verb aspect) instead of
+    the registered "sdi_init:vm_list" (GranularityLevel.FINE).  The two
+    downstream evidential deps (sdi_verify_vms and sdi_health_check) propagated
+    this wrong key.
+  remediation_summary: >-
+    GAP-001: sdi_init.produces_evidence_key changed "sdi_init:completion" ->
+             "sdi_init:vm_list" (tests/task_model/scalex_tasks.py).
+    GAP-002: sdi_verify_vms EvidentialDep[0].evidence_key -> "sdi_init:vm_list".
+    GAP-003: sdi_health_check EvidentialDep[0].evidence_key -> "sdi_init:vm_list".
+    All three changes applied in Sub-AC 7c (same P2 hardening session).
+  current_verdict: PASS — all 13 task records are artifact-domain-clean.
