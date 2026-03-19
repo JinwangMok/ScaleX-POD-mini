@@ -219,6 +219,13 @@ def build_task_graph() -> List[Task]:
         Task(
             name="check_ssh_connectivity",
             scope="bare-metal: all playbox nodes reachable via SSH",
+            scope_artifact_ids=[
+                "network:ssh",
+                "node:playbox-0",
+                "node:playbox-1",
+                "node:playbox-2",
+                "node:playbox-3",
+            ],
             prerequisites=[],
             # No evidential deps -- this IS the root evidence source.
             evidence_deps=[],
@@ -237,6 +244,13 @@ def build_task_graph() -> List[Task]:
         Task(
             name="gather_hardware_facts",
             scope="bare-metal: CPU/RAM/disk/GPU facts for all nodes",
+            scope_artifact_ids=[
+                "module:scalex-cli",
+                "node:playbox-0",
+                "node:playbox-1",
+                "node:playbox-2",
+                "node:playbox-3",
+            ],
             prerequisites=["check_ssh_connectivity"],
             # Evidential dep: relies on fresh SSH reachability evidence
             evidence_deps=[
@@ -259,6 +273,11 @@ def build_task_graph() -> List[Task]:
         Task(
             name="sdi_init",
             scope="sdi: libvirt VM pool creation on all bare-metal nodes",
+            scope_artifact_ids=[
+                "sdi:vm-pool",
+                "module:scalex-cli",
+                "file:config/sdi-specs.yaml",
+            ],
             prerequisites=["gather_hardware_facts"],
             # Evidential deps: SSH reachability + hardware facts must be fresh
             evidence_deps=[
@@ -286,6 +305,10 @@ def build_task_graph() -> List[Task]:
         Task(
             name="sdi_verify_vms",
             scope="sdi: verify all VMs are running post-init",
+            scope_artifact_ids=[
+                "sdi:libvirt-domain",
+                "sdi:vm-pool",
+            ],
             prerequisites=["sdi_init"],
             # Evidential deps: SDI VM list + SSH reachability (remote op)
             evidence_deps=[
@@ -312,6 +335,10 @@ def build_task_graph() -> List[Task]:
         Task(
             name="sdi_health_check",
             scope="sdi: libvirt domain health on all bare-metal nodes",
+            scope_artifact_ids=[
+                "sdi:libvirt-domain",
+                "network:ssh",
+            ],
             prerequisites=["sdi_init"],
             # Evidential deps: SDI VM list + SSH reachability (remote op)
             evidence_deps=[
@@ -339,6 +366,10 @@ def build_task_graph() -> List[Task]:
         Task(
             name="kubespray_tower",
             scope="k8s-tower: Kubespray provision of tower cluster VMs",
+            scope_artifact_ids=[
+                "cluster:tower",
+                "module:kubespray",
+            ],
             prerequisites=["sdi_verify_vms"],
             # Evidential dep: VM readiness evidence + SSH reachability
             evidence_deps=[
@@ -363,6 +394,9 @@ def build_task_graph() -> List[Task]:
         Task(
             name="tower_post_install_verify",
             scope="k8s-tower: API server reachable, all nodes Ready",
+            scope_artifact_ids=[
+                "cluster:tower",
+            ],
             prerequisites=["kubespray_tower"],
             # Evidential dep: Kubespray cluster_healthy evidence
             evidence_deps=[
@@ -382,6 +416,10 @@ def build_task_graph() -> List[Task]:
         Task(
             name="kubespray_sandbox",
             scope="k8s-sandbox: Kubespray provision of sandbox cluster VMs",
+            scope_artifact_ids=[
+                "cluster:sandbox",
+                "module:kubespray",
+            ],
             prerequisites=["sdi_verify_vms"],
             # Evidential dep: VM readiness + SSH reachability
             evidence_deps=[
@@ -407,6 +445,11 @@ def build_task_graph() -> List[Task]:
         Task(
             name="gitops_bootstrap",
             scope="gitops: ArgoCD bootstrap via spread.yaml on tower cluster",
+            scope_artifact_ids=[
+                "service:argocd",
+                "cluster:tower",
+                "file:gitops/bootstrap/spread.yaml",
+            ],
             prerequisites=["tower_post_install_verify"],
             # Evidential dep: tower API must be reachable (fresh evidence)
             evidence_deps=[
@@ -426,6 +469,10 @@ def build_task_graph() -> List[Task]:
         Task(
             name="argocd_sync_healthy",
             scope="gitops: all ArgoCD Applications in Synced+Healthy state",
+            scope_artifact_ids=[
+                "service:argocd",
+                "cluster:tower",
+            ],
             prerequisites=["gitops_bootstrap"],
             # Evidential dep: gitops bootstrap spread_applied must be fresh
             evidence_deps=[
@@ -446,6 +493,10 @@ def build_task_graph() -> List[Task]:
         Task(
             name="cf_tunnel_healthy",
             scope="cf-tunnel: cloudflared pod running and API accessible",
+            scope_artifact_ids=[
+                "service:cloudflared",
+                "network:cf-tunnel",
+            ],
             prerequisites=["argocd_sync_healthy"],
             # Evidential deps: ArgoCD sync state + SSH reachability (network safety)
             evidence_deps=[
@@ -471,6 +522,10 @@ def build_task_graph() -> List[Task]:
         Task(
             name="dash_headless_verify",
             scope="dash: scalex dash --headless returns valid cluster snapshot",
+            scope_artifact_ids=[
+                "service:scalex-dash",
+                "module:scalex-cli",
+            ],
             prerequisites=["cf_tunnel_healthy"],
             # Evidential dep: CF tunnel must be up (fresh)
             evidence_deps=[
@@ -490,6 +545,11 @@ def build_task_graph() -> List[Task]:
         Task(
             name="scalex_dash_token_provisioned",
             scope="dash: scalex-dash SA token cached at _generated/clusters/*/dash-token",
+            scope_artifact_ids=[
+                "service:scalex-dash",
+                "cluster:tower",
+                "cluster:sandbox",
+            ],
             prerequisites=["cf_tunnel_healthy"],
             # Evidential dep: CF tunnel must be up (fresh)
             evidence_deps=[
@@ -509,6 +569,10 @@ def build_task_graph() -> List[Task]:
         # -- Layer 3b: Cilium CNI periodic health re-verification  [Sub-AC 2b] --
         Task(
             name="cilium_health_verify",
+            scope_artifact_ids=[
+                "service:cilium",
+                "cluster:tower",
+            ],
             scope=(
                 "service:cilium — kube-system namespace on tower cluster: "
                 "cilium pods Running, agent healthy, CNI connectivity probe passing.  "
