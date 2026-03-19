@@ -669,8 +669,26 @@ fn run_init(
             }
 
             apply_result?;
+
+            // Step 7: Verify VMs are running on each bare-metal host
+            println!("[sdi] Verifying VM status on bare-metal hosts...");
+            let failed_vms = check_vms_running_on_hosts(&spec, &bm_config);
+            if failed_vms.is_empty() {
+                println!("[sdi] All VMs verified running.");
+            } else {
+                eprintln!(
+                    "[sdi] WARNING: {}/{} VM(s) not yet running — they may still be booting:",
+                    failed_vms.len(),
+                    tofu::collect_unique_hosts(&spec).len()
+                );
+                for (vm, host) in &failed_vms {
+                    eprintln!("[sdi]   {} on {}", vm, host);
+                }
+                eprintln!("[sdi] Re-run `virsh list --all` on each host to confirm boot completes.");
+            }
         } else {
             println!("[dry-run] Would run: tofu init && tofu apply -auto-approve");
+            println!("[dry-run] Would verify VM status via virsh list --all on each host");
         }
 
         println!("[sdi] SDI initialization complete.");
@@ -1574,6 +1592,101 @@ pub fn build_host_infra_inputs(
             ssh_user: n.admin_user.clone(),
         })
         .collect()
+}
+
+/// Collect expected VM names grouped by bare-metal host from an SDI spec.
+/// Pure function: no IO, no side effects.
+/// Returns a map from host name → list of VM names expected on that host.
+pub fn collect_vms_per_host(spec: &SdiSpec) -> std::collections::HashMap<String, Vec<String>> {
+    let mut map: std::collections::HashMap<String, Vec<String>> = Default::default();
+    for pool in &spec.spec.sdi_pools {
+        for node in &pool.node_specs {
+            let host = node
+                .host
+                .clone()
+                .or_else(|| pool.placement.hosts.first().cloned())
+                .unwrap_or_else(|| "localhost".to_string());
+            map.entry(host).or_default().push(node.node_name.clone());
+        }
+    }
+    map
+}
+
+/// Check if a specific VM domain is in "running" state in `virsh list --all` output.
+/// Pure function: no IO, no side effects.
+///
+/// Example virsh output lines:
+///   "  1   tower-cp-0      running"
+///   "  -   sandbox-w-2     shut off"
+pub fn vm_is_running(vm_name: &str, virsh_output: &str) -> bool {
+    for line in virsh_output.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // virsh list --all: <id|-> <name> <state…>
+        // A domain is "running" when the third token is "running"
+        if parts.len() >= 3 && parts[1] == vm_name && parts[2] == "running" {
+            return true;
+        }
+    }
+    false
+}
+
+/// After tofu apply, SSH into each bare-metal host and verify that every expected
+/// VM is in "running" state via `virsh list --all`.
+/// Returns the list of (vm_name, host_name) pairs that are NOT running (empty = all OK).
+/// Connectivity failures are logged as warnings; they do not produce failed entries.
+fn check_vms_running_on_hosts(
+    spec: &SdiSpec,
+    bm_config: &crate::core::config::BaremetalInitConfig,
+) -> Vec<(String, String)> {
+    let vms_by_host = collect_vms_per_host(spec);
+    let mut not_running: Vec<(String, String)> = Vec::new();
+
+    for (host_name, vm_names) in &vms_by_host {
+        let node = bm_config
+            .target_nodes
+            .iter()
+            .find(|n| n.name == *host_name);
+        let Some(node) = node else {
+            eprintln!(
+                "[sdi] WARNING: host '{}' not found in baremetal config, skipping VM check",
+                host_name
+            );
+            continue;
+        };
+
+        let virsh_cmd = "sudo virsh -c qemu:///system list --all 2>/dev/null";
+        match crate::core::ssh::build_ssh_command(node, virsh_cmd, &bm_config.target_nodes) {
+            Ok(cmd) => match crate::core::ssh::execute_ssh(&cmd) {
+                Ok(output) => {
+                    for vm_name in vm_names {
+                        if vm_is_running(vm_name, &output) {
+                            println!("[sdi]   {} on {} — running ✓", vm_name, host_name);
+                        } else {
+                            eprintln!(
+                                "[sdi]   {} on {} — NOT running ✗",
+                                vm_name, host_name
+                            );
+                            not_running.push((vm_name.clone(), host_name.clone()));
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[sdi] WARNING: cannot verify VMs on {} (SSH error: {})",
+                        host_name, e
+                    );
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "[sdi] WARNING: cannot build SSH command for {} ({})",
+                    host_name, e
+                );
+            }
+        }
+    }
+
+    not_running
 }
 
 fn run_tofu_command(work_dir: &Path, args: &[&str]) -> anyhow::Result<()> {
@@ -3096,6 +3209,234 @@ mod tests {
     fn test_validate_clean_args_hard_confirm_valid() {
         // --hard + confirm: should pass regardless of node filter presence
         assert_eq!(validate_clean_args(true, true), None);
+    }
+
+    // --- VM verification helpers ---
+
+    fn make_sdi_spec_with_playbox3() -> SdiSpec {
+        SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "playbox-pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec!["8.8.8.8".to_string()],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "https://example.com/image.img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "~/.ssh/id.pub".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![
+                    SdiPool {
+                        pool_name: "tower".to_string(),
+                        purpose: "management".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec!["playbox-0".to_string()],
+                            spread: false,
+                        },
+                        node_specs: vec![NodeSpec {
+                            node_name: "tower-cp-0".to_string(),
+                            ip: "192.168.88.100".to_string(),
+                            cpu: 4,
+                            mem_gb: 6,
+                            disk_gb: 30,
+                            host: Some("playbox-0".to_string()),
+                            roles: vec!["control-plane".to_string()],
+                            devices: None,
+                        }],
+                    },
+                    SdiPool {
+                        pool_name: "sandbox".to_string(),
+                        purpose: "workload".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec![],
+                            spread: true,
+                        },
+                        node_specs: vec![
+                            NodeSpec {
+                                node_name: "sandbox-worker-0".to_string(),
+                                ip: "192.168.88.120".to_string(),
+                                cpu: 2,
+                                mem_gb: 4,
+                                disk_gb: 40,
+                                host: Some("playbox-1".to_string()),
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "sandbox-worker-1".to_string(),
+                                ip: "192.168.88.121".to_string(),
+                                cpu: 2,
+                                mem_gb: 4,
+                                disk_gb: 40,
+                                host: Some("playbox-2".to_string()),
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "sandbox-worker-2".to_string(),
+                                ip: "192.168.88.122".to_string(),
+                                cpu: 4,
+                                mem_gb: 8,
+                                disk_gb: 60,
+                                host: Some("playbox-3".to_string()),
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+    }
+
+    #[test]
+    fn test_collect_vms_per_host_includes_playbox3() {
+        let spec = make_sdi_spec_with_playbox3();
+        let map = collect_vms_per_host(&spec);
+
+        // playbox-3 must appear with sandbox-worker-2
+        assert!(
+            map.contains_key("playbox-3"),
+            "collect_vms_per_host must include playbox-3"
+        );
+        assert_eq!(
+            map["playbox-3"],
+            vec!["sandbox-worker-2"],
+            "playbox-3 must host sandbox-worker-2"
+        );
+
+        // Other hosts must still be present
+        assert!(map.contains_key("playbox-0"), "playbox-0 must be present");
+        assert!(map.contains_key("playbox-1"), "playbox-1 must be present");
+        assert!(map.contains_key("playbox-2"), "playbox-2 must be present");
+
+        // Total VMs
+        let total: usize = map.values().map(|v| v.len()).sum();
+        assert_eq!(total, 4, "4 VMs total across 4 hosts");
+    }
+
+    #[test]
+    fn test_collect_vms_per_host_idempotent() {
+        let spec = make_sdi_spec_with_playbox3();
+        let map1 = collect_vms_per_host(&spec);
+        let map2 = collect_vms_per_host(&spec);
+        // Keys must be identical
+        let mut keys1: Vec<_> = map1.keys().cloned().collect();
+        let mut keys2: Vec<_> = map2.keys().cloned().collect();
+        keys1.sort();
+        keys2.sort();
+        assert_eq!(keys1, keys2, "collect_vms_per_host must be deterministic");
+    }
+
+    #[test]
+    fn test_vm_is_running_detects_running_vm() {
+        let virsh_output = "\
+ Id   Name              State
+------------------------------------
+  1   tower-cp-0        running
+  2   sandbox-worker-0  running
+  -   sandbox-worker-2  shut off";
+
+        assert!(
+            vm_is_running("tower-cp-0", virsh_output),
+            "tower-cp-0 is running"
+        );
+        assert!(
+            vm_is_running("sandbox-worker-0", virsh_output),
+            "sandbox-worker-0 is running"
+        );
+        assert!(
+            !vm_is_running("sandbox-worker-2", virsh_output),
+            "sandbox-worker-2 is shut off, not running"
+        );
+        assert!(
+            !vm_is_running("nonexistent-vm", virsh_output),
+            "nonexistent VM must return false"
+        );
+    }
+
+    #[test]
+    fn test_vm_is_running_handles_empty_output() {
+        assert!(
+            !vm_is_running("any-vm", ""),
+            "empty virsh output means no VMs running"
+        );
+    }
+
+    #[test]
+    fn test_vm_is_running_exact_name_match() {
+        let virsh_output = " 1   sandbox-worker   running\n 2   sandbox-worker-2   running";
+        // "sandbox-worker" must not match "sandbox-worker-2"
+        assert!(
+            vm_is_running("sandbox-worker", virsh_output),
+            "exact match for sandbox-worker"
+        );
+        assert!(
+            vm_is_running("sandbox-worker-2", virsh_output),
+            "exact match for sandbox-worker-2"
+        );
+    }
+
+    #[test]
+    fn test_collect_vms_per_host_pool_level_placement_fallback() {
+        // VM without explicit host falls back to pool-level placement.hosts[0]
+        let spec = SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec![],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "~/.ssh/id.pub".to_string(),
+                packages: vec![],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![SdiPool {
+                    pool_name: "tower".to_string(),
+                    purpose: "management".to_string(),
+                    placement: PlacementConfig {
+                        hosts: vec!["playbox-0".to_string()],
+                        spread: false,
+                    },
+                    node_specs: vec![NodeSpec {
+                        node_name: "tower-cp-0".to_string(),
+                        ip: "192.168.88.100".to_string(),
+                        cpu: 2,
+                        mem_gb: 3,
+                        disk_gb: 30,
+                        host: None, // no explicit host — should fall back to pool placement
+                        roles: vec!["control-plane".to_string()],
+                        devices: None,
+                    }],
+                }],
+            },
+        };
+        let map = collect_vms_per_host(&spec);
+        assert!(
+            map.contains_key("playbox-0"),
+            "VM without explicit host must use pool-level placement"
+        );
+        assert_eq!(
+            map["playbox-0"],
+            vec!["tower-cp-0"],
+            "tower-cp-0 must be on playbox-0 via pool placement fallback"
+        );
     }
 
     /// Sub-AC 4: validate_clean_args rejects --hard without confirmation.
