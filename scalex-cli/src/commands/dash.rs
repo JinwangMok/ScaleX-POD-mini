@@ -8,6 +8,13 @@ pub struct DashArgs {
     #[arg(long)]
     pub headless: bool,
 
+    /// Run all E2E health checks once, print a human-readable colored report, then exit.
+    /// Known-degraded items are rendered with a distinct [KNWN] marker (cyan) so they
+    /// are never confused with actual failures ([FAIL] red) or passes ([PASS] green).
+    /// Exits 0 unless there are real (non-known-degraded) failures.
+    #[arg(long)]
+    pub once: bool,
+
     /// Directory containing per-cluster kubeconfig files
     #[arg(long, env = "SCALEX_KUBECONFIG_DIR")]
     pub kubeconfig_dir: Option<std::path::PathBuf>,

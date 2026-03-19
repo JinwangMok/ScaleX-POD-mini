@@ -26,6 +26,14 @@ pub struct KnownDegradation {
     /// Case-insensitive comparison at lookup time.
     pub condition: String,
 
+    /// Classification of why this degradation exists.  Two values are valid:
+    /// - `"architectural-assumption"` — inherent to the deployment architecture
+    ///   or environment; no code change expected.
+    /// - `"code-defect"` — caused by a bug or misconfiguration; temporary exemption
+    ///   pending a fix.
+    #[serde(default)]
+    pub cause_kind: String,
+
     /// Human-readable justification for why this condition is acceptable.
     /// Required; must be non-empty.
     pub reason: String,
@@ -37,6 +45,13 @@ pub struct KnownDegradation {
     /// Linked ticket, issue, or design document reference. Defaults to `"N/A"`.
     #[serde(default = "default_ticket")]
     pub ticket: String,
+
+    /// E2E check names (from `scalex dash --once` / `run_e2e_checks`) that this entry
+    /// suppresses.  A check listed here is downgraded from `Fail` → `KnownDegraded`
+    /// so it is rendered with a distinct visual style rather than treated as an
+    /// unexpected failure.  Empty list means informational only.
+    #[serde(default)]
+    pub suppresses_check: Vec<String>,
 }
 
 fn default_ticket() -> String {
@@ -81,6 +96,24 @@ impl KnownDegradationsConfig {
     ) -> bool {
         self.find_match(namespace, resource_kind, name, condition)
             .is_some()
+    }
+
+    /// Return `true` if `check_name` is suppressed by at least one inventory entry.
+    ///
+    /// Use this in `run_e2e_checks` to downgrade `Fail` → `KnownDegraded` for checks
+    /// that are listed in `suppresses_check` of an approved degradation entry.
+    pub fn is_check_suppressed(&self, check_name: &str) -> bool {
+        self.known_degradations
+            .iter()
+            .any(|d| d.suppresses_check.iter().any(|c| c == check_name))
+    }
+
+    /// Return all entries that suppress `check_name`.
+    pub fn suppressors_for(&self, check_name: &str) -> Vec<&KnownDegradation> {
+        self.known_degradations
+            .iter()
+            .filter(|d| d.suppresses_check.iter().any(|c| c == check_name))
+            .collect()
     }
 
     /// Return the first matching `KnownDegradation` entry, or `None` if no entry
