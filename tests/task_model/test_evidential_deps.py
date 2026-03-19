@@ -564,10 +564,11 @@ class TestScaleXEvidentialDeps:
         executor = TaskExecutor(tasks, dry_run=True)
 
         # Pre-seed ALL evidence keys as STALE (15 minutes old)
+        # [Sub-AC 7c] "sdi_init:completion" renamed to "sdi_init:vm_list"
         all_evidence_keys = [
             "check_ssh_connectivity:reachability",
             "gather_hardware_facts:hw_facts",
-            "sdi_init:completion",
+            "sdi_init:vm_list",
             "sdi_verify_vms:vm_ready",
             "sdi_health_check:virsh_status",
             "kubespray_tower:cluster_healthy",
