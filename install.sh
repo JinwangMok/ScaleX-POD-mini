@@ -14,6 +14,7 @@ readonly SCALEX_HOME="$HOME/.scalex"
 readonly INSTALLER_DIR="$SCALEX_HOME/installer"
 readonly STATE_FILE="$INSTALLER_DIR/state.env"
 readonly PHASE_FILE="$INSTALLER_DIR/phase_completed"
+readonly PHASE_DONE_DIR="$INSTALLER_DIR/phases"
 readonly GEN_DIR="$INSTALLER_DIR/generated"
 readonly LOG_DIR="$INSTALLER_DIR/logs"
 readonly LOG_FILE="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
@@ -65,7 +66,7 @@ TUNNEL_CONF_DIR=""
 # ============================================================================
 
 init_dirs() {
-  mkdir -p "$INSTALLER_DIR" "$GEN_DIR/credentials" "$GEN_DIR/config" "$LOG_DIR"
+  mkdir -p "$INSTALLER_DIR" "$GEN_DIR/credentials" "$GEN_DIR/config" "$LOG_DIR" "$PHASE_DONE_DIR"
 }
 
 mask_secrets() {
@@ -1558,6 +1559,30 @@ state_get() {
 state_save_phase() { echo "$1" > "$PHASE_FILE"; }
 state_get_phase() { [[ -f "$PHASE_FILE" ]] && cat "$PHASE_FILE" || echo "-1"; }
 
+# phase_mark_done N — write a per-phase completion marker and advance the
+# sequential PHASE_FILE if N is greater than the current recorded phase.
+# Idempotent: safe to call multiple times for the same phase.
+phase_mark_done() {
+  local n="$1"
+  mkdir -p "$PHASE_DONE_DIR"
+  touch "$PHASE_DONE_DIR/${n}.done"
+  local cur; cur=$(state_get_phase)
+  if (( n > cur )); then
+    state_save_phase "$n"
+  fi
+  log_info "$(i18n "Phase ${n} completion marker written (${PHASE_DONE_DIR}/${n}.done)" \
+    "Phase ${n} 완료 마커 저장됨 (${PHASE_DONE_DIR}/${n}.done)")"
+}
+
+# phase_is_done N — return 0 if phase N has previously completed successfully.
+# Checks per-phase marker file first; falls back to the sequential tracker.
+phase_is_done() {
+  local n="$1"
+  [[ -f "$PHASE_DONE_DIR/${n}.done" ]] && return 0
+  local cur; cur=$(state_get_phase)
+  (( cur >= n ))
+}
+
 phase_label() {
   case "$1" in
     0) echo "Dependencies" ;; 1) echo "Bare-metal & SSH" ;;
@@ -1971,7 +1996,7 @@ phase_deps() {
 
   if [[ ${#missing[@]} -eq 0 ]]; then
     log_info "$(i18n "All required dependencies are installed." "모든 필수 의존성이 설치되어 있습니다.")"
-    state_save_phase 0
+    phase_mark_done 0
     return 0
   fi
 
@@ -2360,6 +2385,7 @@ collect_cluster() {
 }
 
 phase_cluster() {
+  phase_skip_if_done 3 && return 0
   log_phase "$(i18n "Phase 3: Cluster & GitOps setup" "Phase 3: 클러스터 & GitOps 설정")"
 
   # Common K8s settings
@@ -2560,6 +2586,7 @@ run_step() {
 }
 
 phase_provision() {
+  phase_skip_if_done 4 && return 0
   log_phase "$(i18n "Phase 4: Build & provisioning" "Phase 4: 빌드 & 프로비저닝")"
   local total_steps=6
   local repo_url; repo_url=$(state_get REPO_URL_USER "$REPO_URL")
