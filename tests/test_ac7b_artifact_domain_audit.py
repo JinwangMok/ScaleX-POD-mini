@@ -2,11 +2,14 @@
 tests/test_ac7b_artifact_domain_audit.py — Sub-AC 7b verification
 
 Scope boundary (declared before evaluation):
-  - Audits tests/task_model/scalex_tasks.py (13 operational task records).
+  - Audits tests/task_model/scalex_tasks.py (14 operational task records).
   - Validates against ops/artifact_vocabulary.ARTIFACT_REGISTRY (evidence keys)
     and ops/artifact_registry.parse_artifact_ref() (scope_artifact_ids).
   - Test-scaffold tasks (test_dep_graph_enforcement.py, test_causal_deps.py)
     are explicitly OUT OF SCOPE — they use synthetic scope strings by design.
+  - Test-scope vocabulary producers (kyverno_policy_check, sdi_status_reverify)
+    are explicitly EXEMPT from the producing-task-in-graph check: they produce
+    evidence only during test runs, not in the main pipeline.
   - No network calls, no SSH, no VMs, no Kubernetes cluster.
 
 Known-acceptable-degradation inventory:
@@ -27,7 +30,8 @@ Historical findings (now remediated):
     sdi_health_check EvidentialDep[0].evidence_key was "sdi_init:completion".
     Fixed to "sdi_init:vm_list".
 
-Current state: all 13 task records are artifact-domain-clean (0 gaps).
+Current state: all 14 task records are artifact-domain-clean (0 gaps).
+  (Task count grew from 13 → 14 when Sub-AC 2b added cilium_health_verify.)
 """
 
 from __future__ import annotations
@@ -59,7 +63,20 @@ ALL_TASK_NAMES = [
     "cf_tunnel_healthy",
     "dash_headless_verify",
     "scalex_dash_token_provisioned",
+    # Sub-AC 2b added this periodic Cilium CNI health re-verification task:
+    "cilium_health_verify",
 ]
+
+# Vocabulary entries produced by TEST-SCOPE tasks (not pipeline tasks).
+# These are re-verification tasks executed only during test runs:
+#   kyverno_policy_check  — Sub-AC 2c: re-verify Kyverno policies in test
+#   sdi_status_reverify   — Sub-AC 5c: re-verify SDI health in test
+# They are exempt from the "every vocabulary key must have a pipeline task"
+# check because they are not intended to run in the main pipeline.
+_TEST_SCOPE_PRODUCERS: frozenset[str] = frozenset({
+    "kyverno_policy_check",   # Sub-AC 2c: Kyverno policy re-verification test
+    "sdi_status_reverify",    # Sub-AC 5c: SDI component health re-verification test
+})
 
 
 # ---------------------------------------------------------------------------
@@ -352,8 +369,9 @@ class TestAuditSummary:
 
     def test_audit_finds_zero_gaps(self):
         """
-        Full audit of all 13 task records must find zero gaps.
+        Full audit of all 14 task records must find zero gaps.
         This locks in the post-remediation baseline from Sub-AC 7b/7c.
+        (Count grew 13→14 when Sub-AC 2b added cilium_health_verify.)
         """
         tasks = build_task_graph()
         all_gaps = []
@@ -374,10 +392,12 @@ class TestAuditSummary:
         )
 
     def test_audit_total_task_count(self):
-        """build_task_graph() must return exactly 13 tasks (full pipeline)."""
+        """build_task_graph() must return exactly 14 tasks (full pipeline).
+        Count grew 13→14 when Sub-AC 2b added cilium_health_verify.
+        """
         tasks = build_task_graph()
-        assert len(tasks) == 13, (
-            f"Expected 13 tasks in build_task_graph(), found {len(tasks)}.  "
+        assert len(tasks) == 14, (
+            f"Expected 14 tasks in build_task_graph(), found {len(tasks)}.  "
             "Update ALL_TASK_NAMES and docs/ac7b-artifact-domain-gap-report.yaml "
             "if tasks were added or removed."
         )
@@ -394,17 +414,27 @@ class TestAuditSummary:
     def test_every_registered_vocabulary_key_has_producing_task(self):
         """
         Every key in the artifact vocabulary must be produced by a task that
-        exists in build_task_graph().  Orphaned vocabulary entries indicate
-        stale registrations.
+        exists in build_task_graph() OR is explicitly listed in
+        _TEST_SCOPE_PRODUCERS.
+
+        Test-scope producers (kyverno_policy_check, sdi_status_reverify) produce
+        evidence only during test runs and are not part of the main pipeline.
+        They are exempt from this check to avoid false orphan reports.
+
+        Truly orphaned entries (produced_by references a non-existent task that
+        is also NOT in _TEST_SCOPE_PRODUCERS) indicate stale registrations and
+        must be remediated.
         """
         from ops.artifact_vocabulary import ARTIFACT_REGISTRY as vocab
         task_names = {t.name for t in build_task_graph()}
         orphaned = [
             key for key, desc in vocab.items()
             if desc.produced_by not in task_names
+            and desc.produced_by not in _TEST_SCOPE_PRODUCERS
         ]
         assert orphaned == [], (
-            f"Orphaned vocabulary entries (producing task not in graph):\n"
+            f"Orphaned vocabulary entries (producing task not in graph and not "
+            f"in _TEST_SCOPE_PRODUCERS):\n"
             + "\n".join(f"  {k!r} (produced_by={vocab[k].produced_by!r})"
                         for k in orphaned)
         )
