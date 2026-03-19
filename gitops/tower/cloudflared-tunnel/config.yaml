@@ -9,7 +9,8 @@ data:
     # Cloudflared tunnel ingress rules
     # All API endpoints point to kube-vip VIP addresses (not individual node IPs)
     # to ensure HA failover works transparently through the tunnel.
-    tunnel: scalex-pod-mini
+    tunnel: 80ad2962-fb5a-491d-a871-8e452f3e7bcd
+    credentials-file: /etc/cloudflared/creds/credentials.json
     no-autoupdate: true
     protocol: http2
     ingress:
