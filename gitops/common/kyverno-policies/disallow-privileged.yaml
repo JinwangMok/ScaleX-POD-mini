@@ -7,8 +7,10 @@ metadata:
     policies.kyverno.io/category: Pod Security Standards (Baseline)
     policies.kyverno.io/severity: medium
 spec:
-  validationFailureAction: Audit
+  admission: true
   background: true
+  emitWarning: false
+  validationFailureAction: Audit
   rules:
     - name: privileged-containers
       match:
@@ -16,7 +18,9 @@ spec:
           - resources:
               kinds:
                 - Pod
+      skipBackgroundRequests: true
       validate:
+        allowExistingViolations: true
         message: "Privileged mode is disallowed. Set securityContext.privileged to false."
         pattern:
           spec:
