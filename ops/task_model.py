@@ -7,6 +7,8 @@ Task data model with:
 - Known-acceptable-degradation inventory (explicit list, not prose)
 - Verdict lifecycle: PENDING → RUNNING → PASS | FAIL | STALE_EVIDENCE
 - CauseKind taxonomy: constrained enum for root-cause classification (Sub-AC 6a)
+- scope_artifact_ids: controlled vocabulary references [Sub-AC 7a]; each entry
+  must be a valid artifact reference string registered in ops/artifact_registry.py.
 """
 
 from __future__ import annotations
@@ -170,6 +172,14 @@ class Task:
         id:                       Unique identifier (e.g. "AC-3c")
         name:                     Human-readable name
         scope_boundary:           MUST be declared before evaluation (explicit string)
+        scope_artifact_ids:       Controlled-vocabulary artifact references [Sub-AC 7a].
+                                  Each entry MUST be a valid artifact reference string
+                                  of the form "<granularity>:<name>[:<aspect>]" registered
+                                  in ops/artifact_registry.ARTIFACT_REGISTRY.
+                                  Validated by validate() when non-empty.
+                                  Empty list is accepted for backward compatibility
+                                  but the test_artifact_registry suite will flag tasks
+                                  that declare zero artifact refs.
         evidence_ttl_seconds:     Override for this task's evidence TTL (default: global)
         known_acceptable_degradation_ids: Explicit list of DegradationItem IDs that
                                   apply to this task.  Never narrated in prose.
@@ -180,6 +190,9 @@ class Task:
     id: str
     name: str
     scope_boundary: str          # required; raises if empty at validation time
+
+    # Controlled-vocabulary artifact references [Sub-AC 7a]
+    scope_artifact_ids: list[str] = field(default_factory=list)
 
     evidence_ttl_seconds: int = EVIDENCE_TTL_SECONDS
     known_acceptable_degradation_ids: list[str] = field(default_factory=list)
@@ -196,6 +209,15 @@ class Task:
                 f"Task {self.id!r}: scope_boundary must be declared explicitly "
                 "before evaluation, not discovered during it"
             )
+        # Validate scope_artifact_ids against the controlled vocabulary [Sub-AC 7a]
+        if self.scope_artifact_ids:
+            from ops.artifact_registry import validate_artifact_refs, ArtifactRefError
+            try:
+                validate_artifact_refs(self.scope_artifact_ids)
+            except ArtifactRefError as exc:
+                raise ValueError(
+                    f"Task {self.id!r}: invalid scope_artifact_ids — {exc}"
+                ) from exc
 
     def add_evidence(self, raw_output: str, source: str,
                      captured_at_epoch: float | None = None) -> Evidence:
