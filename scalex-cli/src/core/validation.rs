@@ -3100,16 +3100,16 @@ spec:
         );
     }
 
-    /// Cloudflare tunnel deployment.yaml must use token-based auth and docs must document required services.
+    /// Cloudflare tunnel deployment.yaml must use credentials-file auth and docs must document required services.
     #[test]
     fn test_cloudflare_tunnel_ingress_completeness() {
         let deployment = include_str!("../../../gitops/tower/cloudflared-tunnel/deployment.yaml");
         let ops_guide = include_str!("../../../docs/ops-guide.md");
 
-        // Deployment must reference cloudflared-tunnel-token secret (token-based approach)
+        // Deployment must reference cloudflared-tunnel-credentials secret (credentials-file mode)
         assert!(
-            deployment.contains("cloudflared-tunnel-token"),
-            "CF tunnel deployment must reference cloudflared-tunnel-token secret"
+            deployment.contains("cloudflared-tunnel-credentials"),
+            "CF tunnel deployment must reference cloudflared-tunnel-credentials secret"
         );
 
         // Routing is dashboard-managed; verify ops-guide documents required hostnames
@@ -8275,7 +8275,7 @@ spec:
 
     // ── Sprint 42: Cross-file integration tests ──
 
-    /// CRITICAL: deployment.yaml must reference cloudflared-tunnel-token secret (token-based auth).
+    /// CRITICAL: deployment.yaml must reference cloudflared-tunnel-credentials secret (credentials-file mode).
     /// Namespace in deployment must match kustomization.yaml.
     #[test]
     fn test_cf_tunnel_secret_name_matches_values_yaml() {
@@ -8283,10 +8283,10 @@ spec:
         let deployment_yaml =
             include_str!("../../../gitops/tower/cloudflared-tunnel/deployment.yaml");
 
-        // 2. Deployment must use token-based auth via cloudflared-tunnel-token secret
+        // 2. Deployment must use credentials-file auth via cloudflared-tunnel-credentials secret
         assert!(
-            deployment_yaml.contains("cloudflared-tunnel-token"),
-            "deployment.yaml must reference cloudflared-tunnel-token secret"
+            deployment_yaml.contains("cloudflared-tunnel-credentials"),
+            "deployment.yaml must reference cloudflared-tunnel-credentials secret"
         );
 
         // 3. Namespace must match kustomization.yaml

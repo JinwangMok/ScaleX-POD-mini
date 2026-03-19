@@ -13,13 +13,41 @@ metadata:
   namespace: scalex-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: scalex-dash-node-reader
+  labels:
+    app: scalex-dash
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: scalex-dash-admin
+  name: scalex-dash-node-reader
+  labels:
+    app: scalex-dash
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cluster-admin
+  name: scalex-dash-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: scalex-dash
+    namespace: scalex-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scalex-dash-view
+  labels:
+    app: scalex-dash
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
 subjects:
   - kind: ServiceAccount
     name: scalex-dash

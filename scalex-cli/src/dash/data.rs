@@ -20,9 +20,10 @@ pub enum ActiveResource {
 }
 
 /// Per-API-call timeout to prevent slow calls from blocking the entire fetch.
-/// Reduced from 1s to 500ms — K8s API calls on a healthy cluster complete in <200ms;
-/// 500ms is generous while halving worst-case fetch latency.
-pub const API_CALL_TIMEOUT: Duration = Duration::from_millis(500);
+/// 5s accommodates CF Tunnel connections (DNS + Cloudflare edge + TLS handshake)
+/// which routinely exceed 500ms on cold start. Healthy direct-IP clusters still
+/// complete in <200ms, so this only affects worst-case latency.
+pub const API_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Per-API-call timeout for headless mode.
 /// Remote clusters (CF Tunnel, SSH tunnel) may have higher latency than 500ms.

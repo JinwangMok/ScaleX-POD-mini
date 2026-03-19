@@ -100,8 +100,23 @@ pub fn secrets_for_cluster(cluster_role: &str, secrets: &SecretsConfig) -> Vec<K
                     ],
                 },
             ];
-            // Cloudflare tunnel token (token-based auth)
-            if !secrets.cloudflare.tunnel_token.is_empty() {
+            // Cloudflare tunnel credentials-file mode (preferred, matches Deployment volumeMount)
+            // Secret name must be "cloudflared-tunnel-credentials" with key "credentials.json"
+            // to match gitops/*/cloudflared-tunnel/deployment.yaml secretName reference
+            if !secrets.cloudflare.credentials_file.is_empty() {
+                specs.push(K8sSecretSpec {
+                    name: "cloudflared-tunnel-credentials".to_string(),
+                    namespace: "kube-tunnel".to_string(),
+                    data: vec![(
+                        "credentials.json".to_string(),
+                        secrets.cloudflare.credentials_file.clone(),
+                    )],
+                });
+            }
+            // Fallback: Cloudflare tunnel token (token-based auth, legacy)
+            if !secrets.cloudflare.tunnel_token.is_empty()
+                && secrets.cloudflare.credentials_file.is_empty()
+            {
                 specs.push(K8sSecretSpec {
                     name: "cloudflared-tunnel-token".to_string(),
                     namespace: "kube-tunnel".to_string(),
@@ -140,6 +155,24 @@ mod tests {
     use super::*;
 
     fn make_secrets() -> SecretsConfig {
+        SecretsConfig {
+            keycloak: KeycloakSecrets {
+                admin_password: "admin123".to_string(),
+                db_password: "dbpass456".to_string(),
+            },
+            argocd: ArgocdSecrets {
+                repo_pat: "ghp_xxx".to_string(),
+            },
+            cloudflare: CloudflareSecrets {
+                credentials_file: r#"{"AccountTag":"abc","TunnelSecret":"xyz","TunnelID":"123"}"#
+                    .to_string(),
+                tunnel_token: String::new(),
+                cert_file: String::new(),
+            },
+        }
+    }
+
+    fn make_secrets_token_only() -> SecretsConfig {
         SecretsConfig {
             keycloak: KeycloakSecrets {
                 admin_password: "admin123".to_string(),
@@ -246,9 +279,24 @@ keycloak:
         assert_eq!(specs[1].name, "keycloak-db");
         assert_eq!(specs[1].namespace, "keycloak");
 
-        // cloudflared-tunnel-token
+        // cloudflared-tunnel-credentials (credentials-file mode, matches Deployment)
+        assert_eq!(specs[2].name, "cloudflared-tunnel-credentials");
+        assert_eq!(specs[2].namespace, "kube-tunnel");
+        assert_eq!(specs[2].data[0].0, "credentials.json");
+        assert!(specs[2].data[0].1.contains("AccountTag"));
+    }
+
+    #[test]
+    fn test_secrets_for_management_cluster_token_fallback() {
+        let secrets = make_secrets_token_only();
+        let specs = secrets_for_cluster("management", &secrets);
+
+        assert_eq!(specs.len(), 3, "management cluster needs 3 secrets with token fallback");
+
+        // cloudflared-tunnel-token (legacy token mode, only when no credentials_file)
         assert_eq!(specs[2].name, "cloudflared-tunnel-token");
         assert_eq!(specs[2].namespace, "kube-tunnel");
+        assert_eq!(specs[2].data[0].0, "token");
     }
 
     #[test]
@@ -273,6 +321,7 @@ keycloak:
         };
         let specs = secrets_for_cluster("management", &secrets);
         assert_eq!(specs.len(), 2, "without cloudflare, only 2 secrets needed");
+        assert!(specs.iter().all(|s| s.name != "cloudflared-tunnel-credentials"));
         assert!(specs.iter().all(|s| s.name != "cloudflared-tunnel-token"));
     }
 
@@ -460,7 +509,26 @@ cloudflare:
     }
 
     #[test]
-    fn test_generate_all_manifests_management_with_cloudflare() {
+    fn test_generate_all_manifests_management_with_cloudflare_credentials() {
+        let yaml = r#"
+keycloak:
+  admin_password: "admin"
+  db_password: "db"
+cloudflare:
+  credentials_file: '{"AccountTag":"abc","TunnelSecret":"s3c","TunnelID":"t1"}'
+"#;
+        let result = generate_all_secrets_manifests(yaml, "management").unwrap();
+        let docs: Vec<&str> = result
+            .split("---")
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        assert_eq!(docs.len(), 3, "management + cloudflare credentials = 3 secrets");
+        assert!(result.contains("cloudflared-tunnel-credentials"));
+        assert!(result.contains("credentials.json"));
+    }
+
+    #[test]
+    fn test_generate_all_manifests_management_with_cloudflare_token_fallback() {
         let yaml = r#"
 keycloak:
   admin_password: "admin"
@@ -473,7 +541,7 @@ cloudflare:
             .split("---")
             .filter(|s| !s.trim().is_empty())
             .collect();
-        assert_eq!(docs.len(), 3, "management + cloudflare = 3 secrets");
+        assert_eq!(docs.len(), 3, "management + cloudflare token = 3 secrets");
         assert!(result.contains("cloudflared-tunnel-token"));
     }
 
