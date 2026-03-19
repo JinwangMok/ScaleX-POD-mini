@@ -286,6 +286,21 @@ _REGISTRY_ENTRIES: list[ArtifactDescriptor] = [
         ),
         produced_by="kyverno_policy_check",
     ),
+
+    # ── Sub-AC 5c: SDI component health re-verification ───────────────────
+    ArtifactDescriptor(
+        key="sdi_status_reverify:health_snapshot",
+        granularity=GranularityLevel.FINE,
+        description=(
+            "SDI component health snapshot from Sub-AC 5c re-verification: "
+            "scalex sdi CLI subcommand list and virsh domain state probe.  "
+            "Captured with embedded ISO timestamp for freshness assertion.  "
+            "KAD-SDI-1: 'scalex sdi status' subcommand not implemented in scalex-cli; "
+            "probe uses 'scalex sdi --help' output and virsh list (probe mode) as "
+            "equivalent health indicators to confirm no regression vs P1 baseline."
+        ),
+        produced_by="sdi_status_reverify",
+    ),
 ]
 
 #: Immutable registry: maps evidence_key → ArtifactDescriptor
