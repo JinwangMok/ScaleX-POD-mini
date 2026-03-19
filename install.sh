@@ -2842,8 +2842,8 @@ show_dashboard() {
   for i in 0 1 2 3 4; do
     local label; label=$(phase_label "$i")
     local status icon
-    if (( i <= completed )); then
-      icon="\\xE2\\x9C\\x93"; status="Done"  # checkmark
+    if phase_is_done "$i"; then
+      icon="\\xE2\\x9C\\x93"; status="Done"  # checkmark (per-phase marker)
     elif (( i == completed + 1 )); then
       icon="\\xE2\\x96\\xB6"; status="Active"  # play arrow
     else
@@ -2879,6 +2879,11 @@ resume_check() {
           local prev=$((phase - 1))
           (( prev < 0 )) && prev=-1
           state_save_phase "$prev"
+          # Remove per-phase markers for phases that will be re-run
+          local rp
+          for rp in 0 1 2 3 4; do
+            (( rp >= phase )) && rm -f "$PHASE_DONE_DIR/${rp}.done" 2>/dev/null || true
+          done
         fi
         ;;
       fresh)
@@ -2886,8 +2891,9 @@ resume_check() {
           rm -f "$STATE_FILE" "$PHASE_FILE"
           rm -f "$INSTALLER_DIR/nodes.txt" "$INSTALLER_DIR/pools.txt"
           rm -f "$INSTALLER_DIR/clusters.txt" "$INSTALLER_DIR/apps_selected.txt"
+          rm -f "$PHASE_DONE_DIR"/*.done 2>/dev/null || true
           rm -rf "$GEN_DIR"
-          mkdir -p "$GEN_DIR/credentials" "$GEN_DIR/config"
+          mkdir -p "$GEN_DIR/credentials" "$GEN_DIR/config" "$PHASE_DONE_DIR"
           state_save_phase -1
         fi
         ;;
@@ -3024,11 +3030,25 @@ main() {
       log_warn "$(i18n "sudo not available — will proceed if all dependencies are installed" "sudo 사용 불가 — 모든 의존성이 설치되어 있으면 계속 진행")"
     }
 
-    # Run Phase 0 (dependencies) + Phase 4 (build & provision)
-    phase_deps
+    # Run Phase 0 (dependencies) — skip if already complete
+    if phase_is_done 0; then
+      log_info "$(i18n "Phase 0 already complete — skipping dependency check" \
+        "Phase 0 이미 완료 — 의존성 확인 건너뜀")"
+      # Ensure PATH is set even when deps phase is skipped
+      export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+      [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" 2>/dev/null || true
+    else
+      phase_deps
+    fi
+
     REPO_DIR="${repo:-$HOME/ScaleX-POD-mini}"
     state_set REPO_DIR "$REPO_DIR"
-    if ! phase_provision; then
+
+    # Run Phase 4 (build & provision) — skip if already complete
+    if phase_is_done 4; then
+      log_info "$(i18n "Phase 4 already complete — skipping provisioning" \
+        "Phase 4 이미 완료 — 프로비저닝 건너뜀")"
+    elif ! phase_provision; then
       error_msg \
         "$(i18n "Auto mode: provisioning failed" "자동 모드: 프로비저닝 실패")" \
         "$(i18n "One or more provisioning steps failed (API tunnel setup, cluster init, etc.)" \
