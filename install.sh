@@ -1603,9 +1603,48 @@ phase_skip_if_done() {
     log_info "$(i18n \
       "Phase ${phase_num} (${label}) already complete — skipping (marker: ${PHASE_DONE_DIR}/${phase_num}.done)" \
       "Phase ${phase_num} (${label}) 이미 완료 — 건너뜀 (마커: ${PHASE_DONE_DIR}/${phase_num}.done)")"
+    # Synchronize sequential PHASE_FILE tracker when only the .done file is present
+    # (handles the case where .done file exists but PHASE_FILE lags behind).
+    local cur; cur=$(state_get_phase)
+    if (( phase_num > cur )); then
+      state_save_phase "$phase_num"
+    fi
     return 0
   fi
   return 1
+}
+
+# =============================================================================
+# Phase 4 sub-step tracking (auto mode only)
+#
+# Purpose: Allow resume of a partially-completed Phase 4 provisioning run
+# without re-executing non-idempotent infrastructure steps (sdi init,
+# cluster init).  Each tracked sub-step writes a sentinel file that is
+# checked at the start of the step on subsequent runs.
+#
+# Sub-step IDs:
+#   2 — scalex sdi init     (VM/libvirt provisioning, NOT idempotent)
+#   3 — scalex cluster init (k8s bootstrap via Kubespray, slow + risky to redo)
+#
+# Marker files: $PHASE_DONE_DIR/4s{N}.done
+# Cleared by: resume_check reset (phase<=4), resume_check fresh (all *.done)
+# =============================================================================
+
+# phase4_step_is_done N — return 0 if phase 4 auto-mode sub-step N is recorded done.
+phase4_step_is_done() { [[ -f "$PHASE_DONE_DIR/4s${1}.done" ]]; }
+
+# phase4_step_mark_done N — write completion marker for phase 4 sub-step N.
+phase4_step_mark_done() {
+  mkdir -p "$PHASE_DONE_DIR"
+  touch "$PHASE_DONE_DIR/4s${1}.done"
+  log_info "$(i18n "Phase 4 sub-step ${1} marked done (${PHASE_DONE_DIR}/4s${1}.done)" \
+    "Phase 4 하위 단계 ${1} 완료 마커 저장됨 (${PHASE_DONE_DIR}/4s${1}.done)")"
+}
+
+# phase4_clear_steps — remove all phase 4 sub-step markers (used by reset/fresh).
+phase4_clear_steps() {
+  rm -f "$PHASE_DONE_DIR"/4s*.done 2>/dev/null || true
+  log_info "$(i18n "Phase 4 sub-step markers cleared" "Phase 4 하위 단계 마커 초기화됨")"
 }
 
 # =============================================================================
@@ -2769,22 +2808,32 @@ phase_provision() {
       # SSH health check: pre-sdi-init — verify nodes still reachable before SDI/VM deployment
       phase_ssh_check "$(i18n "pre-sdi-init" "SDI 초기화 전")" "$REPO_DIR" || return 1
 
-      echo -e "  ${CYAN}[2/${ps_total}]${NC} scalex sdi init..."
-      if ! (cd "$REPO_DIR" && scalex sdi init config/sdi-specs.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
-        log_error "$(i18n "Auto mode: SDI init failed — aborting provisioning" "자동 모드: SDI 초기화 실패 — 프로비저닝 중단")"
-        return 1
+      if phase4_step_is_done 2; then
+        echo -e "  ${CYAN}[2/${ps_total}]${NC} scalex sdi init — $(i18n "already done, skipping" "이미 완료됨, 건너뜀")"
+      else
+        echo -e "  ${CYAN}[2/${ps_total}]${NC} scalex sdi init..."
+        if ! (cd "$REPO_DIR" && scalex sdi init config/sdi-specs.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
+          log_error "$(i18n "Auto mode: SDI init failed — aborting provisioning" "자동 모드: SDI 초기화 실패 — 프로비저닝 중단")"
+          return 1
+        fi
+        phase4_step_mark_done 2
+        echo -e "  ${GREEN}OK${NC}"
       fi
-      echo -e "  ${GREEN}OK${NC}"
 
       # SSH health check: pre-cluster-init — verify nodes reachable before k8s bootstrap
       phase_ssh_check "$(i18n "pre-cluster-init" "클러스터 초기화 전")" "$REPO_DIR" || return 1
 
-      echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex cluster init..."
-      if ! (cd "$REPO_DIR" && scalex cluster init config/k8s-clusters.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
-        log_error "$(i18n "Auto mode: cluster init failed — aborting provisioning" "자동 모드: 클러스터 초기화 실패 — 프로비저닝 중단")"
-        return 1
+      if phase4_step_is_done 3; then
+        echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex cluster init — $(i18n "already done, skipping" "이미 완료됨, 건너뜀")"
+      else
+        echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex cluster init..."
+        if ! (cd "$REPO_DIR" && scalex cluster init config/k8s-clusters.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
+          log_error "$(i18n "Auto mode: cluster init failed — aborting provisioning" "자동 모드: 클러스터 초기화 실패 — 프로비저닝 중단")"
+          return 1
+        fi
+        phase4_step_mark_done 3
+        echo -e "  ${GREEN}OK${NC}"
       fi
-      echo -e "  ${GREEN}OK${NC}"
 
       # Set up API tunnels AFTER cluster init creates kubeconfigs
       echo -e "  ${CYAN}[4/${ps_total}]${NC} $(i18n "API access tunnel setup..." "API 접근 터널 설정...")"
@@ -2967,6 +3016,9 @@ resume_check() {
           for rp in 0 1 2 3 4; do
             (( rp >= phase )) && rm -f "$PHASE_DONE_DIR/${rp}.done" 2>/dev/null || true
           done
+          # Also clear phase 4 sub-step markers when resetting to/before phase 4
+          # (4s2.done = sdi init, 4s3.done = cluster init)
+          (( 4 >= phase )) && phase4_clear_steps || true
         fi
         ;;
       fresh)
@@ -3148,6 +3200,15 @@ main() {
            "설치 로그를 확인하세요: $LOG_FILE")"
       return 1
     fi
+
+    # SSH health check: post-install — verify all nodes still reachable after full provisioning.
+    # Non-fatal in both modes: installation is already complete; any failure here should be
+    # investigated but must not mask a successful install.  Satisfies the
+    # feedback_network_safety_critical requirement: verify SSH AFTER every remote operation.
+    phase_ssh_check "$(i18n "post-install" "설치 후 확인")" "$REPO_DIR" || \
+      log_warn "$(i18n \
+        "Post-install SSH check failed — installation succeeded but nodes may be temporarily unreachable. Investigate SSH connectivity." \
+        "설치 후 SSH 확인 실패 — 설치는 성공했지만 노드에 일시적으로 접근 불가할 수 있음. SSH 연결을 점검하세요.")"
 
     show_dashboard
     post_install_summary
