@@ -178,8 +178,10 @@ fn run_apply(
         }
         let ns_yaml = ns_cmd.output();
         if let Ok(output) = ns_yaml {
+            // Use --server-side apply to avoid last-applied-configuration annotation
+            // conflicts with ArgoCD drift detection. --force-conflicts ensures idempotency.
             let mut apply_ns = std::process::Command::new("kubectl");
-            apply_ns.args(["apply", "-f", "-"]);
+            apply_ns.args(["apply", "--server-side", "--force-conflicts", "-f", "-"]);
             if let Some(ref kc) = resolved_kubeconfig {
                 apply_ns.args(["--kubeconfig", kc]);
             }
@@ -194,8 +196,12 @@ fn run_apply(
         }
     }
 
+    // Use --server-side apply for secrets to prevent ArgoCD drift detection.
+    // Server-side apply uses field manager ownership instead of the
+    // last-applied-configuration annotation, so ArgoCD won't see the secret
+    // as OutOfSync due to annotation conflicts.
     let mut cmd = std::process::Command::new("kubectl");
-    cmd.args(["apply", "-f", "-"]);
+    cmd.args(["apply", "--server-side", "--force-conflicts", "-f", "-"]);
     if let Some(ref kc) = resolved_kubeconfig {
         cmd.args(["--kubeconfig", kc]);
     }
