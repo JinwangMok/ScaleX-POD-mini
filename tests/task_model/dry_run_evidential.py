@@ -79,7 +79,7 @@ def main() -> None:
         ("gather_hardware_facts:hw_facts",
          "$ scalex facts --all\n{cpu:8, ram:32GB}\nexit_code: 0",
          "hw_facts exit=0"),
-        ("sdi_init:completion",
+        ("sdi_init:vm_list",  # [Sub-AC 7c] was: sdi_init:completion
          "$ scalex sdi init\nAll VMs created\nexit_code: 0",
          "sdi_init exit=0"),
         ("sdi_verify_vms:vm_ready",
@@ -198,7 +198,7 @@ def main() -> None:
         age_seconds=30,  # FRESH
     )
     executor_4.seed_evidence(
-        "sdi_init:completion",
+        "sdi_init:vm_list",  # [Sub-AC 7c] was: sdi_init:completion
         raw_output="$ scalex sdi init\nAll VMs created\nexit_code: 0",
         summary="sdi_init exit=0",
         age_seconds=30,
