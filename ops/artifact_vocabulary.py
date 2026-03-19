@@ -138,6 +138,18 @@ _REGISTRY_ENTRIES: list[ArtifactDescriptor] = [
         produced_by="check_ssh_connectivity",
     ),
 
+    # ── Sub-AC 2d: playbox-3 specific re-verification ────────────────────
+    ArtifactDescriptor(
+        key="check_playbox3_connectivity:reachability",
+        granularity=GranularityLevel.ATOMIC,
+        description=(
+            "Binary SSH reachability check scoped to playbox-3 (192.168.88.11): "
+            "node responded to a read-only SSH probe (hostname+uptime+date) within "
+            "timeout.  Captured per-run to enforce evidence freshness window."
+        ),
+        produced_by="check_playbox3_connectivity",
+    ),
+
     # ── Layer 1: Hardware facts ───────────────────────────────────────────
     ArtifactDescriptor(
         key="gather_hardware_facts:hw_facts",
@@ -258,6 +270,33 @@ _REGISTRY_ENTRIES: list[ArtifactDescriptor] = [
             "True=valid on all clusters, False=missing or expired on one+."
         ),
         produced_by="scalex_dash_token_provisioned",
+    ),
+
+    # ── Layer 3b: CNI health re-verification  [Sub-AC 2b] ────────────────
+    ArtifactDescriptor(
+        key="cilium_health_verify:cni_status",
+        granularity=GranularityLevel.COARSE,
+        description=(
+            "Periodic Cilium CNI health re-verification: cilium pod running state "
+            "in kube-system, agent health, and connectivity probe result.  "
+            "Coarse because it aggregates pod status + agent health + connectivity.  "
+            "raw_output includes an embedded ISO-8601 timestamp so evidence age "
+            "can be verified independently of the captured_at field.  [Sub-AC 2b]"
+        ),
+        produced_by="cilium_health_verify",
+    ),
+
+    # ── Layer 6: Policy enforcement (Kyverno) ─────────────────────────────
+    ArtifactDescriptor(
+        key="kyverno_policy_check:policy_audit",
+        granularity=GranularityLevel.FINE,
+        description=(
+            "Structured audit of Kyverno ClusterPolicy manifests in "
+            "gitops/common/kyverno-policies/: per-policy name, apiVersion, "
+            "kind, and rule count.  Validated for Kyverno v1 API compliance.  "
+            "Captured with embedded ISO timestamp for freshness assertion."
+        ),
+        produced_by="kyverno_policy_check",
     ),
 ]
 
