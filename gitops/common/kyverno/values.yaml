@@ -12,3 +12,16 @@ cleanupController:
 
 reportsController:
   replicas: 1
+
+# Override broken bitnami/kubectl:1.30.2 image (removed from Docker Hub)
+webhooksCleanup:
+  image:
+    registry: docker.io
+    repository: bitnami/kubectl
+    tag: "1.31"
+
+policyReportsCleanup:
+  image:
+    registry: docker.io
+    repository: bitnami/kubectl
+    tag: "1.31"

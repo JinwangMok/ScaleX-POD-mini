@@ -1387,8 +1387,10 @@ except Exception as e:
       [[ -z "$current_cluster" || -z "$current_endpoint" ]] && continue
       local kc_path="${clusters_dir}/${current_cluster}/kubeconfig.yaml"
       if [[ -f "$kc_path" ]]; then
-        # Save original kubeconfig with VM IP for fallback
-        cp "$kc_path" "${kc_path}.original"
+        # Save original kubeconfig with VM IP for fallback (only if not already saved)
+        if [[ ! -f "${kc_path}.original" ]]; then
+          cp "$kc_path" "${kc_path}.original"
+        fi
 
         # Probe domain URL — CF Tunnel needs time for ArgoCD to sync the cloudflared deployment.
         # Default: 180s (36 retries × 5s). Override with SCALEX_CF_TUNNEL_WAIT env var.
