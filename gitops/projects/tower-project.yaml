@@ -43,6 +43,8 @@ spec:
       kind: "ClusterIssuer"
     - group: "storage.k8s.io"
       kind: "StorageClass"
+    - group: "kyverno.io"
+      kind: "ClusterPolicy"
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"
