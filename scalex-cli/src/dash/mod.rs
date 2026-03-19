@@ -1,6 +1,7 @@
 pub mod app;
 #[allow(dead_code)]
 pub mod command_mode;
+pub mod degradation;
 #[allow(dead_code)]
 pub mod container_selector;
 pub mod data;
@@ -44,8 +45,8 @@ pub async fn run(args: DashArgs) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("_generated/clusters"));
 
-    if args.headless {
-        // Headless mode: synchronous discover (blocking is fine for JSON output)
+    if args.headless || args.once {
+        // Headless / once mode: synchronous discover (blocking is fine for JSON output)
         let clusters = kube_client::discover_clusters(&kubeconfig_dir).await?;
         if clusters.is_empty() {
             anyhow::bail!(
@@ -53,7 +54,11 @@ pub async fn run(args: DashArgs) -> anyhow::Result<()> {
                 kubeconfig_dir.display()
             );
         }
-        headless::run_headless(&args, &clusters).await
+        if args.once {
+            once::run_once(&args, &clusters).await
+        } else {
+            headless::run_headless(&args, &clusters).await
+        }
     } else {
         // TUI mode: non-blocking startup — pass dir, discover in background
         app::run_tui(args, kubeconfig_dir).await
@@ -155,10 +160,13 @@ pub mod headless {
             );
         }
 
-        // Checks mode: run 5 E2E health checks and return pass/fail JSON
+        // Checks mode: run 7 E2E health checks and return pass/fail JSON
         if is_checks {
             let expected: Vec<&str> = target_clusters.iter().map(|c| c.name.as_str()).collect();
-            let report = data::run_e2e_checks(&cluster_data, &expected);
+            let degradations = degradation::load(
+                &std::path::PathBuf::from("config/known_degradations.yaml"),
+            );
+            let report = data::run_e2e_checks(&cluster_data, &expected, &degradations);
             let output = serde_json::to_string_pretty(&report)?;
             println!("{}", output);
             // Exit with non-zero if any check failed
@@ -182,6 +190,149 @@ pub mod headless {
         };
 
         println!("{}", serde_json::to_string_pretty(&output)?);
+        Ok(())
+    }
+}
+
+/// `--once` mode: run all 7 E2E health checks, print a human-readable colored report,
+/// then exit. Known-degraded items render with a distinct cyan `[KNWN]` marker so they
+/// are never confused with actual failures (red `[FAIL]`) or clean passes (green `[PASS]`).
+pub mod once {
+    use super::*;
+    use crate::dash::data::{self, CheckStatus};
+    use crate::dash::kube_client::ClusterClient;
+
+    // ANSI color codes used in the report
+    const RESET: &str = "\x1b[0m";
+    const BOLD: &str = "\x1b[1m";
+    const GREEN: &str = "\x1b[32m";
+    const RED: &str = "\x1b[31m";
+    const YELLOW: &str = "\x1b[33m";
+    const CYAN: &str = "\x1b[36m";
+    const DIM: &str = "\x1b[2m";
+
+    pub async fn run_once(args: &DashArgs, clusters: &[ClusterClient]) -> anyhow::Result<()> {
+        let target_clusters: Vec<&ClusterClient> = match &args.cluster {
+            Some(name) => clusters.iter().filter(|c| c.name == *name).collect(),
+            None => clusters.iter().collect(),
+        };
+
+        if target_clusters.is_empty() {
+            anyhow::bail!(
+                "Cluster '{}' not found",
+                args.cluster.as_deref().unwrap_or("")
+            );
+        }
+
+        // Fetch all cluster snapshots in parallel
+        let mut handles: Vec<(String, _)> = Vec::new();
+        for cluster in &target_clusters {
+            let client = cluster.client.clone();
+            let name = cluster.name.clone();
+            let ns = args.namespace.clone();
+            handles.push((
+                name.clone(),
+                tokio::spawn(async move {
+                    data::fetch_cluster_snapshot(
+                        &client,
+                        &name,
+                        ns.as_deref(),
+                        None,
+                        data::HEADLESS_API_TIMEOUT,
+                    )
+                    .await
+                }),
+            ));
+        }
+        let mut cluster_data = Vec::new();
+        for (_cluster_name, handle) in handles {
+            if let Ok(Ok(snapshot)) = handle.await {
+                cluster_data.push(snapshot);
+            }
+        }
+
+        // Load known-degradation inventory
+        let degradations =
+            degradation::load(&std::path::PathBuf::from("config/known_degradations.yaml"));
+
+        // Run checks with known-degradation suppression
+        let expected: Vec<&str> = target_clusters.iter().map(|c| c.name.as_str()).collect();
+        let report = data::run_e2e_checks(&cluster_data, &expected, &degradations);
+
+        // Print header
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+        println!(
+            "\n{}{}ScaleX E2E Health Check Report — {}{}",
+            BOLD, GREEN, now, RESET
+        );
+        let sep = "─".repeat(60);
+        println!("{}{}{}", DIM, sep, RESET);
+
+        // Print each check with distinct visual style
+        for check in &report.checks {
+            let (color, label, symbol) = match check.status {
+                CheckStatus::Pass => (GREEN, "PASS", "✓"),
+                CheckStatus::Fail => (RED, "FAIL", "✗"),
+                CheckStatus::Warn => (YELLOW, "WARN", "△"),
+                CheckStatus::Skip => (DIM, "SKIP", "─"),
+                CheckStatus::KnownDegraded => (CYAN, "KNWN", "≈"),
+            };
+            println!(
+                " {}{}{} [{}]{} {}{}{}",
+                BOLD, color, symbol, label, RESET,
+                color, check.name, RESET
+            );
+            println!(
+                "        {}{}{}",
+                DIM, check.message, RESET
+            );
+            // Per-cluster detail lines (indented)
+            for detail in &check.details {
+                let cluster_prefix = format!("  {}", detail.cluster);
+                if detail.passed {
+                    println!("        {}  {}{}{}", DIM, cluster_prefix, RESET, format!(" — {}", detail.message));
+                } else {
+                    println!(
+                        "        {}{}  {}{}{}",
+                        color, cluster_prefix, detail.message, RESET, ""
+                    );
+                }
+            }
+        }
+
+        // Footer summary
+        println!("{}{}{}", DIM, sep, RESET);
+        let (overall_color, overall_label) = match report.overall {
+            CheckStatus::Pass => (GREEN, "PASS"),
+            CheckStatus::Fail => (RED, "FAIL"),
+            CheckStatus::Warn => (YELLOW, "WARN"),
+            CheckStatus::Skip => (DIM, "SKIP"),
+            CheckStatus::KnownDegraded => (CYAN, "KNWN"),
+        };
+        println!(
+            " {}{}Overall: [{}]{} — {} pass  {} fail  {} known-degraded  {} total",
+            BOLD, overall_color, overall_label, RESET,
+            report.passed,
+            report.failed,
+            report.known_degraded,
+            report.total
+        );
+        let n_degradations = degradations.known_degradations.len();
+        if n_degradations > 0 {
+            println!(
+                " {}Known-degradation inventory: {} entr{} loaded from config/known_degradations.yaml{}",
+                DIM,
+                n_degradations,
+                if n_degradations == 1 { "y" } else { "ies" },
+                RESET
+            );
+        }
+        println!();
+
+        // Exit 1 if any real (non-known-degraded) failures
+        if report.failed > 0 {
+            std::process::exit(1);
+        }
         Ok(())
     }
 }

@@ -1005,20 +1005,25 @@ pub struct CheckDetail {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
     Pass,
     Fail,
     Warn,
     Skip,
+    /// Failure that is explicitly listed in the known-degradation inventory.
+    /// Treated as acceptable — does NOT drive overall Fail — but rendered
+    /// with a distinct visual style so it is never confused with Pass.
+    KnownDegraded,
 }
 
-/// Full report from all 5 E2E checks.
+/// Full report from all 7 E2E checks.
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckReport {
     pub overall: CheckStatus,
     pub passed: usize,
     pub failed: usize,
+    pub known_degraded: usize,
     pub total: usize,
     pub checks: Vec<CheckResult>,
 }
@@ -1033,11 +1038,16 @@ pub struct CheckReport {
 /// 5. cf_tunnel_running      — cloudflared pod Running in tower cluster
 /// 6. cilium_healthy         — hubble-relay pod Running on all clusters (resolves DNS timeout)
 /// 7. kyverno_healthy        — kyverno admission controller pods Running on all clusters
+///
+/// `known_degradations` is the parsed inventory from `config/known_degradations.yaml`.
+/// Any check that would produce `Fail` and is listed in `suppresses_check` of at least
+/// one inventory entry is downgraded to `KnownDegraded` instead.
 pub fn run_e2e_checks(
     snapshots: &[ClusterSnapshot],
     expected_clusters: &[&str],
+    known_degradations: &super::degradation::KnownDegradationsConfig,
 ) -> CheckReport {
-    let checks = vec![
+    let mut checks = vec![
         check_cluster_api_reachable(snapshots, expected_clusters),
         check_all_nodes_ready(snapshots),
         check_namespaces_listed(snapshots),
@@ -1046,15 +1056,41 @@ pub fn run_e2e_checks(
         check_cilium_healthy(snapshots),
         check_kyverno_healthy(snapshots),
     ];
+
+    // Apply known-degradation suppression: Fail → KnownDegraded when explicitly listed.
+    for check in &mut checks {
+        if check.status == CheckStatus::Fail
+            && super::degradation::is_suppressed(known_degradations, &check.name)
+        {
+            let suppressors =
+                super::degradation::suppressors_for_check(known_degradations, &check.name);
+            let ack = suppressors
+                .iter()
+                .map(|e| format!("ack:{} ticket:{}", e.acknowledged_by, e.ticket))
+                .collect::<Vec<_>>()
+                .join("; ");
+            check.status = CheckStatus::KnownDegraded;
+            check.message = format!("{} [known-degraded: {}]", check.message, ack);
+        }
+    }
+
     let passed = checks.iter().filter(|c| c.status == CheckStatus::Pass).count();
     let failed = checks
         .iter()
         .filter(|c| c.status == CheckStatus::Fail)
         .count();
+    let known_degraded = checks
+        .iter()
+        .filter(|c| c.status == CheckStatus::KnownDegraded)
+        .count();
     let total = checks.len();
     let overall = if failed > 0 {
         CheckStatus::Fail
     } else if checks.iter().any(|c| c.status == CheckStatus::Warn) {
+        CheckStatus::Warn
+    } else if known_degraded > 0 {
+        // All actual failures are known-acceptable → surface as Warn so callers
+        // can distinguish "clean" from "known-degraded but acceptable".
         CheckStatus::Warn
     } else {
         CheckStatus::Pass
@@ -1063,6 +1099,7 @@ pub fn run_e2e_checks(
         overall,
         passed,
         failed,
+        known_degraded,
         total,
         checks,
     }
@@ -2877,7 +2914,7 @@ mod tests {
         let tower = make_check_snapshot("tower", true, true, true, true, true);
         let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
-        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"], &Default::default());
         assert_eq!(report.overall, CheckStatus::Pass);
         assert_eq!(report.passed, 7);
         assert_eq!(report.failed, 0);
@@ -2896,7 +2933,7 @@ mod tests {
         // Only tower available, sandbox expected but missing
         let tower = make_check_snapshot("tower", true, true, true, true, true);
         let snapshots = vec![tower];
-        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"], &Default::default());
         assert_eq!(report.overall, CheckStatus::Fail);
         let api_check = &report.checks[0];
         assert_eq!(api_check.name, "cluster_api_reachable");
@@ -2908,7 +2945,7 @@ mod tests {
         let tower = make_check_snapshot("tower", false, true, true, true, true);
         let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
-        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"], &Default::default());
         let node_check = &report.checks[1];
         assert_eq!(node_check.name, "all_nodes_ready");
         assert_eq!(node_check.status, CheckStatus::Fail);
@@ -2919,7 +2956,7 @@ mod tests {
         let tower = make_check_snapshot("tower", true, false, true, true, true);
         let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
-        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"], &Default::default());
         let argocd_check = &report.checks[3];
         assert_eq!(argocd_check.name, "argocd_synced");
         assert_eq!(argocd_check.status, CheckStatus::Fail);
@@ -2930,7 +2967,7 @@ mod tests {
         let tower = make_check_snapshot("tower", true, true, false, true, true);
         let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
-        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"], &Default::default());
         let cf_check = &report.checks[4];
         assert_eq!(cf_check.name, "cf_tunnel_running");
         assert_eq!(cf_check.status, CheckStatus::Fail);
@@ -2941,7 +2978,7 @@ mod tests {
         let tower = make_check_snapshot("tower", true, true, true, true, true);
         let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![tower, sandbox];
-        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"]);
+        let report = run_e2e_checks(&snapshots, &["tower", "sandbox"], &Default::default());
         let json = serde_json::to_string_pretty(&report).unwrap();
         // Verify it's valid JSON with expected fields
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -2971,7 +3008,7 @@ mod tests {
         let mut tower = make_check_snapshot("tower", true, true, true, true, true);
         tower.namespaces.clear();
         let snapshots = vec![tower];
-        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let report = run_e2e_checks(&snapshots, &["tower"], &Default::default());
         let ns_check = &report.checks[2];
         assert_eq!(ns_check.name, "namespaces_listed");
         assert_eq!(ns_check.status, CheckStatus::Fail);
@@ -2982,7 +3019,7 @@ mod tests {
         // Only sandbox available — ArgoCD and CF Tunnel checks should skip (tower-only)
         let sandbox = make_check_snapshot("sandbox", true, false, false, true, true);
         let snapshots = vec![sandbox];
-        let report = run_e2e_checks(&snapshots, &["sandbox"]);
+        let report = run_e2e_checks(&snapshots, &["sandbox"], &Default::default());
         let argocd_check = &report.checks[3];
         assert_eq!(argocd_check.status, CheckStatus::Skip);
         let cf_check = &report.checks[4];
@@ -2993,7 +3030,7 @@ mod tests {
     fn e2e_checks_cilium_healthy_passes_when_hubble_relay_running() {
         let tower = make_check_snapshot("tower", true, false, false, true, false);
         let snapshots = vec![tower];
-        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let report = run_e2e_checks(&snapshots, &["tower"], &Default::default());
         let cilium_check = &report.checks[5];
         assert_eq!(cilium_check.name, "cilium_healthy");
         assert_eq!(cilium_check.status, CheckStatus::Pass);
@@ -3016,7 +3053,7 @@ mod tests {
             containers: vec!["hubble-relay".into()],
         });
         let snapshots = vec![tower];
-        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let report = run_e2e_checks(&snapshots, &["tower"], &Default::default());
         let cilium_check = &report.checks[5];
         assert_eq!(cilium_check.name, "cilium_healthy");
         assert_eq!(cilium_check.status, CheckStatus::Fail);
@@ -3028,7 +3065,7 @@ mod tests {
         // No hubble-relay pods → check should Skip, not Fail
         let tower = make_check_snapshot("tower", true, false, false, false, false);
         let snapshots = vec![tower];
-        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let report = run_e2e_checks(&snapshots, &["tower"], &Default::default());
         let cilium_check = &report.checks[5];
         assert_eq!(cilium_check.name, "cilium_healthy");
         assert_eq!(cilium_check.status, CheckStatus::Skip);
@@ -3038,7 +3075,7 @@ mod tests {
     fn e2e_checks_kyverno_healthy_passes_when_admission_controller_running() {
         let tower = make_check_snapshot("tower", true, false, false, false, true);
         let snapshots = vec![tower];
-        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let report = run_e2e_checks(&snapshots, &["tower"], &Default::default());
         let kyverno_check = &report.checks[6];
         assert_eq!(kyverno_check.name, "kyverno_healthy");
         assert_eq!(kyverno_check.status, CheckStatus::Pass);
@@ -3061,7 +3098,7 @@ mod tests {
             containers: vec!["kyverno".into()],
         });
         let snapshots = vec![tower];
-        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let report = run_e2e_checks(&snapshots, &["tower"], &Default::default());
         let kyverno_check = &report.checks[6];
         assert_eq!(kyverno_check.name, "kyverno_healthy");
         assert_eq!(kyverno_check.status, CheckStatus::Fail);
@@ -3072,10 +3109,79 @@ mod tests {
         // No kyverno pods → check should Skip, not Fail
         let tower = make_check_snapshot("tower", true, false, false, false, false);
         let snapshots = vec![tower];
-        let report = run_e2e_checks(&snapshots, &["tower"]);
+        let report = run_e2e_checks(&snapshots, &["tower"], &Default::default());
         let kyverno_check = &report.checks[6];
         assert_eq!(kyverno_check.name, "kyverno_healthy");
         assert_eq!(kyverno_check.status, CheckStatus::Skip);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Known-degradation suppression tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn e2e_checks_known_degraded_suppresses_fail() {
+        use crate::models::degradation::{KnownDegradation, KnownDegradationsConfig};
+
+        // Create a cluster where argocd_synced would normally Fail
+        // (no argocd deployments in the snapshot), but cf_tunnel=true so only argocd fails.
+        let tower = make_check_snapshot("tower", true, false, true, true, true);
+        let snapshots = vec![tower];
+
+        // Inventory entry that suppresses argocd_synced
+        let inv = KnownDegradationsConfig {
+            known_degradations: vec![KnownDegradation {
+                namespace: "argocd".to_string(),
+                resource_kind: "Pod".to_string(),
+                name: "argocd-dex-server-*".to_string(),
+                condition: "CrashLoopBackOff".to_string(),
+                cause_kind: "architectural-assumption".to_string(),
+                reason: "OIDC not wired in this environment.".to_string(),
+                acknowledged_by: "jinwang".to_string(),
+                ticket: "N/A".to_string(),
+                suppresses_check: vec!["argocd_synced".to_string()],
+            }],
+        };
+
+        let report = run_e2e_checks(&snapshots, &["tower"], &inv);
+        let argocd_check = report.checks.iter().find(|c| c.name == "argocd_synced").unwrap();
+
+        // Status must be KnownDegraded, not Fail
+        assert_eq!(
+            argocd_check.status,
+            CheckStatus::KnownDegraded,
+            "argocd_synced should be KnownDegraded when suppressed by inventory"
+        );
+        assert!(
+            argocd_check.message.contains("[known-degraded:"),
+            "message must include [known-degraded:] marker; got: {}",
+            argocd_check.message
+        );
+
+        // No real failures → overall should not be Fail
+        assert_ne!(
+            report.overall,
+            CheckStatus::Fail,
+            "overall should not be Fail when only known-degraded items remain"
+        );
+        assert_eq!(report.known_degraded, 1);
+        assert_eq!(report.failed, 0);
+    }
+
+    #[test]
+    fn e2e_checks_without_inventory_still_fails() {
+        // Same scenario without inventory → should remain Fail
+        let tower = make_check_snapshot("tower", true, false, true, true, true);
+        let snapshots = vec![tower];
+        let report = run_e2e_checks(&snapshots, &["tower"], &Default::default());
+        let argocd_check = report.checks.iter().find(|c| c.name == "argocd_synced").unwrap();
+        assert_eq!(
+            argocd_check.status,
+            CheckStatus::Fail,
+            "argocd_synced should Fail when no inventory suppresses it"
+        );
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.known_degraded, 0);
     }
 
     // ---------------------------------------------------------------------------
