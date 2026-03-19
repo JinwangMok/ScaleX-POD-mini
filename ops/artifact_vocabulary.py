@@ -138,18 +138,6 @@ _REGISTRY_ENTRIES: list[ArtifactDescriptor] = [
         produced_by="check_ssh_connectivity",
     ),
 
-    # ── Sub-AC 2d: playbox-3 specific re-verification ────────────────────
-    ArtifactDescriptor(
-        key="check_playbox3_connectivity:reachability",
-        granularity=GranularityLevel.ATOMIC,
-        description=(
-            "Binary SSH reachability check scoped to playbox-3 (192.168.88.11): "
-            "node responded to a read-only SSH probe (hostname+uptime+date) within "
-            "timeout.  Captured per-run to enforce evidence freshness window."
-        ),
-        produced_by="check_playbox3_connectivity",
-    ),
-
     # ── Layer 1: Hardware facts ───────────────────────────────────────────
     ArtifactDescriptor(
         key="gather_hardware_facts:hw_facts",
