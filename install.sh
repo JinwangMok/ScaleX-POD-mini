@@ -1592,16 +1592,17 @@ phase_label() {
 }
 
 # phase_skip_if_done PHASE_NUM — Returns 0 (caller should skip) if the given
-# phase is already recorded as complete in the persisted PHASE_FILE marker.
+# phase is already recorded as complete in either the per-phase .done file or
+# the sequential PHASE_FILE marker.  Delegates to phase_is_done so both
+# tracking sources are always consulted (fixes AC4/AC7 integration gap).
 # Usage inside a phase function:  phase_skip_if_done 2 && return 0
 phase_skip_if_done() {
   local phase_num="$1"
-  local completed; completed=$(state_get_phase)
-  if (( completed >= phase_num )); then
+  if phase_is_done "$phase_num"; then
     local label; label=$(phase_label "$phase_num")
     log_info "$(i18n \
-      "Phase ${phase_num} (${label}) already complete — skipping (marker: ${PHASE_FILE})" \
-      "Phase ${phase_num} (${label}) 이미 완료 — 건너뜀 (마커: ${PHASE_FILE})")"
+      "Phase ${phase_num} (${label}) already complete — skipping (marker: ${PHASE_DONE_DIR}/${phase_num}.done)" \
+      "Phase ${phase_num} (${label}) 이미 완료 — 건너뜀 (마커: ${PHASE_DONE_DIR}/${phase_num}.done)")"
     return 0
   fi
   return 1
