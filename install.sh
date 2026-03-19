@@ -1866,6 +1866,80 @@ check_nodes_ssh_health() {
   return 0
 }
 
+# phase_ssh_check — Inter-phase SSH health-check wrapper.
+#
+# Reads bare-metal nodes from .baremetal-init.yaml, ensures ~/.ssh/config has
+# ProxyJump/IdentityFile entries (via generate_ssh_config — idempotent), then
+# calls check_nodes_ssh_health with the parsed USER@HOST list.
+#
+# In --auto mode  : returns 1 on any failure; caller MUST propagate with || return 1
+# Interactive mode: returns 1 on any failure; caller should use || true (non-fatal)
+# Graceful skip   : returns 0 when no .baremetal-init.yaml or no nodes found
+#
+# Usage: phase_ssh_check PHASE_LABEL [REPO_DIR]
+#   PHASE_LABEL — e.g. "pre-flight", "pre-sdi-init", "post-install"
+#   REPO_DIR    — defaults to $REPO_DIR global then $(pwd)
+phase_ssh_check() {
+  local phase_label="$1"
+  local repo_dir="${2:-${REPO_DIR:-$(pwd)}}"
+
+  # Locate .baremetal-init.yaml: check repo_dir first, then installer generated dir
+  local bm_yaml="" bm_source_dir="$repo_dir"
+  if [[ -f "$repo_dir/credentials/.baremetal-init.yaml" ]]; then
+    bm_yaml="$repo_dir/credentials/.baremetal-init.yaml"
+  elif [[ -f "$GEN_DIR/credentials/.baremetal-init.yaml" ]]; then
+    bm_yaml="$GEN_DIR/credentials/.baremetal-init.yaml"
+    bm_source_dir="$GEN_DIR"
+  fi
+
+  if [[ -z "$bm_yaml" ]]; then
+    log_info "$(i18n \
+      "SSH health check [${phase_label}]: no .baremetal-init.yaml found — skipping" \
+      "SSH 상태 확인 [${phase_label}]: .baremetal-init.yaml 없음 — 건너뜀")"
+    return 0
+  fi
+
+  # Ensure ~/.ssh/config has ProxyJump/IdentityFile entries (idempotent)
+  generate_ssh_config "$bm_source_dir"
+
+  # Parse user@hostname pairs from .baremetal-init.yaml (simple line-based parser)
+  local node_args=()
+  local _psc_name="" _psc_user=""
+  while IFS= read -r _psc_line; do
+    if [[ "$_psc_line" =~ ^[[:space:]]*-[[:space:]]*name:[[:space:]]*\"?([^\"[:space:]]+)\"? ]]; then
+      [[ -n "$_psc_name" ]] && node_args+=("${_psc_user:-root}@${_psc_name}")
+      _psc_name="${BASH_REMATCH[1]}"
+      _psc_user=""
+    elif [[ "$_psc_line" =~ adminUser:[[:space:]]*\"?([^\"[:space:]]+)\"? ]]; then
+      _psc_user="${BASH_REMATCH[1]}"
+    fi
+  done < "$bm_yaml"
+  [[ -n "$_psc_name" ]] && node_args+=("${_psc_user:-root}@${_psc_name}")
+
+  if [[ ${#node_args[@]} -eq 0 ]]; then
+    log_info "$(i18n \
+      "SSH health check [${phase_label}]: no nodes in config — skipping" \
+      "SSH 상태 확인 [${phase_label}]: 설정에 노드 없음 — 건너뜀")"
+    return 0
+  fi
+
+  # Run parallel SSH health check (retries, backoff, summary all handled inside)
+  if ! check_nodes_ssh_health "$phase_label" "${node_args[@]}"; then
+    if [[ "$AUTO_MODE" == "true" ]]; then
+      log_error "$(i18n \
+        "install.sh: SSH health check [${phase_label}] FAILED in --auto mode — aborting install" \
+        "install.sh: SSH 상태 확인 [${phase_label}] --auto 모드 실패 — 설치 중단")"
+      return 1
+    fi
+    # Interactive mode: check_nodes_ssh_health already printed per-node summary + error_msg
+    log_warn "$(i18n \
+      "SSH health check [${phase_label}]: failure — continuing in interactive mode" \
+      "SSH 상태 확인 [${phase_label}]: 실패 — 대화형 모드에서 계속 진행")"
+    return 1
+  fi
+  return 0
+}
+
 # ============================================================================
 # Section 2: Dependency Management
 # ============================================================================
@@ -2691,12 +2765,18 @@ phase_provision() {
       fi
       echo -e "  ${GREEN}OK${NC}"
 
+      # SSH health check: pre-sdi-init — verify nodes still reachable before SDI/VM deployment
+      phase_ssh_check "$(i18n "pre-sdi-init" "SDI 초기화 전")" "$REPO_DIR" || return 1
+
       echo -e "  ${CYAN}[2/${ps_total}]${NC} scalex sdi init..."
       if ! (cd "$REPO_DIR" && scalex sdi init config/sdi-specs.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
         log_error "$(i18n "Auto mode: SDI init failed — aborting provisioning" "자동 모드: SDI 초기화 실패 — 프로비저닝 중단")"
         return 1
       fi
       echo -e "  ${GREEN}OK${NC}"
+
+      # SSH health check: pre-cluster-init — verify nodes reachable before k8s bootstrap
+      phase_ssh_check "$(i18n "pre-cluster-init" "클러스터 초기화 전")" "$REPO_DIR" || return 1
 
       echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex cluster init..."
       if ! (cd "$REPO_DIR" && scalex cluster init config/k8s-clusters.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
@@ -2743,6 +2823,8 @@ phase_provision() {
           "자동 모드: 부트스트랩 전 터널 준비 상태 확인 실패 — 중단")"
         return 1
       fi
+      # SSH health check: pre-bootstrap — verify nodes reachable before ArgoCD/app deployment
+      phase_ssh_check "$(i18n "pre-bootstrap" "부트스트랩 전")" "$REPO_DIR" || return 1
       if ! (cd "$REPO_DIR" && scalex bootstrap 2>&1 | tee -a "$LOG_FILE" | tail -5); then
         log_error "$(i18n "Auto mode: bootstrap failed — aborting provisioning" "자동 모드: 부트스트랩 실패 — 프로비저닝 중단")"
         return 1
@@ -3011,6 +3093,11 @@ main() {
     # Generate ~/.ssh/config for ProxyJump nodes (required by libvirt qemu+ssh://)
     generate_ssh_config "$repo"
 
+    # SSH health check: pre-flight — verify ALL nodes reachable before any provisioning.
+    # Must run after generate_ssh_config so ProxyJump entries are in ~/.ssh/config.
+    # In --auto mode: first SSH failure aborts install.sh immediately (return 1).
+    phase_ssh_check "$(i18n "pre-flight" "사전 확인")" "$repo" || return 1
+
     # Clone kubespray if not present (not a submodule — runtime dependency)
     if [[ -n "$repo" && ! -f "$repo/kubespray/kubespray/cluster.yml" ]]; then
       log_info "$(i18n "Cloning Kubespray v2.30.0..." "Kubespray v2.30.0 클론 중...")"
@@ -3043,6 +3130,9 @@ main() {
 
     REPO_DIR="${repo:-$HOME/ScaleX-POD-mini}"
     state_set REPO_DIR "$REPO_DIR"
+
+    # SSH health check: pre-provision — re-verify nodes after deps phase, before heavy provisioning.
+    phase_ssh_check "$(i18n "pre-provision" "프로비저닝 전")" "$REPO_DIR" || return 1
 
     # Run Phase 4 (build & provision) — skip if already complete
     if phase_is_done 4; then
@@ -3081,11 +3171,19 @@ main() {
     completed=1
   fi
 
+  # SSH health check: after Phase 1 (bare-metal configured) — nodes must be reachable
+  # before SDI VM provisioning. Non-fatal in interactive mode; warns and continues.
+  phase_ssh_check "$(i18n "after-baremetal" "베어메탈 설정 후")" || true
+
   if (( completed < 2 )); then
     show_dashboard
     phase_sdi
     completed=2
   fi
+
+  # SSH health check: after Phase 2 (SDI VMs created) — verify nodes still accessible
+  # before k8s cluster bootstrap. Non-fatal in interactive mode.
+  phase_ssh_check "$(i18n "after-sdi" "SDI 설정 후")" || true
 
   if (( completed < 3 )); then
     show_dashboard
@@ -3093,11 +3191,19 @@ main() {
     completed=3
   fi
 
+  # SSH health check: after Phase 3 (cluster config done) — verify nodes reachable
+  # before build & provision phase. Non-fatal in interactive mode.
+  phase_ssh_check "$(i18n "after-cluster" "클러스터 설정 후")" || true
+
   if (( completed < 4 )); then
     show_dashboard
     phase_provision
     completed=4
   fi
+
+  # SSH health check: post-install validation — verify all nodes still reachable after
+  # full installation. Non-fatal in interactive mode (installation is already complete).
+  phase_ssh_check "$(i18n "post-install" "설치 후 확인")" || true
 
   show_dashboard
   post_install_summary
