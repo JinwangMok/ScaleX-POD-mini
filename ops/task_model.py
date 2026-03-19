@@ -128,11 +128,17 @@ class DegradationItem:
     - description: one-line human summary
     - affects_task_ids: which task IDs this degradation exempts from FAIL
     - ticket: optional tracking reference
+    - root_cause: optional RootCause record carrying a cause_kind classification.
+                  Sub-AC 6b requires every item in the canonical inventory to carry
+                  a root_cause with a non-None cause_kind.  New items added without
+                  root_cause are accepted (field defaults to None) but the
+                  test_causekind_backfill suite will flag them.
     """
     id: str
     description: str
     affects_task_ids: list[str]
     ticket: str | None = None
+    root_cause: Optional[RootCause] = None
 
 
 @dataclass

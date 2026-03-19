@@ -1,33 +1,75 @@
 # known_degradations.yaml
 #
 # Explicitly approved degradations that MUST NOT trigger alerts or fail health checks.
-# Every entry requires: namespace, resource_kind, name, condition, reason, acknowledged_by.
-# Optional: ticket (defaults to "N/A")
+# Every entry requires: id, namespace, resource_kind, name, condition, reason,
+#   acknowledged_by, cause_kind, root_cause_description.
+# Optional: ticket (defaults to "N/A"), suppresses_check (list of E2E check names to suppress),
+#   mitigation.
 #
 # name field supports trailing '*' glob (e.g. "coredns-*" matches "coredns-5d78c9869d-xqbrf").
 # condition must match the Kubernetes condition/reason string exactly (case-insensitive).
+#
+# cause_kind — REQUIRED field (Sub-AC 6b backfill).
+#   Permitted values match CauseKind enum in ops/task_model.py:
+#   architectural_assumption  — degradation is an inherent consequence of the deployment
+#                               architecture, environment constraints, or deliberate
+#                               design decision; no code change is expected.
+#   code_defect               — degradation is caused by a software bug or misconfiguration
+#                               that should be fixed; the exemption is temporary pending a fix.
+#   external_dependency       — caused by an external system outside ScaleX codebase.
+#   configuration_error       — operator-supplied config value is wrong or missing.
+#   known_limitation          — deliberate capability boundary, not a defect.
+#
+# root_cause_description — REQUIRED (Sub-AC 6b).  One-line summary of WHY this occurs.
+# mitigation             — optional. What is in place to handle it.
 #
 # PURPOSE: This is the ONLY place where degraded-but-acceptable state is recorded.
 # Narrative prose in runbooks is NOT sufficient — every known-acceptable degradation
 # must have a structured entry here so that automated health re-verification can
 # suppress false-positive alerts without silently hiding real failures.
+#
+# suppresses_check: list of E2E check names (from `scalex dash --once` / run_e2e_checks)
+# that this entry explicitly suppresses.  A suppressed Fail becomes KnownDegraded in
+# the health report — visually distinct from both Pass and actual unexpected failures.
 
 known_degradations:
-  - namespace: "kube-system"
+  - id: "DEG-001"
+    namespace: "kube-system"
     resource_kind: "Pod"
     name: "coredns-*"
     condition: "ContainerNotReady"
+    # Sub-AC 6b: structural to single-node bootstrap sequence
+    cause_kind: "architectural_assumption"
+    root_cause_description: >-
+      Bare-metal kubeadm/kubespray bootstrap races CNI readiness with the CoreDNS
+      readiness probe; transient failure is an accepted consequence of the
+      single-node bootstrap sequence.
+    mitigation: >-
+      Health re-verification window is 60 s; checks that run after this window will
+      see CoreDNS in Ready state.
     reason: >-
       CoreDNS pods transiently report ContainerNotReady during the first 60 s after
       cluster bootstrap while kube-dns endpoints propagate. This is a lab-only
       startup artefact; the readiness probe recovers without intervention.
     acknowledged_by: "jinwang"
     ticket: "N/A"
+    suppresses_check:
+      - "all_nodes_ready"
 
-  - namespace: "argocd"
+  - id: "DEG-002"
+    namespace: "argocd"
     resource_kind: "Pod"
     name: "argocd-dex-server-*"
     condition: "CrashLoopBackOff"
+    # Sub-AC 6b: OIDC intentionally deferred (not an architecture choice; deliberate
+    #   capability boundary for this iteration)
+    cause_kind: "known_limitation"
+    root_cause_description: >-
+      OIDC/Keycloak integration is intentionally deferred to a future iteration
+      (post-P2); dex-server is non-functional until OIDC secrets are provisioned.
+    mitigation: >-
+      ArgoCD ApplicationController and Server continue to operate normally;
+      only SSO login via dex is unavailable.
     reason: >-
       dex-server is intentionally disabled in this lab environment because OIDC is
       not yet wired to a Keycloak realm. The CrashLoopBackOff is expected during the
@@ -35,11 +77,23 @@ known_degradations:
       project_followup_cf_tunnel.md P2).
     acknowledged_by: "jinwang"
     ticket: "docs/superpowers/plans/2026-03-17-dash-oidc-auth-future.md"
+    suppresses_check:
+      - "argocd_synced"
 
-  - namespace: "kube-system"
+  - id: "DEG-003"
+    namespace: "kube-system"
     resource_kind: "Pod"
     name: "kube-vip-*"
     condition: "NodeNotReady"
+    # Sub-AC 6b: ARP propagation delay is structural to bare-metal VIP design
+    cause_kind: "architectural_assumption"
+    root_cause_description: >-
+      Bare-metal VIP via ARP announcement on br0 is structural to the POD-mini
+      networking design; ARP propagation latency is an accepted consequence of
+      this architecture.
+    mitigation: >-
+      Re-verification window for node-readiness checks is 30 s; kube-vip reaches
+      stable state within this window.
     reason: >-
       kube-vip pods on single-node test clusters briefly show NodeNotReady while the
       ARP announcement for the VIP propagates on br0. This is structural to the
@@ -47,3 +101,5 @@ known_degradations:
       reachability.
     acknowledged_by: "jinwang"
     ticket: "N/A"
+    suppresses_check:
+      - "all_nodes_ready"
