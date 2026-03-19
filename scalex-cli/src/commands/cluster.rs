@@ -442,17 +442,18 @@ fn update_gitops_cilium_values(
     let values_content = gitops::generate_cilium_values(control_plane_ip, 6443);
     let kust_content = gitops::generate_cilium_kustomization(cilium_version);
 
+    if let Some(parent) = values_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&values_path, &values_content)?;
+    std::fs::write(&kust_path, &kust_content)?;
+
     if dry_run {
         println!(
-            "[dry-run] Would write Cilium values for {} (CP: {})",
+            "[dry-run] Wrote Cilium values for {} (CP: {})",
             cluster_name, control_plane_ip
         );
     } else {
-        if let Some(parent) = values_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&values_path, &values_content)?;
-        std::fs::write(&kust_path, &kust_content)?;
         println!(
             "[cluster] Updated gitops/{}/cilium/ with CP IP {}",
             cluster_name, control_plane_ip

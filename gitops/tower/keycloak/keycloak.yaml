@@ -25,7 +25,7 @@ spec:
             - --proxy-headers=xforwarded
             - --http-enabled=true
             - --db=postgres
-            - --db-url-host=keycloak-postgresql.keycloak.svc.tower.local
+            - --db-url-host=keycloak-postgresql.keycloak.svc.cluster.local
             - --db-url-database=keycloak
           env:
             - name: KC_DB_USERNAME
