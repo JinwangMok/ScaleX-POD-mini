@@ -3227,6 +3227,11 @@ main() {
     completed=0
   fi
 
+  # SSH health check: after Phase 0 (deps installed) — verify nodes reachable before
+  # bare-metal configuration phase. Skips gracefully if .baremetal-init.yaml is not yet
+  # present (nodes are configured during Phase 1). Non-fatal in interactive mode.
+  phase_ssh_check "$(i18n "after-deps" "의존성 설치 후")" || true
+
   if (( completed < 1 )); then
     show_dashboard
     phase_baremetal
