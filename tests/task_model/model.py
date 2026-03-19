@@ -92,6 +92,9 @@ class Task:
     Attributes:
         name:          Unique task identifier.
         scope:         Declared scope boundary (must be stated before evaluation).
+        scope_artifact_ids: Controlled-vocabulary artifact references [Sub-AC 7a].
+                       Each entry must be a valid "<granularity>:<name>[:<aspect>]"
+                       string registered in ops/artifact_registry.ARTIFACT_REGISTRY.
         prerequisites: Causal deps — list of task names that MUST have SUCCEEDED
                        before this task may run.  Failure blocks all descendants.
         evidence_deps: Evidential deps [Sub-AC 3b] — list of EvidentialDep objects
@@ -106,6 +109,7 @@ class Task:
     """
     name: str
     scope: str
+    scope_artifact_ids: List[str] = field(default_factory=list)
     prerequisites: List[str] = field(default_factory=list)
     evidence_deps: List[EvidentialDep] = field(default_factory=list)
     run_fn: Optional[Callable[[], Evidence]] = field(default=None, repr=False)
