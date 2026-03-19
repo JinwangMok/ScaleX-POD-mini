@@ -139,13 +139,20 @@ class UnknownPrerequisiteError(Exception):
 
 class TaskExecutor:
     """
-    Executes a set of Tasks in dependency order.
+    Executes a set of Tasks in dependency order, enforcing both edge types:
 
-    Dependency rules:
-      - Causal deps (prerequisites) are hard blockers.
-        If a prerequisite is FAILED or BLOCKED, all descendants are BLOCKED.
-      - Dry-run (dry_run=True) resolves the execution plan and logs
-        which tasks would be blocked, without calling run_fn.
+      CAUSAL (prerequisites):
+        Hard blockers.  If a prerequisite FAILED or BLOCKED, descendants are
+        BLOCKED.
+
+      EVIDENTIAL (evidence_deps):  [Sub-AC 3b]
+        Before running a task, the executor checks each EvidentialDep:
+          - MISSING → log RECHECK_TRIGGERED(reason=MISSING) and re-execute
+                      source task to capture fresh evidence.
+          - STALE   → log RECHECK_TRIGGERED(reason=STALE, age=Xs > TTLs) and
+                      re-execute source task.
+          - FRESH   → log evidence_check=OK(age=Xs) and proceed.
+        In dry-run mode, re-checks are planned and logged but NOT executed.
 
     Usage::
 
@@ -164,6 +171,10 @@ class TaskExecutor:
         self.dry_run = dry_run
         self._results: Dict[str, TaskResult] = {}
 
+        # Evidence store: maps evidence_key → Evidence
+        # Populated when tasks run (or pre-seeded with stale evidence for testing).
+        self._evidence_store: Dict[str, Evidence] = {}
+
         # Configure logger
         if not logger.handlers:
             handler = logging.StreamHandler()
@@ -172,6 +183,26 @@ class TaskExecutor:
         logger.setLevel(log_level)
 
         self._validate_graph()
+
+    def seed_evidence(
+        self,
+        evidence_key: str,
+        raw_output: str,
+        summary: str,
+        age_seconds: float = 0.0,
+    ) -> None:
+        """
+        Pre-seed the evidence store (for testing or restoring persisted state).
+
+        age_seconds: how old the evidence should appear (0 = captured just now,
+                     >600 = stale, triggers re-check).
+        """
+        captured_at = time.time() - age_seconds
+        self._evidence_store[evidence_key] = Evidence(
+            captured_at=captured_at,
+            raw_output=raw_output,
+            summary=summary,
+        )
 
     # ------------------------------------------------------------------
     # Graph validation
@@ -283,6 +314,137 @@ class TaskExecutor:
                     )
         return None
 
+    # ------------------------------------------------------------------
+    # Evidential dependency enforcement  [Sub-AC 3b]
+    # ------------------------------------------------------------------
+
+    def _check_evidential_deps(self, task: Task) -> None:
+        """
+        Inspect every EvidentialDep declared by the task.
+
+        For each dep:
+          - MISSING  → log RECHECK_TRIGGERED(reason=MISSING) and, in non-dry-run
+                       mode, re-execute the source task to capture fresh evidence.
+          - STALE    → log RECHECK_TRIGGERED(reason=STALE, age=Xs > TTLs) and,
+                       in non-dry-run mode, re-execute the source task.
+          - FRESH    → log evidence_dep OK(age=Xs) and continue.
+
+        This method never blocks execution; it only ensures evidence is fresh
+        before the consuming task runs (or logs what would happen in dry-run).
+        """
+        if not task.evidence_deps:
+            return
+
+        for dep in task.evidence_deps:
+            ev = self._evidence_store.get(dep.evidence_key)
+
+            if ev is None:
+                # Evidence MISSING — must re-run source task
+                logger.warning(
+                    "[RECHECK_TRIGGERED] task=%s evidence_key=%r "
+                    "reason=MISSING source_task=%s",
+                    task.name,
+                    dep.evidence_key,
+                    dep.source_task_name,
+                )
+                if not self.dry_run:
+                    self._run_recheck(dep.source_task_name, dep.evidence_key)
+                else:
+                    logger.info(
+                        "[DRY-RUN][RECHECK] would re-run '%s' to capture "
+                        "missing evidence '%s'",
+                        dep.source_task_name,
+                        dep.evidence_key,
+                    )
+
+            elif not ev.is_fresh(dep.max_age_s):
+                # Evidence STALE — must re-run source task
+                age = time.time() - ev.captured_at
+                logger.warning(
+                    "[RECHECK_TRIGGERED] task=%s evidence_key=%r "
+                    "reason=STALE age=%.0fs ttl=%ds source_task=%s",
+                    task.name,
+                    dep.evidence_key,
+                    age,
+                    dep.max_age_s,
+                    dep.source_task_name,
+                )
+                if not self.dry_run:
+                    self._run_recheck(dep.source_task_name, dep.evidence_key)
+                else:
+                    logger.info(
+                        "[DRY-RUN][RECHECK] would re-run '%s' to refresh "
+                        "stale evidence '%s' (age=%.0fs > ttl=%ds)",
+                        dep.source_task_name,
+                        dep.evidence_key,
+                        age,
+                        dep.max_age_s,
+                    )
+
+            else:
+                # Evidence FRESH — no action needed
+                age = time.time() - ev.captured_at
+                logger.debug(
+                    "[EVIDENTIAL_DEP] task=%s evidence_key=%r status=FRESH "
+                    "age=%.0fs ttl=%ds",
+                    task.name,
+                    dep.evidence_key,
+                    age,
+                    dep.max_age_s,
+                )
+
+    def _run_recheck(self, source_task_name: str, evidence_key: str) -> None:
+        """
+        Re-execute the named source task to refresh a piece of evidence.
+
+        Called when evidence is MISSING or STALE.  The task's run_fn is
+        invoked directly (not re-queued through the full executor) so that
+        fresh evidence is available before the consuming task proceeds.
+        """
+        source_task = self.tasks.get(source_task_name)
+        if source_task is None:
+            logger.error(
+                "[RECHECK_ERROR] source task '%s' not found in registry — "
+                "cannot re-capture evidence '%s'",
+                source_task_name,
+                evidence_key,
+            )
+            return
+
+        logger.info(
+            "[RECHECK_RUNNING] re-executing '%s' to capture fresh evidence '%s'",
+            source_task_name,
+            evidence_key,
+        )
+
+        if source_task.run_fn is None:
+            logger.warning(
+                "[RECHECK_SKIP] '%s' has no run_fn — evidence '%s' remains stale",
+                source_task_name,
+                evidence_key,
+            )
+            return
+
+        try:
+            fresh_ev = source_task.run_fn()
+            self._evidence_store[evidence_key] = fresh_ev
+            logger.info(
+                "[RECHECK_OK] '%s' re-executed — evidence '%s' is now FRESH "
+                "(captured_at=%.0f summary=%s)",
+                source_task_name,
+                evidence_key,
+                fresh_ev.captured_at,
+                fresh_ev.summary,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[RECHECK_FAIL] '%s' re-execution failed — evidence '%s' "
+                "remains unavailable: %s",
+                source_task_name,
+                evidence_key,
+                exc,
+            )
+
     def _execute_task(self, task: Task) -> TaskResult:
         block_reason = self._blocked_by(task)
 
@@ -295,6 +457,11 @@ class TaskExecutor:
                 status=TaskStatus.BLOCKED,
                 block_reason=block_reason,
             )
+
+        # --- Evidential dep enforcement [Sub-AC 3b] ---
+        # Check (and potentially re-capture) all evidence this task relies on
+        # BEFORE executing it.  In dry-run mode this logs the re-check plan.
+        self._check_evidential_deps(task)
 
         if self.dry_run:
             logger.info("[DRY-RUN] %s — would execute (scope: %s)", task.name, task.scope)
@@ -315,6 +482,12 @@ class TaskExecutor:
             evidence = task.run_fn()
             finished = time.time()
             logger.info("[OK] %s → %s", task.name, evidence.summary)
+            # Store produced evidence so downstream tasks can use it
+            ev_key = task.evidence_store_key()
+            self._evidence_store[ev_key] = evidence
+            logger.debug(
+                "[EVIDENCE_STORED] key=%r age=0s (just captured)", ev_key
+            )
             return TaskResult(
                 task=task,
                 status=TaskStatus.SUCCEEDED,
