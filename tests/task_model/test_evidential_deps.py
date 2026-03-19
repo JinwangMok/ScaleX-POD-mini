@@ -565,6 +565,7 @@ class TestScaleXEvidentialDeps:
 
         # Pre-seed ALL evidence keys as STALE (15 minutes old)
         # [Sub-AC 7c] "sdi_init:completion" renamed to "sdi_init:vm_list"
+        # [Sub-AC 2b] Added "cilium_health_verify:cni_status"
         all_evidence_keys = [
             "check_ssh_connectivity:reachability",
             "gather_hardware_facts:hw_facts",
@@ -579,6 +580,8 @@ class TestScaleXEvidentialDeps:
             "cf_tunnel_healthy:tunnel_up",
             "dash_headless_verify:snapshot_valid",
             "scalex_dash_token_provisioned:token_valid",
+            # [Sub-AC 2b] Cilium CNI periodic health re-verification
+            "cilium_health_verify:cni_status",
         ]
         for key in all_evidence_keys:
             executor.seed_evidence(
@@ -643,6 +646,7 @@ class TestScaleXEvidentialDeps:
         """
         SSH_EVIDENCE_KEY = "check_ssh_connectivity:reachability"
         # Tasks that touch remote systems (bare-metal or VMs)
+        # [Sub-AC 2b] cilium_health_verify added: runs kubectl against tower cluster
         remote_tasks = {
             "gather_hardware_facts",
             "sdi_init",
@@ -651,6 +655,7 @@ class TestScaleXEvidentialDeps:
             "kubespray_tower",
             "kubespray_sandbox",
             "cf_tunnel_healthy",
+            "cilium_health_verify",  # [Sub-AC 2b] kubectl probe against tower cluster
         }
         tasks = {t.name: t for t in build_task_graph()}
         for name in remote_tasks:
