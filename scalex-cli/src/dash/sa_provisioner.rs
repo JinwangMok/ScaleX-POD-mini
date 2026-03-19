@@ -71,6 +71,14 @@ pub fn read_cached_token(kubeconfig_path: &Path) -> Option<String> {
         .map(|t| t.trim().to_string())
 }
 
+/// Invalidate (delete) cached SA token. Called on 401 to trigger re-provision.
+pub fn invalidate_cached_token(kubeconfig_path: &Path) {
+    if let Some(parent) = kubeconfig_path.parent() {
+        let token_path = parent.join("dash-token");
+        let _ = std::fs::remove_file(token_path);
+    }
+}
+
 /// Cache SA token to `_generated/clusters/{name}/dash-token`.
 pub fn cache_token(kubeconfig_path: &Path, token: &str) -> Result<()> {
     let token_path = kubeconfig_path
