@@ -169,6 +169,12 @@ pub struct ResourceUsage {
     pub failed_pods: usize,
     pub total_nodes: usize,
     pub ready_nodes: usize,
+    /// Aggregate pod CPU utilization as % of total node allocatable CPU.
+    /// -1.0 when pod metrics are unavailable (sentinel → renders as N/A).
+    pub pod_cpu_percent: f64,
+    /// Aggregate pod MEM utilization as % of total node allocatable memory.
+    /// -1.0 when pod metrics are unavailable (sentinel → renders as N/A).
+    pub pod_mem_percent: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -690,7 +696,9 @@ pub fn sort_pods_by_severity(pods: &mut [PodInfo]) {
 /// - `api_timeout` — per-call timeout; use `API_CALL_TIMEOUT` for TUI (500ms) and
 ///   `HEADLESS_API_TIMEOUT` for headless mode (30s) to handle remote cluster latency.
 ///
-/// Metrics fetch is removed (metrics_server_enabled hardcoded false).
+/// Node metrics are fetched from metrics.k8s.io/v1beta1 (metrics-server) when available.
+/// When metrics-server is not installed, metrics fetch fails gracefully and cpu_percent/mem_percent
+/// are set to the -1.0 sentinel, causing the UI to display "N/A" bars instead of percentages.
 pub async fn fetch_cluster_snapshot(
     client: &Client,
     cluster_name: &str,
@@ -901,7 +909,18 @@ pub async fn fetch_cluster_snapshot(
     // For health computation, use pods if we have them, otherwise empty
     // (health will be recomputed on next full fetch)
     let health = compute_health(&nodes, &pods_vec);
-    let resource_usage = compute_resource_usage(&nodes, &pods_vec, None);
+
+    // Try to fetch node metrics from metrics.k8s.io (requires metrics-server).
+    // Fails gracefully when metrics-server is not installed (returns Err → treated as None).
+    // Uses the same api_timeout as other API calls.
+    let node_metrics = fetch_node_metrics(client, api_timeout).await.ok();
+    let pod_metrics = fetch_pod_metrics(client, api_timeout).await.ok();
+    let resource_usage = compute_resource_usage(
+        &nodes,
+        &pods_vec,
+        node_metrics.as_deref(),
+        pod_metrics.as_deref(),
+    );
 
     Ok(ClusterSnapshot {
         name: cluster_name.to_string(),
@@ -1579,10 +1598,9 @@ pub struct NodeMetrics {
 }
 
 /// Fetch node metrics from metrics.k8s.io/v1beta1 (requires metrics-server).
-/// Returns empty vec if metrics API is unavailable.
-/// Currently unused: metrics_server_enabled is hardcoded false in kubespray.rs.
-#[allow(dead_code)]
-pub async fn fetch_node_metrics(client: &Client) -> Result<Vec<NodeMetrics>> {
+/// Returns empty vec if metrics API is unavailable or times out.
+/// Gracefully fails when metrics-server is not installed — caller uses `.ok()` or `.unwrap_or_default()`.
+pub async fn fetch_node_metrics(client: &Client, timeout: Duration) -> Result<Vec<NodeMetrics>> {
     use kube::api::ApiResource;
     use kube::api::DynamicObject;
 
@@ -1595,7 +1613,9 @@ pub async fn fetch_node_metrics(client: &Client) -> Result<Vec<NodeMetrics>> {
     };
 
     let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
-    let list = api.list(&ListParams::default()).await?;
+    let list = tokio::time::timeout(timeout, api.list(&ListParams::default()))
+        .await
+        .map_err(|_| anyhow::anyhow!("node metrics list timeout"))??;
 
     Ok(list
         .items
@@ -1614,10 +1634,69 @@ pub async fn fetch_node_metrics(client: &Client) -> Result<Vec<NodeMetrics>> {
         .collect())
 }
 
+/// Per-pod metrics fetched from metrics.k8s.io/v1beta1 PodMetrics.
+/// Aggregates all containers in the pod into a single CPU/MEM value.
+#[derive(Debug, Clone, Serialize)]
+pub struct PodMetrics {
+    pub name: String,
+    pub namespace: String,
+    pub cpu_usage: f64, // cores (sum of all containers)
+    pub mem_usage: f64, // bytes (sum of all containers)
+}
+
+/// Fetch pod metrics from metrics.k8s.io/v1beta1 (requires metrics-server).
+/// Returns empty vec if metrics API is unavailable or times out.
+/// Aggregates per-container CPU/MEM into per-pod totals.
+pub async fn fetch_pod_metrics(client: &Client, timeout: Duration) -> Result<Vec<PodMetrics>> {
+    use kube::api::ApiResource;
+    use kube::api::DynamicObject;
+
+    let ar = ApiResource {
+        group: "metrics.k8s.io".into(),
+        version: "v1beta1".into(),
+        api_version: "metrics.k8s.io/v1beta1".into(),
+        kind: "PodMetrics".into(),
+        plural: "pods".into(),
+    };
+
+    let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
+    let list = tokio::time::timeout(timeout, api.list(&ListParams::default()))
+        .await
+        .map_err(|_| anyhow::anyhow!("pod metrics list timeout"))??;
+
+    Ok(list
+        .items
+        .iter()
+        .filter_map(|obj| {
+            let name = obj.metadata.name.clone().unwrap_or_default();
+            let namespace = obj.metadata.namespace.clone().unwrap_or_default();
+            let containers = obj.data.get("containers")?.as_array()?;
+            let mut total_cpu = 0.0f64;
+            let mut total_mem = 0.0f64;
+            for container in containers {
+                let usage = container.get("usage")?;
+                if let Some(cpu_str) = usage.get("cpu").and_then(|v| v.as_str()) {
+                    total_cpu += parse_k8s_quantity(cpu_str).unwrap_or(0.0);
+                }
+                if let Some(mem_str) = usage.get("memory").and_then(|v| v.as_str()) {
+                    total_mem += parse_k8s_quantity(mem_str).unwrap_or(0.0);
+                }
+            }
+            Some(PodMetrics {
+                name,
+                namespace,
+                cpu_usage: total_cpu,
+                mem_usage: total_mem,
+            })
+        })
+        .collect())
+}
+
 pub fn compute_resource_usage(
     nodes: &[NodeInfo],
     pods: &[PodInfo],
     node_metrics: Option<&[NodeMetrics]>,
+    pod_metrics: Option<&[PodMetrics]>,
 ) -> ResourceUsage {
     let total_nodes = nodes.len();
     let ready_nodes = nodes
@@ -1674,6 +1753,34 @@ pub fn compute_resource_usage(
         })
         .unwrap_or((-1.0, -1.0)); // sentinel: no metrics data → render_usage_bar shows N/A
 
+    // Compute aggregate pod CPU/MEM percentages vs node allocatable capacity.
+    let (pod_cpu_percent, pod_mem_percent) = pod_metrics
+        .filter(|m| !m.is_empty())
+        .map(|metrics| {
+            let total_pod_cpu: f64 = metrics.iter().map(|m| m.cpu_usage).sum();
+            let total_pod_mem: f64 = metrics.iter().map(|m| m.mem_usage).sum();
+            let total_cpu_allocatable: f64 = nodes
+                .iter()
+                .filter_map(|n| parse_k8s_quantity(&n.cpu_allocatable))
+                .sum();
+            let total_mem_allocatable: f64 = nodes
+                .iter()
+                .filter_map(|n| parse_k8s_quantity(&n.mem_allocatable))
+                .sum();
+            let pod_cpu_pct = if total_cpu_allocatable > 0.0 {
+                (total_pod_cpu / total_cpu_allocatable) * 100.0
+            } else {
+                0.0
+            };
+            let pod_mem_pct = if total_mem_allocatable > 0.0 {
+                (total_pod_mem / total_mem_allocatable) * 100.0
+            } else {
+                0.0
+            };
+            (pod_cpu_pct, pod_mem_pct)
+        })
+        .unwrap_or((-1.0, -1.0)); // sentinel: no pod metrics → renders as N/A
+
     ResourceUsage {
         cpu_percent,
         mem_percent,
@@ -1683,6 +1790,8 @@ pub fn compute_resource_usage(
         failed_pods,
         total_nodes,
         ready_nodes,
+        pod_cpu_percent,
+        pod_mem_percent,
     }
 }
 
@@ -2156,7 +2265,7 @@ mod tests {
             node: "n1".into(),
             containers: vec![],
         }];
-        let usage = compute_resource_usage(&nodes, &pods, None);
+        let usage = compute_resource_usage(&nodes, &pods, None, None);
         assert!((usage.cpu_percent - (-1.0)).abs() < 1e-9); // sentinel: no metrics → -1.0
         assert!((usage.mem_percent - (-1.0)).abs() < 1e-9);
         assert_eq!(usage.running_pods, 1);
@@ -2180,7 +2289,7 @@ mod tests {
             cpu_usage: 2.0,
             mem_usage: 4.0 * 1024.0 * 1024.0 * 1024.0,
         }];
-        let usage = compute_resource_usage(&nodes, &[], Some(&metrics));
+        let usage = compute_resource_usage(&nodes, &[], Some(&metrics), None);
         assert!((usage.cpu_percent - 50.0).abs() < 1e-6);
         assert!((usage.mem_percent - 50.0).abs() < 1e-6);
     }
@@ -2967,5 +3076,172 @@ mod tests {
         let kyverno_check = &report.checks[6];
         assert_eq!(kyverno_check.name, "kyverno_healthy");
         assert_eq!(kyverno_check.status, CheckStatus::Skip);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Metrics parsing and compute_resource_usage integration tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn node_metrics_cpu_nanocores_parse() {
+        // metrics-server reports CPU in nanocores (e.g., "250000000n" = 0.25 cores)
+        let cpu = parse_k8s_quantity("250000000n");
+        assert!(cpu.is_some());
+        assert!((cpu.unwrap() - 0.25).abs() < 1e-6, "250000000n should parse to 0.25 cores");
+    }
+
+    #[test]
+    fn node_metrics_cpu_millicores_parse() {
+        // metrics-server also reports CPU in millicores (e.g., "125m" = 0.125 cores)
+        let cpu = parse_k8s_quantity("125m");
+        assert!(cpu.is_some());
+        assert!((cpu.unwrap() - 0.125).abs() < 1e-9, "125m should parse to 0.125 cores");
+    }
+
+    #[test]
+    fn node_metrics_memory_ki_parse() {
+        // metrics-server reports memory in Ki (e.g., "1048576Ki" = 1Gi)
+        let mem = parse_k8s_quantity("1048576Ki");
+        assert!(mem.is_some());
+        let gib = 1024.0 * 1024.0 * 1024.0;
+        assert!((mem.unwrap() - gib).abs() < 1.0, "1048576Ki should parse to 1GiB");
+    }
+
+    #[test]
+    fn compute_resource_usage_with_node_metrics_shows_real_percent() {
+        // When node metrics are available, cpu_percent and mem_percent must be ≥ 0.0
+        // (not the -1.0 sentinel which triggers "N/A" display in the status bar)
+        let nodes = vec![NodeInfo {
+            name: "n1".into(),
+            status: "Ready".into(),
+            cpu_capacity: "4".into(),         // 4 cores
+            mem_capacity: "8589934592".into(), // 8GiB in bytes
+            cpu_allocatable: "4".into(),
+            mem_allocatable: "8589934592".into(),
+            age: "1d".into(),
+            ..Default::default()
+        }];
+        let metrics = vec![NodeMetrics {
+            name: "n1".into(),
+            cpu_usage: 1.0,                       // 1 core = 25%
+            mem_usage: 2.0 * 1024.0 * 1024.0 * 1024.0, // 2GiB = 25%
+        }];
+        let usage = compute_resource_usage(&nodes, &[], Some(&metrics), None);
+        assert!(
+            usage.cpu_percent >= 0.0,
+            "cpu_percent must not be -1.0 sentinel when metrics are available"
+        );
+        assert!(
+            (usage.cpu_percent - 25.0).abs() < 1e-3,
+            "cpu_percent should be ~25% (1/4 cores)"
+        );
+        assert!(
+            usage.mem_percent >= 0.0,
+            "mem_percent must not be -1.0 sentinel when metrics are available"
+        );
+        assert!(
+            (usage.mem_percent - 25.0).abs() < 1e-3,
+            "mem_percent should be ~25% (2/8 GiB)"
+        );
+    }
+
+    #[test]
+    fn compute_resource_usage_no_metrics_shows_sentinel() {
+        // When no node metrics, cpu_percent/mem_percent must be -1.0 (sentinel → "N/A" in UI)
+        let nodes = vec![NodeInfo {
+            name: "n1".into(),
+            status: "Ready".into(),
+            cpu_capacity: "4".into(),
+            mem_capacity: "8Gi".into(),
+            cpu_allocatable: "4".into(),
+            mem_allocatable: "8Gi".into(),
+            age: "1d".into(),
+            ..Default::default()
+        }];
+        let usage = compute_resource_usage(&nodes, &[], None, None);
+        assert!(
+            (usage.cpu_percent - (-1.0)).abs() < 1e-9,
+            "cpu_percent must be -1.0 sentinel when no metrics"
+        );
+        assert!(
+            (usage.mem_percent - (-1.0)).abs() < 1e-9,
+            "mem_percent must be -1.0 sentinel when no metrics"
+        );
+    }
+
+    #[test]
+    fn pod_metrics_parse_k8s_quantities_no_panic() {
+        // Verify parse_k8s_quantity handles all quantity formats that metrics-server may return
+        // without panicking or returning garbage (ensures "no parse errors" AC)
+        let test_cases = [
+            // nanocores (most common from metrics-server)
+            ("100000000n", Some(0.1f64)),
+            ("500000000n", Some(0.5f64)),
+            ("1000000000n", Some(1.0f64)),
+            // millicores
+            ("250m", Some(0.25f64)),
+            ("1500m", Some(1.5f64)),
+            // whole cores
+            ("2", Some(2.0f64)),
+            // memory Ki
+            ("524288Ki", Some(536870912.0f64)), // 512Mi
+            // memory Mi
+            ("512Mi", Some(536870912.0f64)),
+            // memory Gi
+            ("4Gi", Some(4294967296.0f64)),
+            // empty → None (not a panic)
+            ("", None),
+            // unparseable → None (not a panic)
+            ("invalid", None),
+        ];
+        for (input, expected) in &test_cases {
+            let result = parse_k8s_quantity(input);
+            match expected {
+                Some(exp) => {
+                    assert!(
+                        result.is_some(),
+                        "parse_k8s_quantity({:?}) returned None, expected Some({})",
+                        input, exp
+                    );
+                    assert!(
+                        (result.unwrap() - exp).abs() < exp.abs() * 1e-4 + 1.0,
+                        "parse_k8s_quantity({:?}) = {:?}, expected ~{}",
+                        input,
+                        result,
+                        exp
+                    );
+                }
+                None => {
+                    assert!(
+                        result.is_none(),
+                        "parse_k8s_quantity({:?}) returned {:?}, expected None",
+                        input,
+                        result
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn format_k8s_memory_no_parse_errors_on_metrics_output() {
+        // Verify format_k8s_memory handles typical metrics-server outputs without producing
+        // garbled output or panicking (ensures "no parse errors" AC for memory display)
+        let cases = [
+            ("7816040Ki", "7.5Gi"),     // Node memory (Ki → Gi)
+            ("8Gi", "8Gi"),             // Already in Gi
+            ("512Mi", "512Mi"),         // Already in Mi
+            ("1073741824", "1Gi"),      // Plain bytes → Gi
+            ("0Ki", "0B"),              // Zero bytes
+            ("", "N/A"),                // Empty → explicit N/A (not blank)
+        ];
+        for (input, expected) in &cases {
+            let result = format_k8s_memory(input);
+            assert_eq!(
+                result, *expected,
+                "format_k8s_memory({:?}) = {:?}, expected {:?}",
+                input, result, expected
+            );
+        }
     }
 }

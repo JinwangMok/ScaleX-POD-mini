@@ -1626,6 +1626,26 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
+    // Pod utilization section — only shown when pod metrics are available
+    let pod_cpu = snapshot.resource_usage.pod_cpu_percent;
+    let pod_mem = snapshot.resource_usage.pod_mem_percent;
+    if pod_cpu >= 0.0 || pod_mem >= 0.0 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            " Pod Utilization ",
+            Style::default()
+                .fg(theme::BRIGHT_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(""));
+        let mut pod_cpu_spans = vec![Span::raw("  CPU ")];
+        pod_cpu_spans.extend(render_usage_bar("", pod_cpu, 20, theme::BRIGHT_AQUA));
+        lines.push(Line::from(pod_cpu_spans));
+        let mut pod_mem_spans = vec![Span::raw("  MEM ")];
+        pod_mem_spans.extend(render_usage_bar("", pod_mem, 20, theme::BRIGHT_AQUA));
+        lines.push(Line::from(pod_mem_spans));
+    }
+
     let paragraph = Paragraph::new(lines)
         .style(Style::default().bg(theme::BG))
         .scroll((app.table_scroll_offset.min(u16::MAX as usize) as u16, 0));
