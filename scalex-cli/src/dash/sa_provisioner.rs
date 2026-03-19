@@ -100,7 +100,9 @@ pub async fn provision_dash_sa(
             "-o",
             &format!("ProxyJump={bastion}"),
             &format!("ubuntu@{cp_ip}"),
-            "sudo kubectl apply -f -",
+            // --server-side apply prevents last-applied-configuration annotation conflicts
+            // with ArgoCD drift detection; --force-conflicts ensures idempotency on re-runs
+            "sudo kubectl apply --server-side --force-conflicts -f -",
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

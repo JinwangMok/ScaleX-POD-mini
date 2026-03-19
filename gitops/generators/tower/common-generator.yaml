@@ -38,6 +38,28 @@ spec:
       destination:
         server: https://kubernetes.default.svc
         namespace: "{{.namespace}}"
+      ignoreDifferences:
+        # StatefulSet volumeClaimTemplates: Kubernetes adds storageClassName/volumeMode/
+        # resources defaults after creation. This field is also immutable post-creation
+        # so ArgoCD self-heal cannot fix it — ignore to prevent perpetual OutOfSync.
+        # StatefulSet/Deployment replicas: install.sh bootstrap sets replicas via Helm
+        # values; HPA or manual scaling also mutates this field legitimately.
+        - group: apps
+          kind: StatefulSet
+          jsonPointers:
+            - /spec/replicas
+            - /spec/volumeClaimTemplates
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas
+        # Service clusterIP/clusterIPs: auto-assigned by Kubernetes API server at
+        # creation time; not present in git manifests, always causes false OutOfSync.
+        - group: ""
+          kind: Service
+          jsonPointers:
+            - /spec/clusterIP
+            - /spec/clusterIPs
       syncPolicy:
         automated:
           prune: true

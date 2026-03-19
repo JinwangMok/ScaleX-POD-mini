@@ -325,8 +325,19 @@ stringData:
 "#
     );
 
+    // Use --server-side apply to avoid last-applied-configuration annotation conflicts
+    // with ArgoCD drift detection. --force-conflicts ensures idempotency when field
+    // ownership conflicts arise on re-runs.
     let output = std::process::Command::new("kubectl")
-        .args(["apply", "-f", "-", "--kubeconfig", tower_kubeconfig])
+        .args([
+            "apply",
+            "--server-side",
+            "--force-conflicts",
+            "-f",
+            "-",
+            "--kubeconfig",
+            tower_kubeconfig,
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -351,9 +362,14 @@ stringData:
 
 /// Generate kubectl apply arguments for spread.yaml.
 /// Pure function — no I/O, no side effects.
+/// Uses --server-side apply to avoid last-applied-configuration annotation conflicts
+/// with ArgoCD drift detection. --force-conflicts resolves field ownership disputes
+/// during re-runs (e.g., ArgoCD previously owned a field, now scalex-bootstrap re-applies).
 pub fn generate_kubectl_apply_args(kubeconfig: &str, manifest_path: &str) -> Vec<String> {
     vec![
         "apply".to_string(),
+        "--server-side".to_string(),
+        "--force-conflicts".to_string(),
         "-f".to_string(),
         manifest_path.to_string(),
         "--kubeconfig".to_string(),
@@ -459,10 +475,35 @@ mod tests {
     fn test_kubectl_apply_args_structure() {
         let args = generate_kubectl_apply_args("/tower/kube.yaml", "gitops/bootstrap/spread.yaml");
         assert_eq!(args[0], "apply");
-        assert_eq!(args[1], "-f");
-        assert_eq!(args[2], "gitops/bootstrap/spread.yaml");
+        // --server-side and --force-conflicts must precede -f
+        assert!(
+            args.contains(&"--server-side".to_string()),
+            "Must use server-side apply to prevent ArgoCD drift annotation conflicts — got: {:?}",
+            args
+        );
+        assert!(
+            args.contains(&"--force-conflicts".to_string()),
+            "Must include --force-conflicts for idempotent re-runs — got: {:?}",
+            args
+        );
+        // -f and manifest path must still be present
+        let f_idx = args.iter().position(|a| a == "-f").unwrap();
+        assert_eq!(args[f_idx + 1], "gitops/bootstrap/spread.yaml");
         let kc_idx = args.iter().position(|a| a == "--kubeconfig").unwrap();
         assert_eq!(args[kc_idx + 1], "/tower/kube.yaml");
+    }
+
+    #[test]
+    fn test_kubectl_apply_uses_server_side() {
+        let args = generate_kubectl_apply_args("/tower/kube.yaml", "spread.yaml");
+        assert!(
+            args.contains(&"--server-side".to_string()),
+            "Server-side apply prevents last-applied-configuration annotation conflicts with ArgoCD"
+        );
+        assert!(
+            args.contains(&"--force-conflicts".to_string()),
+            "--force-conflicts required for idempotency when field ownership changes between runs"
+        );
     }
 
     #[test]
