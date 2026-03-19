@@ -81,7 +81,7 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - After `install.sh`, `scalex dash` works without manual tunnel setup
 - `metrics_server_enabled` is hardcoded `false` in `kubespray.rs` — metrics utilization bars show N/A until enabled
 - **Skeleton startup**: TUI draws immediately on launch before first data fetch
-- **Full prefetch for selected cluster**: Selected cluster always fetches ALL resource types (pods, deployments, services, configmaps, nodes, namespaces) in parallel on every fetch cycle. This makes view switching (p/d/s/c/n) instant — no network fetch needed since all data is cached. Non-selected clusters only fetch namespaces + nodes (for health dots + status bar). Each API call has a 2s `tokio::time::timeout` (`API_CALL_TIMEOUT` in `data.rs`). Headless mode (`--headless`) fetches all clusters in parallel with full resources.
+- **Full prefetch for selected cluster**: Selected cluster always fetches ALL resource types (pods, deployments, services, configmaps, nodes, namespaces) in parallel on every fetch cycle. This makes view switching (p/d/s/c/n) instant — no network fetch needed since all data is cached. Non-selected clusters only fetch namespaces + nodes (for health dots + status bar). Each API call has a 5s `tokio::time::timeout` (`API_CALL_TIMEOUT` in `data.rs`, raised to tolerate CF Tunnel latency). Headless mode (`--headless`) fetches all clusters in parallel with full resources.
 - **Selected-cluster-only fetch on navigation**: View switch (p/d/s/c/n), cluster select, and namespace select set `refresh_selected_only=true`, which skips non-selected clusters entirely. Timer refresh and manual refresh (`r` key) fetch all clusters. View switch skips fetch entirely if the target resource is already in `fetched_resources`.
 - **Incremental snapshot merge**: fetch results are merged per-cluster into existing `ClusterSnapshot` — selected cluster gets all resource fields updated; non-selected clusters only get namespaces + nodes updated (preserving cached pods/deployments/etc). Health/resource_usage are recomputed on every merge using the freshest available pods + nodes.
 - **Event-driven input loop**: TUI uses `tokio::select!` with crossterm `EventStream` instead of 100ms polling. Keyboard input has near-zero latency. Tick interval (100ms) drives spinner animation and periodic refresh checks. Biased select prioritizes keyboard over ticks.
@@ -107,7 +107,7 @@ scalex dash --headless --resource pods   # Filter by resource type (pods, nodes,
 - **Node VERSION column**: `NodeInfo.kubelet_version` populated from `node.status.nodeInfo.kubeletVersion`. Shown in nodes table after ROLES column and in Top tab after node name. Useful for upgrade planning.
 - **Service EXTERNAL-IP column**: `ServiceInfo.external_ip` populated from `status.loadBalancer.ingress[].ip/hostname`. Shows `<none>` for non-LB services. Column appears between CLUSTER-IP and PORTS.
 - **Alphabetical resource sorting**: Deployments, services, configmaps, and nodes sorted by name after fetch. Pods retain severity-first sorting (CrashLoopBackOff first, then pending, running, completed). Events sorted by last_seen ascending (most recent first).
-- **Reduced API timeouts**: `API_CALL_TIMEOUT` reduced from 2s to 500ms, `DISCOVER_TIMEOUT` from 3s to 2s. Healthy clusters respond in <200ms; tighter timeouts minimize worst-case fetch latency.
+- **Tiered API timeouts**: `API_CALL_TIMEOUT` in `data.rs` is 5s (raised from 500ms to tolerate CF Tunnel latency). `DISCOVER_TIMEOUT` in `kube_client.rs` is 2s for direct LAN connections. `CF_DOMAIN_PROBE_TIMEOUT` is 5s for Strategy 1 CF Tunnel probes (separate constant since CF Tunnel traversal is slower than LAN).
 - **Zero-clone tree index lookups**: `tree_index_at_cursor()` reads from cached visible indices without cloning `Vec<usize>`. `ensure_visible_indices_cached()` populates cache; callers avoid `visible_tree_indices_cached()` clone where possible.
 - **Static sidebar padding**: `render_sidebar` uses static `SPACES` buffer for row padding instead of per-row `" ".repeat(pad)` heap allocation.
 - **Cached row count**: `cached_row_count: Option<usize>` avoids redundant O(n) filter iterations in `move_down`/`page_down`/`jump_end`/`render_center`. Invalidated per event cycle.
@@ -185,7 +185,7 @@ The TUI header is k9s-style and responsive:
 - **No-metrics sentinel**: `compute_resource_usage` returns `-1.0` for CPU/MEM when no metrics-server data. `render_usage_bar` shows `N/A` for negative values. Top tab title shows `(no metrics)` suffix.
 - **Discovery log channel**: `DiscoverEvent::Log { message }` replaces all `eprintln!` in streaming discovery paths to avoid TUI corruption. Messages stored in `app.discovery_logs` (capped at 10) and displayed in status bar with ~10s auto-fade. Headless mode (`discover_clusters()`) retains `eprintln!` since no TUI is active.
 - **Domain-first kubeconfig**: `install.sh` `cleanup_api_tunnels()` rewrites kubeconfigs with `api_endpoint` domain URLs after CF Tunnel is healthy. Original VM IP kubeconfigs saved as `kubeconfig.yaml.original` for fallback. `scalex dash` Strategy 2b tries `.original` file when primary kubeconfig has a domain URL that is unreachable.
-- **CF Tunnel SA token auth**: CF Tunnel cannot proxy mTLS client certs, so `build_client_with_endpoint()` strips kubeconfig CA + client cert and injects a ServiceAccount bearer token. SA `scalex-dash` in `scalex-system` namespace, bound to `view` ClusterRole. Token cached at `_generated/clusters/{name}/dash-token`. Auto-provisioned on first run via SSH through bastion if cached token absent. Module: `sa_provisioner.rs`. To re-provision: delete `dash-token` and relaunch.
+- **CF Tunnel SA token auth**: CF Tunnel cannot proxy mTLS client certs, so `build_client_with_endpoint()` strips kubeconfig CA + client cert and injects a ServiceAccount bearer token. SA `scalex-dash` in `scalex-system` namespace, bound to the built-in `view` ClusterRole plus a custom `scalex-dash-node-reader` ClusterRole (grants `nodes` get/list/watch — not covered by `view`). Both bindings deployed via `gitops/common/scalex-dash-rbac/` (common app, applied to all clusters). Token cached at `_generated/clusters/{name}/dash-token`. Auto-provisioned on first run via SSH through bastion if cached token absent. Module: `sa_provisioner.rs`. To re-provision: delete `dash-token` and relaunch.
 - **k9s attribution**: help overlay (`?` key) footer shows "Inspired by k9s (github.com/derailed/k9s)" in DarkGray.
 - **Cached data persistence**: `render_tab_preamble` returns cached snapshot even when `ConnectionStatus::Failed` — error shown as 1-line red banner via `render_connection_error_banner()`, not full-area replacement. Data stability: once displayed, data stays visible until next fetch result arrives.
 - **Cached header info**: `HeaderInfo` struct (cluster_name, endpoint, k8s_version, config_path) pre-computed via `sync_header_info()` on cluster selection change and discovery events. `render_header` reads cached struct instead of O(n) `clusters.iter().find()` + `display().to_string()` per frame.
@@ -244,7 +244,7 @@ The TUI header is k9s-style and responsive:
 |---------|----------------|------|
 | **Projects** | AppProject | `gitops/projects/{tower,sandbox}-project.yaml` |
 | **Generators** | ApplicationSet | `gitops/generators/{tower,sandbox}/` |
-| **Common Apps** | Kustomization | `gitops/common/{cilium-resources,cert-manager,kyverno,kyverno-policies}/` |
+| **Common Apps** | Kustomization | `gitops/common/{cilium-resources,cert-manager,kyverno,kyverno-policies,scalex-dash-rbac}/` |
 | **Tower Apps** | Kustomization | `gitops/tower/{argocd,cilium,cert-issuers,cloudflared-tunnel,cluster-config,keycloak}/` |
 | **Sandbox Apps** | Kustomization | `gitops/sandbox/{cilium,cluster-config,local-path-provisioner,rbac,test-resources}/` |
 
@@ -267,7 +267,7 @@ The TUI header is k9s-style and responsive:
 │   │   ├── tower/             # common-generator + tower-generator
 │   │   └── sandbox/           # common-generator + sandbox-generator
 │   ├── projects/              # AppProjects (tower-project, sandbox-project)
-│   ├── common/                # Apps for ALL clusters (cilium-resources, cert-manager, kyverno, kyverno-policies)
+│   ├── common/                # Apps for ALL clusters (cilium-resources, cert-manager, kyverno, kyverno-policies, scalex-dash-rbac)
 │   ├── tower/                 # Tower-only apps (argocd, keycloak, cloudflared-tunnel, ...)
 │   └── sandbox/               # Sandbox-only apps (local-path-provisioner, rbac, ...)
 ├── credentials/               # Secrets + init config (gitignored, .example templates)
