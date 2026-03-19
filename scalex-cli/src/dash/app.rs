@@ -4862,6 +4862,8 @@ mod tests {
             failed_pods: 0,
             total_nodes: 0,
             ready_nodes: 0,
+            pod_cpu_percent: -1.0,
+            pod_mem_percent: -1.0,
         }
     }
 
@@ -6540,7 +6542,7 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                     // Recompute health from merged nodes + pods
                     existing.health = data::compute_health(&existing.nodes, &existing.pods);
                     existing.resource_usage =
-                        data::compute_resource_usage(&existing.nodes, &existing.pods, None);
+                        data::compute_resource_usage(&existing.nodes, &existing.pods, None, None);
                 } else {
                     // New cluster not yet in snapshots — add it
                     app.snapshot_index
