@@ -1566,6 +1566,281 @@ phase_label() {
   esac
 }
 
+# phase_skip_if_done PHASE_NUM — Returns 0 (caller should skip) if the given
+# phase is already recorded as complete in the persisted PHASE_FILE marker.
+# Usage inside a phase function:  phase_skip_if_done 2 && return 0
+phase_skip_if_done() {
+  local phase_num="$1"
+  local completed; completed=$(state_get_phase)
+  if (( completed >= phase_num )); then
+    local label; label=$(phase_label "$phase_num")
+    log_info "$(i18n \
+      "Phase ${phase_num} (${label}) already complete — skipping (marker: ${PHASE_FILE})" \
+      "Phase ${phase_num} (${label}) 이미 완료 — 건너뜀 (마커: ${PHASE_FILE})")"
+    return 0
+  fi
+  return 1
+}
+
+# =============================================================================
+# check_nodes_ssh_health — Parallel SSH health-check gate for cluster nodes.
+#
+# Purpose:
+#   Verify every listed node is SSH-reachable and can execute a command
+#   (real login + `echo ok`), NOT a mere TCP port-22 check.
+#   Must be called at inter-phase boundaries to satisfy the
+#   feedback_network_safety_critical requirement: verify SSH/network BEFORE
+#   and AFTER every remote operation.
+#
+# Usage:
+#   check_nodes_ssh_health LABEL [USER@]HOST [[USER@]HOST ...]
+#   check_nodes_ssh_health "pre-SDI" root@10.0.0.10 root@10.0.0.11
+#
+#   LABEL  — human-readable context label (logged & shown in summary)
+#   HOST   — bare IP/hostname (default user applies) or user@host
+#
+# Optional environment overrides:
+#   SSH_HEALTH_TIMEOUT         — per-node ceiling seconds   (default 300 = 5 min)
+#   SSH_HEALTH_USER            — SSH user for bare hostname  (default: $USER)
+#   SSH_HEALTH_CONNECT_TIMEOUT — per-attempt ConnectTimeout  (default 15)
+#
+# Behaviour:
+#   • All nodes probed in parallel (one background job per node)
+#   • SSH check = real login + `echo ok` — never just TCP/port-22
+#   • Per-node retry with exponential backoff: 5 s → 10 s → 20 s → 40 s
+#     (4 gaps → 5 total attempts per node within the timeout ceiling)
+#   • Retry progress logged every attempt: node, attempt/max, backoff seconds
+#   • Fail-fast: the first node that exhausts all retries kills all sibling
+#     probes and aborts with a descriptive error_msg()
+#   • Compact per-node summary table (PASS/FAIL) printed after completion
+#   • Returns 0 if ALL nodes pass; returns 1 on any failure (caller aborts)
+# =============================================================================
+
+# _ssh_node_probe: per-node worker, always run as a background job.
+# Writes "PASS" or "FAIL:<reason>" to RESULT_FILE then exits.
+# Args: NODE USER RESULT_FILE CONNECT_TIMEOUT LABEL
+_ssh_node_probe() {
+  local node="$1" user="$2" result_file="$3"
+  local connect_timeout="${4:-15}" label="${5:-ssh-health}"
+  # Backoff sequence between consecutive attempts (seconds)
+  local -a backoffs=(5 10 20 40)
+  local max_attempts=$(( ${#backoffs[@]} + 1 ))   # 5 total attempts
+  local attempt=0 last_err=""
+
+  while (( attempt < max_attempts )); do
+    local err_tmp; err_tmp=$(mktemp /tmp/scalex-ssh-probe.XXXXXX 2>/dev/null \
+                              || echo "/tmp/scalex-ssh-probe.$$.${RANDOM}")
+    : > "$err_tmp"
+
+    local ssh_out
+    ssh_out=$(ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o BatchMode=yes \
+      -o ConnectTimeout="$connect_timeout" \
+      -o ServerAliveInterval=5 \
+      -o ServerAliveCountMax=1 \
+      "${user}@${node}" "echo ok" 2>"$err_tmp") || true
+
+    if [[ "$ssh_out" == *ok* ]]; then
+      rm -f "$err_tmp"
+      echo "PASS" > "$result_file"
+      return 0
+    fi
+
+    last_err=$(head -3 "$err_tmp" 2>/dev/null | tr '\n' ' ')
+    rm -f "$err_tmp"
+
+    attempt=$(( attempt + 1 ))
+
+    if (( attempt < max_attempts )); then
+      local wait_sec=${backoffs[$(( attempt - 1 ))]}
+      # Structured retry log — visible in install log (written via stderr → log_raw)
+      printf '%s\n' \
+        "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ssh_health: label=${label}" \
+        "  node=${node} attempt=${attempt}/${max_attempts}" \
+        "  backoff=${wait_sec}s stderr=\"${last_err:-none}\"" >&2
+      sleep "$wait_sec"
+    fi
+  done
+
+  # All attempts exhausted — record failure
+  local reason="${last_err:-connection refused or timed out after ${max_attempts} attempts}"
+  printf '%s\n' \
+    "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ssh_health: label=${label}" \
+    "  node=${node} FAILED after ${max_attempts} attempts" \
+    "  last_error=\"${last_err:-none}\"" >&2
+  echo "FAIL:${reason}" > "$result_file"
+  return 1
+}
+
+check_nodes_ssh_health() {
+  local label="${1:?check_nodes_ssh_health requires a LABEL as first argument}"
+  shift
+  local -a nodes=("$@")
+
+  if [[ ${#nodes[@]} -eq 0 ]]; then
+    log_warn "$(i18n "check_nodes_ssh_health(${label}): no nodes — skipping" \
+      "check_nodes_ssh_health(${label}): 노드 없음 — 건너뜀")"
+    return 0
+  fi
+
+  local timeout_ceil="${SSH_HEALTH_TIMEOUT:-300}"
+  local default_user="${SSH_HEALTH_USER:-${USER:-root}}"
+  local connect_timeout="${SSH_HEALTH_CONNECT_TIMEOUT:-15}"
+
+  # Temp directory for per-node result files
+  local result_dir
+  result_dir=$(mktemp -d /tmp/scalex-ssh-health.XXXXXX 2>/dev/null) || {
+    result_dir="/tmp/scalex-ssh-health.$$"
+    mkdir -p "$result_dir"
+  }
+  chmod 700 "$result_dir"
+
+  log_info "$(i18n "SSH health check starting: label=${label} nodes=${#nodes[@]} timeout=${timeout_ceil}s connect_timeout=${connect_timeout}s" \
+    "SSH 상태 확인 시작: label=${label} nodes=${#nodes[@]} timeout=${timeout_ceil}초 connect_timeout=${connect_timeout}초")"
+
+  # --- Launch one background probe per node ---
+  # Keep ordered list (bash assoc arrays don't preserve order)
+  local -a node_list=()       # ordered hostnames (post-parse)
+  local -A node_users=()      # node → ssh user
+  local -A node_result_files=() # node → result file path
+  local -A node_pids=()       # node → background PID
+
+  local entry
+  for entry in "${nodes[@]}"; do
+    local u h
+    if [[ "$entry" == *@* ]]; then
+      u="${entry%%@*}"
+      h="${entry#*@}"
+    else
+      u="$default_user"
+      h="$entry"
+    fi
+
+    # Sanitise hostname → safe filename key (dots/colons/slashes → underscores)
+    local h_safe; h_safe=$(printf '%s' "$h" | tr '.:/@' '____')
+    local rf="${result_dir}/${h_safe}.result"
+    : > "$rf"
+
+    node_list+=("$h")
+    node_users["$h"]="$u"
+    node_result_files["$h"]="$rf"
+
+    log_info "$(i18n "  SSH probe launch: ${u}@${h} (label=${label})" \
+      "  SSH 프로브 시작: ${u}@${h} (label=${label})")"
+
+    _ssh_node_probe "$h" "$u" "$rf" "$connect_timeout" "$label" &
+    node_pids["$h"]=$!
+  done
+
+  # --- Fail-fast polling loop ---
+  # Poll every second; abort as soon as any probe reports FAIL.
+  # Honour the overall deadline (timeout_ceil).
+  local deadline=$(( $(date +%s) + timeout_ceil ))
+  local failed_node=""
+
+  while true; do
+    local all_done=true
+    local n
+
+    for n in "${node_list[@]}"; do
+      local pid=${node_pids[$n]}
+      local rf=${node_result_files[$n]}
+
+      if kill -0 "$pid" 2>/dev/null; then
+        # Probe still running
+        all_done=false
+      else
+        # Probe exited — check result
+        local res; res=$(cat "$rf" 2>/dev/null || echo "FAIL:result file missing")
+        if [[ "$res" != "PASS" ]]; then
+          failed_node="$n"
+          break 2   # Break out of the for loop AND the while loop
+        fi
+      fi
+    done
+
+    # All probes finished cleanly (no break triggered above)
+    $all_done && break
+
+    # Check global deadline
+    if (( $(date +%s) >= deadline )); then
+      log_warn "$(i18n "SSH health check: global timeout ${timeout_ceil}s reached — aborting remaining probes" \
+        "SSH 상태 확인: 전체 시간 초과 ${timeout_ceil}초 — 나머지 프로브 중단")"
+      for n in "${node_list[@]}"; do
+        if kill -0 "${node_pids[$n]}" 2>/dev/null; then
+          kill "${node_pids[$n]}" 2>/dev/null || true
+          echo "FAIL:global timeout after ${timeout_ceil}s" > "${node_result_files[$n]}"
+          [[ -z "$failed_node" ]] && failed_node="$n"
+        fi
+      done
+      break
+    fi
+
+    sleep 1
+  done
+
+  # Kill any sibling probes still running (fail-fast cleanup)
+  for n in "${node_list[@]}"; do
+    kill "${node_pids[$n]}" 2>/dev/null || true
+  done
+  # Reap all background jobs
+  for n in "${node_list[@]}"; do
+    wait "${node_pids[$n]}" 2>/dev/null || true
+  done
+
+  # --- Print per-node summary ---
+  echo ""
+  echo -e "${BOLD}SSH Health Check — ${label}${NC}"
+  echo -e "${BOLD}──────────────────────────────────────────────────${NC}"
+  local pass_count=0 fail_count=0
+  for n in "${node_list[@]}"; do
+    local rf=${node_result_files[$n]}
+    local res; res=$(cat "$rf" 2>/dev/null || echo "FAIL:no result")
+    local u=${node_users[$n]}
+    if [[ "$res" == "PASS" ]]; then
+      echo -e "  ${GREEN}PASS${NC}  ${u}@${n}"
+      pass_count=$(( pass_count + 1 ))
+    else
+      local reason; reason=$(printf '%s' "$res" | sed 's/^FAIL://')
+      echo -e "  ${RED}FAIL${NC}  ${u}@${n}  — ${reason}"
+      fail_count=$(( fail_count + 1 ))
+    fi
+  done
+  echo -e "${BOLD}──────────────────────────────────────────────────${NC}"
+  echo -e "  Result: ${pass_count} passed, ${fail_count} failed"
+  echo ""
+
+  # Capture failure reason BEFORE cleaning up result_dir
+  local fail_reason=""
+  if [[ -n "$failed_node" ]]; then
+    local fail_res; fail_res=$(cat "${node_result_files[$failed_node]}" 2>/dev/null \
+                                || echo "FAIL:unknown")
+    fail_reason=$(printf '%s' "$fail_res" | sed 's/^FAIL://')
+  fi
+
+  rm -rf "$result_dir"
+
+  if [[ -n "$failed_node" ]]; then
+    local fail_user="${node_users[$failed_node]:-${default_user}}"
+    error_msg \
+      "$(i18n "SSH health check FAILED [${label}]: node '${failed_node}' unreachable" \
+         "SSH 상태 확인 실패 [${label}]: 노드 '${failed_node}' 접근 불가")" \
+      "$(i18n "SSH login + echo ok failed after all retries — reason: ${fail_reason}" \
+         "SSH 로그인 + echo ok 모든 재시도 후 실패 — 이유: ${fail_reason}")" \
+      "$(i18n "Fix SSH connectivity then re-run. Test manually: ssh ${fail_user}@${failed_node} echo ok" \
+         "SSH 연결을 수정한 후 재실행. 수동 테스트: ssh ${fail_user}@${failed_node} echo ok")"
+    log_error "$(i18n "install.sh aborting due to SSH health check failure (label=${label}, node=${failed_node})" \
+      "SSH 상태 확인 실패로 install.sh 중단 (label=${label}, node=${failed_node})")"
+    return 1
+  fi
+
+  log_info "$(i18n "SSH health check PASSED [${label}]: ${pass_count}/${#nodes[@]} nodes OK" \
+    "SSH 상태 확인 통과 [${label}]: ${pass_count}/${#nodes[@]} 노드 OK")"
+  return 0
+}
+
 # ============================================================================
 # Section 2: Dependency Management
 # ============================================================================
@@ -1668,6 +1943,7 @@ install_dep() {
 }
 
 phase_deps() {
+  phase_skip_if_done 0 && return 0
   log_phase "$(i18n "Phase 0: Checking dependencies" "Phase 0: 의존성 확인")"
   local os; os=$(detect_os)
   log_info "$(i18n "OS: $os" "운영체제: $os")"
@@ -1725,6 +2001,7 @@ phase_deps() {
 # ============================================================================
 
 phase_baremetal() {
+  phase_skip_if_done 1 && return 0
   log_phase "$(i18n "Phase 1: Bare-metal nodes & SSH setup" "Phase 1: 베어메탈 노드 & SSH 설정")"
 
   # Network defaults
@@ -1941,6 +2218,7 @@ collect_vm_specs() {
 }
 
 phase_sdi() {
+  phase_skip_if_done 2 && return 0
   log_phase "$(i18n "Phase 2: SDI virtualization setup" "Phase 2: SDI 가상화 설정")"
 
   local bridge; bridge=$(state_get NET_BRIDGE "br0")
