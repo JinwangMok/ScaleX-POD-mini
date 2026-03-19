@@ -50,25 +50,6 @@ pub fn cluster_config_path(cluster_name: &str) -> String {
     format!("{cluster_name}/cluster-config/manifest.yaml")
 }
 
-/// Base Cilium Helm values that are common across all clusters.
-/// k8sServiceHost is intentionally absent — it must be set per-cluster.
-const CILIUM_BASE_VALUES: &str = r#"kubeProxyReplacement: true
-operator:
-  replicas: 1
-ipam:
-  mode: kubernetes
-hubble:
-  enabled: true
-  relay:
-    enabled: true
-  ui:
-    enabled: false
-l2announcements:
-  enabled: true
-gatewayAPI:
-  enabled: true
-"#;
-
 /// Return the gitops-relative path for a cluster's Cilium values.yaml.
 /// Pure function.
 pub fn cilium_values_path(cluster_name: &str) -> String {
@@ -82,10 +63,56 @@ pub fn cilium_kustomization_path(cluster_name: &str) -> String {
 }
 
 /// Generate Cilium Helm values.yaml for a specific cluster.
-/// Pure function: merges base config with cluster-specific k8sServiceHost.
-pub fn generate_cilium_values(control_plane_ip: &str, service_port: u16) -> String {
+///
+/// Pure function: merges base config with cluster-specific settings.
+///
+/// - `dns_domain`: cluster DNS domain (e.g. "tower.local"). Must match CoreDNS zone
+///   so hubble-relay can resolve the hubble-peer service. The default "cluster.local"
+///   causes hubble-relay DNS timeout when Kubespray `dns_domain` is a custom value.
+/// - `cilium_cluster_name` / `cilium_cluster_id`: Cilium cluster identity for
+///   ClusterMesh preparation.
+///
+/// Also disables `dnsProxy.enableTransparentMode` to avoid the known conflict
+/// between Cilium kube-proxy replacement and NodeLocal DNSCache (nodelocaldns).
+/// Ref: https://github.com/cilium/cilium/issues/33144
+pub fn generate_cilium_values(
+    control_plane_ip: &str,
+    service_port: u16,
+    dns_domain: &str,
+    cilium_cluster_name: &str,
+    cilium_cluster_id: u32,
+) -> String {
     format!(
-        "k8sServiceHost: \"{control_plane_ip}\"\nk8sServicePort: {service_port}\n{CILIUM_BASE_VALUES}"
+        r#"k8sServiceHost: "{control_plane_ip}"
+k8sServicePort: {service_port}
+kubeProxyReplacement: true
+# Disable DNS proxy transparent mode to avoid conflict with NodeLocal DNSCache.
+# When kubeProxyReplacement=true, Cilium auto-enables dnsProxy which conflicts with nodelocaldns.
+# Ref: https://github.com/cilium/cilium/issues/33144
+dnsProxy:
+  enableTransparentMode: false
+operator:
+  replicas: 1
+ipam:
+  mode: kubernetes
+cluster:
+  id: {cilium_cluster_id}
+  name: "{cilium_cluster_name}"
+hubble:
+  enabled: true
+  peerService:
+    # Must match cluster DNS domain set by Kubespray dns_domain variable.
+    # Default cluster.local causes hubble-relay DNS timeout on custom-domain clusters.
+    clusterDomain: "{dns_domain}"
+  relay:
+    enabled: true
+  ui:
+    enabled: false
+l2announcements:
+  enabled: true
+gatewayAPI:
+  enabled: true
+"#
     )
 }
 
@@ -98,17 +125,25 @@ pub struct ClusterMeshPeer {
 }
 
 /// Generate Cilium Helm values with ClusterMesh enabled.
-/// Pure function: adds cluster identity and mesh configuration.
+/// Pure function: builds on generate_cilium_values and adds clustermesh config.
 #[cfg(test)]
 pub fn generate_cilium_values_with_mesh(
     control_plane_ip: &str,
     service_port: u16,
     cluster_name: &str,
     cluster_id: u32,
+    dns_domain: &str,
 ) -> String {
-    let base = generate_cilium_values(control_plane_ip, service_port);
+    // generate_cilium_values already sets cluster identity; add clustermesh on top.
+    let base = generate_cilium_values(
+        control_plane_ip,
+        service_port,
+        dns_domain,
+        cluster_name,
+        cluster_id,
+    );
     format!(
-        "{base}cluster:\n  name: \"{cluster_name}\"\n  id: {cluster_id}\nclustermesh:\n  useAPIServer: true\n  apiserver:\n    service:\n      type: NodePort\n"
+        "{base}clustermesh:\n  useAPIServer: true\n  apiserver:\n    service:\n      type: NodePort\n"
     )
 }
 
@@ -296,7 +331,8 @@ mod tests {
 
     #[test]
     fn test_generate_cilium_values_tower() {
-        let values = generate_cilium_values("192.168.88.100", 6443);
+        let values =
+            generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
         assert!(
             values.contains("k8sServiceHost: \"192.168.88.100\""),
             "tower cilium must have tower CP IP"
@@ -315,7 +351,8 @@ mod tests {
 
     #[test]
     fn test_generate_cilium_values_sandbox() {
-        let values = generate_cilium_values("192.168.88.110", 6443);
+        let values =
+            generate_cilium_values("192.168.88.110", 6443, "sandbox.local", "sandbox", 2);
         assert!(
             values.contains("k8sServiceHost: \"192.168.88.110\""),
             "sandbox cilium must have sandbox CP IP"
@@ -328,8 +365,10 @@ mod tests {
 
     #[test]
     fn test_generate_cilium_values_different_clusters_differ() {
-        let tower = generate_cilium_values("192.168.88.100", 6443);
-        let sandbox = generate_cilium_values("192.168.88.110", 6443);
+        let tower =
+            generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
+        let sandbox =
+            generate_cilium_values("192.168.88.110", 6443, "sandbox.local", "sandbox", 2);
         assert_ne!(
             tower, sandbox,
             "different clusters must produce different values"
@@ -714,7 +753,8 @@ contexts:
     /// content that matches what the static gitops file should contain.
     #[test]
     fn test_generated_cilium_values_match_static_tower_structure() {
-        let generated = generate_cilium_values("192.168.88.100", 6443);
+        let generated =
+            generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
         let static_content = include_str!("../../../gitops/tower/cilium/values.yaml");
 
         // Both must have the same k8sServiceHost
@@ -754,8 +794,9 @@ contexts:
 
     #[test]
     fn test_generate_cilium_values_with_mesh_contains_cluster_identity() {
-        let values = generate_cilium_values_with_mesh("192.168.88.100", 6443, "tower", 1);
-        assert!(values.contains("cluster:\n  name: \"tower\""));
+        let values =
+            generate_cilium_values_with_mesh("192.168.88.100", 6443, "tower", 1, "tower.local");
+        assert!(values.contains("name: \"tower\""));
         assert!(values.contains("id: 1"));
         assert!(values.contains("clustermesh:"));
         assert!(values.contains("useAPIServer: true"));
@@ -763,7 +804,8 @@ contexts:
 
     #[test]
     fn test_generate_cilium_values_with_mesh_preserves_base() {
-        let values = generate_cilium_values_with_mesh("192.168.88.100", 6443, "tower", 1);
+        let values =
+            generate_cilium_values_with_mesh("192.168.88.100", 6443, "tower", 1, "tower.local");
         assert!(values.contains("k8sServiceHost: \"192.168.88.100\""));
         assert!(values.contains("kubeProxyReplacement: true"));
         assert!(values.contains("hubble:"));
@@ -772,7 +814,8 @@ contexts:
 
     #[test]
     fn test_generate_cilium_values_with_mesh_valid_yaml() {
-        let values = generate_cilium_values_with_mesh("192.168.88.110", 6443, "sandbox", 2);
+        let values =
+            generate_cilium_values_with_mesh("192.168.88.110", 6443, "sandbox", 2, "sandbox.local");
         let parsed: serde_yaml::Value =
             serde_yaml::from_str(&values).expect("ClusterMesh values must be valid YAML");
         assert_eq!(parsed["cluster"]["name"].as_str().unwrap(), "sandbox");

@@ -213,15 +213,24 @@ fn run_init(
     for cluster in &k8s_config.config.clusters {
         let cp_ip = find_control_plane_ip(cluster, sdi_spec.as_ref());
         if let Some(ip) = cp_ip {
+            let cilium_cluster_name = cluster
+                .cilium
+                .as_ref()
+                .map(|c| c.cluster_name.clone())
+                .unwrap_or_else(|| cluster.cluster_name.clone());
+            let cilium_cluster_id =
+                cluster.cilium.as_ref().map(|c| c.cluster_id).unwrap_or(0);
             update_gitops_cilium_values(
                 &cluster.cluster_name,
                 &ip,
                 &k8s_config.config.common.cilium_version,
+                &cluster.network.dns_domain,
+                &cilium_cluster_name,
+                cilium_cluster_id,
                 dry_run,
             )?;
         }
     }
-
     // Summary
     println!("\n[cluster] Kubeconfig files:");
     for cluster in &k8s_config.config.clusters {
@@ -433,13 +442,22 @@ fn update_gitops_cilium_values(
     cluster_name: &str,
     control_plane_ip: &str,
     cilium_version: &str,
+    dns_domain: &str,
+    cilium_cluster_name: &str,
+    cilium_cluster_id: u32,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     let gitops_dir = std::path::Path::new("gitops");
     let values_path = gitops_dir.join(gitops::cilium_values_path(cluster_name));
     let kust_path = gitops_dir.join(gitops::cilium_kustomization_path(cluster_name));
 
-    let values_content = gitops::generate_cilium_values(control_plane_ip, 6443);
+    let values_content = gitops::generate_cilium_values(
+        control_plane_ip,
+        6443,
+        dns_domain,
+        cilium_cluster_name,
+        cilium_cluster_id,
+    );
     let kust_content = gitops::generate_cilium_kustomization(cilium_version);
 
     if let Some(parent) = values_path.parent() {
@@ -461,7 +479,6 @@ fn update_gitops_cilium_values(
     }
     Ok(())
 }
-
 /// Determine which clusters require an SDI spec for inventory generation.
 /// Pure function: returns list of cluster names that use SDI mode.
 #[cfg(test)]
@@ -1154,7 +1171,20 @@ kubespray_version: "v2.30.0"
             );
 
             let ip = cp_ip.unwrap();
-            let values = crate::core::gitops::generate_cilium_values(&ip, 6443);
+            let dns_domain = &cluster.network.dns_domain;
+            let cilium_name = cluster
+                .cilium
+                .as_ref()
+                .map(|c| c.cluster_name.as_str())
+                .unwrap_or(cluster.cluster_name.as_str());
+            let cilium_id = cluster.cilium.as_ref().map(|c| c.cluster_id).unwrap_or(0);
+            let values = crate::core::gitops::generate_cilium_values(
+                &ip,
+                6443,
+                dns_domain,
+                cilium_name,
+                cilium_id,
+            );
 
             // values.yaml must contain the exact CP IP
             assert!(

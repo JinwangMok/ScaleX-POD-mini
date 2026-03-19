@@ -1806,6 +1806,7 @@ spec:
                     6443,
                     &cluster.cluster_name,
                     cilium.cluster_id,
+                    &cluster.network.dns_domain,
                 );
                 assert!(
                     cilium_vals.contains(&format!("name: \"{}\"", cluster.cluster_name)),
@@ -6110,9 +6111,19 @@ config:
             let vars = crate::core::kubespray::generate_cluster_vars(cluster, &k8s.config.common);
 
             // Step 3: Cilium values generation (for gitops update)
+            let cilium_cluster_name_val = cluster
+                .cilium
+                .as_ref()
+                .map(|c| c.cluster_name.as_str())
+                .unwrap_or(cluster.cluster_name.as_str());
+            let cilium_cluster_id_val =
+                cluster.cilium.as_ref().map(|c| c.cluster_id).unwrap_or(0);
             let cilium_values = crate::core::gitops::generate_cilium_values(
-                "192.168.88.100", // mock CP IP
-                6443,             // default kube-apiserver port
+                "192.168.88.100",       // mock CP IP
+                6443,                   // default kube-apiserver port
+                &cluster.network.dns_domain,
+                cilium_cluster_name_val,
+                cilium_cluster_id_val,
             );
 
             // Verify all outputs are non-empty

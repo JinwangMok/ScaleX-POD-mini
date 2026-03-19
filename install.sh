@@ -2018,7 +2018,7 @@ phase_deps() {
   else
     log_warn "$(i18n "Skipping dependencies. Some features may not work." "의존성을 건너뜁니다. 일부 기능이 작동하지 않을 수 있습니다.")"
   fi
-  state_save_phase 0
+  phase_mark_done 0
 }
 
 # ============================================================================
@@ -2163,7 +2163,7 @@ BEOF
   fi
 
   state_set NODE_COUNT "$NODE_COUNT"
-  state_save_phase 1
+  phase_mark_done 1
   log_info "$(i18n "Phase 1 complete" "Phase 1 완료")"
 }
 
@@ -2313,7 +2313,7 @@ SEOF
 
   state_set POOL_COUNT "$POOL_COUNT"
   state_set SANDBOX_POOL_NAME "$sandbox_name"
-  state_save_phase 2
+  phase_mark_done 2
   log_info "$(i18n "Phase 2 complete — ${POOL_COUNT} pool(s) configured" "Phase 2 완료 — ${POOL_COUNT}개 풀 구성됨")"
 }
 
@@ -2558,7 +2558,7 @@ CFEOF
   state_set CLUSTER_COUNT "$CLUSTER_COUNT"
   state_set SANDBOX_NAME "$sandbox_name"
   state_set REPO_URL_USER "$argo_repo"
-  state_save_phase 3
+  phase_mark_done 3
   log_info "$(i18n "Phase 3 complete — ${CLUSTER_COUNT} cluster(s) configured" "Phase 3 완료 — ${CLUSTER_COUNT}개 클러스터 구성됨")"
 }
 
@@ -2827,7 +2827,7 @@ phase_provision() {
   fi
   echo -e "  ${GREEN}OK${NC}"
 
-  state_save_phase 4
+  phase_mark_done 4
   log_info "$(i18n "Phase 4 complete" "Phase 4 완료")"
 }
 
