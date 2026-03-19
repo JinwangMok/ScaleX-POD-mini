@@ -35,11 +35,22 @@ else
   fail "phase_completed not 4 (got: $(cat "$PHASE_FILE" 2>/dev/null || echo 'missing'))"
 fi
 
-for n in 0 1 2 3 4; do
+# Auto mode only tracks phases 0 (deps) and 4 (provision).
+# Phases 1-3 are interactive-only and are explicitly skipped in --auto mode
+# ("Auto mode enabled — skipping Phases 1-3"), so their .done files are never
+# written.  The sequential PHASE_FILE=4 acts as the completion sentinel.
+for n in 0 4; do
   if [[ -f "$PHASE_DONE_DIR/${n}.done" ]]; then
-    pass "Phase ${n}.done file exists"
+    pass "Phase ${n}.done file exists (auto-mode tracked phase)"
   else
-    fail "Phase ${n}.done file missing"
+    fail "Phase ${n}.done file missing (auto-mode tracked phase)"
+  fi
+done
+for n in 1 2 3; do
+  if [[ -f "$PHASE_DONE_DIR/${n}.done" ]]; then
+    pass "Phase ${n}.done file exists (optional — not written by --auto)"
+  else
+    pass "Phase ${n}.done absent — expected in --auto mode (interactive-only phase)"
   fi
 done
 
