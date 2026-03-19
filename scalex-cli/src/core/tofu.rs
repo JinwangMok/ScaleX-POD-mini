@@ -669,6 +669,157 @@ mod tests {
         );
     }
 
+    /// AC 8c: 4-host production spec (playbox-0/1/2/3) → generate_tofu_main produces:
+    ///  - provider blocks for ALL 4 hosts
+    ///  - sandbox-worker-2 VM resources (playbox-3 host)
+    ///  - No regression in playbox-0/1/2 VMs
+    #[test]
+    fn test_generate_tofu_main_4host_playbox3_no_regression() {
+        let spec = make_4host_production_spec();
+        let hcl = generate_tofu_main(&spec, "jinwang");
+
+        // All 4 provider aliases must exist
+        for host in &["playbox-0", "playbox-1", "playbox-2", "playbox-3"] {
+            assert!(
+                hcl.contains(&format!("alias = \"{}\"", host)),
+                "Missing libvirt provider alias for {}",
+                host
+            );
+            assert!(
+                hcl.contains(&format!("qemu+ssh://jinwang@{}/system?no_verify=1", host)),
+                "Missing SSH URI for {}",
+                host
+            );
+        }
+
+        // New node: sandbox-worker-2 on playbox-3 must appear
+        assert!(
+            hcl.contains("sandbox-worker-2"),
+            "HCL must contain sandbox-worker-2 VM"
+        );
+        assert!(
+            hcl.contains("192.168.88.122"),
+            "HCL must contain sandbox-worker-2 IP 192.168.88.122"
+        );
+        assert!(
+            hcl.contains("provider = libvirt.playbox-3"),
+            "sandbox-worker-2 must use playbox-3 provider"
+        );
+
+        // No regression — existing VMs on playbox-0/1/2 still present
+        for node in &[
+            "tower-cp-0",
+            "tower-cp-1",
+            "tower-cp-2",
+            "sandbox-cp-0",
+            "sandbox-worker-0",
+            "sandbox-worker-1",
+        ] {
+            assert!(hcl.contains(node), "Regression: missing existing VM {}", node);
+        }
+
+        // IPs for existing nodes unchanged
+        for ip in &[
+            "192.168.88.100",
+            "192.168.88.101",
+            "192.168.88.102",
+            "192.168.88.110",
+            "192.168.88.120",
+            "192.168.88.121",
+        ] {
+            assert!(
+                hcl.contains(ip),
+                "Regression: existing node IP {} missing from HCL",
+                ip
+            );
+        }
+
+        // Output block must include sandbox-worker-2
+        assert!(
+            hcl.contains("sandbox-worker-2_ip"),
+            "HCL outputs must include sandbox-worker-2_ip"
+        );
+
+        // Provider deduplication: each host appears exactly once as alias
+        assert_eq!(
+            hcl.matches("alias = \"playbox-3\"").count(),
+            1,
+            "playbox-3 provider alias must appear exactly once (dedup check)"
+        );
+
+        // collect_unique_hosts must include all 4
+        let hosts = collect_unique_hosts(&spec);
+        assert_eq!(hosts.len(), 4, "Must have exactly 4 unique hosts");
+        assert!(
+            hosts.contains(&"playbox-3".to_string()),
+            "playbox-3 must be in unique hosts"
+        );
+    }
+
+    /// Helper: build the production 4-host spec matching config/sdi-specs.yaml topology.
+    fn make_4host_production_spec() -> SdiSpec {
+        let node = |name: &str, ip: &str, cpu: u32, mem: u32, disk: u32, host: &str| NodeSpec {
+            node_name: name.to_string(),
+            ip: ip.to_string(),
+            cpu,
+            mem_gb: mem,
+            disk_gb: disk,
+            host: Some(host.to_string()),
+            roles: vec!["worker".to_string()],
+            devices: None,
+        };
+        SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "playbox-pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec!["8.8.8.8".to_string()],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "https://example.com/image.img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "~/.ssh/id_ed25519.pub".to_string(),
+                packages: vec!["curl".to_string()],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![
+                    SdiPool {
+                        pool_name: "tower".to_string(),
+                        purpose: "management".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec![],
+                            spread: true,
+                        },
+                        node_specs: vec![
+                            node("tower-cp-0", "192.168.88.100", 4, 6, 30, "playbox-0"),
+                            node("tower-cp-1", "192.168.88.101", 4, 6, 30, "playbox-1"),
+                            node("tower-cp-2", "192.168.88.102", 4, 6, 30, "playbox-2"),
+                        ],
+                    },
+                    SdiPool {
+                        pool_name: "sandbox".to_string(),
+                        purpose: "workload".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec![],
+                            spread: true,
+                        },
+                        node_specs: vec![
+                            node("sandbox-cp-0", "192.168.88.110", 4, 8, 60, "playbox-0"),
+                            node("sandbox-worker-0", "192.168.88.120", 2, 4, 40, "playbox-1"),
+                            node("sandbox-worker-1", "192.168.88.121", 2, 4, 40, "playbox-2"),
+                            node("sandbox-worker-2", "192.168.88.122", 4, 8, 60, "playbox-3"),
+                        ],
+                    },
+                ],
+            },
+        }
+    }
+
     /// CL-1: Single-node host infra — exactly 1 provider + 1 pool.
     #[test]
     fn test_single_node_host_infra() {
