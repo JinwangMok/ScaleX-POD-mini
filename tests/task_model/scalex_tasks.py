@@ -179,18 +179,24 @@ def build_task_graph() -> List[Task]:
             name="sdi_verify_vms",
             scope="sdi: verify all VMs are running post-init",
             prerequisites=["sdi_init"],
-            # Evidential dep: SDI init completion evidence must be fresh
+            # Evidential deps: SDI init completion + SSH reachability (remote op)
             evidence_deps=[
                 EvidentialDep(
                     evidence_key="sdi_init:completion",
                     source_task_name="sdi_init",
                     max_age_s=600,
                 ),
+                EvidentialDep(
+                    evidence_key="check_ssh_connectivity:reachability",
+                    source_task_name="check_ssh_connectivity",
+                    max_age_s=600,
+                ),
             ],
             produces_evidence_key="sdi_verify_vms:vm_ready",
             description=(
                 "Verify every VM defined in sdi-specs.yaml is in RUNNING state "
-                "and reachable over SSH.  Evidence dep: sdi_init completion."
+                "and reachable over SSH.  Evidence deps: sdi_init completion + "
+                "SSH reachability (network safety for remote op)."
             ),
         ),
 
@@ -198,18 +204,24 @@ def build_task_graph() -> List[Task]:
             name="sdi_health_check",
             scope="sdi: libvirt domain health on all bare-metal nodes",
             prerequisites=["sdi_init"],
-            # Evidential dep: SDI init completion must be fresh
+            # Evidential deps: SDI init completion + SSH reachability (remote op)
             evidence_deps=[
                 EvidentialDep(
                     evidence_key="sdi_init:completion",
                     source_task_name="sdi_init",
                     max_age_s=600,
                 ),
+                EvidentialDep(
+                    evidence_key="check_ssh_connectivity:reachability",
+                    source_task_name="check_ssh_connectivity",
+                    max_age_s=600,
+                ),
             ],
             produces_evidence_key="sdi_health_check:virsh_status",
             description=(
                 "Check libvirt domain health (virsh list) on every bare-metal "
-                "node.  Evidence dep: sdi_init:completion."
+                "node.  Evidence deps: sdi_init:completion + SSH reachability "
+                "(network safety for remote op)."
             ),
         ),
 
