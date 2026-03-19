@@ -15,3 +15,5 @@ DIRECTION.md
 config/sdi-specs.yaml
 config/k8s-clusters.yaml
 .env
+ops/
+tests/task_model/
