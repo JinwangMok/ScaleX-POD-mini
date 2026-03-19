@@ -127,19 +127,37 @@ async fn build_client_with_endpoint(
     Client::try_from(config).context("Creating kube client with system CAs")
 }
 
+/// Result of an authenticated probe — distinguishes 401 from other failures.
+#[derive(Debug, PartialEq)]
+enum ProbeResult {
+    Ok,
+    /// 401 Unauthorized — cached token is invalid/expired, needs re-provision
+    Unauthorized,
+    /// Other failure (timeout, network, TLS, etc.)
+    Failed,
+}
+
 /// Probe cluster connectivity: build client + list 1 namespace, with timeout.
 /// `timeout` is caller-supplied: use DISCOVER_TIMEOUT (2s) for direct connections
 /// and TUNNEL_PROBE_TIMEOUT (10s) for SSH-tunneled connections where the first
 /// API call may need extra time for TLS handshake through the tunnel.
 async fn probe_client(client: &Client, timeout: Duration) -> bool {
-    tokio::time::timeout(
+    probe_client_auth(client, timeout).await == ProbeResult::Ok
+}
+
+/// Probe with auth status — returns `Unauthorized` on 401 so callers can re-provision tokens.
+async fn probe_client_auth(client: &Client, timeout: Duration) -> ProbeResult {
+    match tokio::time::timeout(
         timeout,
         kube::api::Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
             .list(&kube::api::ListParams::default().limit(1)),
     )
     .await
-    .map(|r| r.is_ok())
-    .unwrap_or(false)
+    {
+        Ok(Ok(_)) => ProbeResult::Ok,
+        Ok(Err(kube::Error::Api(ref err))) if err.code == 401 => ProbeResult::Unauthorized,
+        _ => ProbeResult::Failed,
+    }
 }
 
 /// Timeout for the K8s API probe immediately after an SSH tunnel is established.
@@ -245,7 +263,8 @@ pub async fn discover_clusters_streaming(
 
                 match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
-                        if probe_client(&client, CF_DOMAIN_PROBE_TIMEOUT).await {
+                        let probe = probe_client_auth(&client, CF_DOMAIN_PROBE_TIMEOUT).await;
+                        if probe == ProbeResult::Ok {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
                                     message: format!("{}: connected via domain", cluster_name),
@@ -263,6 +282,41 @@ pub async fn discover_clusters_streaming(
                                 }))
                                 .await;
                             return;
+                        } else if probe == ProbeResult::Unauthorized {
+                            // 401: stale token — invalidate, re-provision, retry once
+                            let _ = tx.send(DiscoverEvent::Log {
+                                message: format!("{}: 401 — re-provisioning SA token", cluster_name),
+                            }).await;
+                            super::sa_provisioner::invalidate_cached_token(&kubeconfig_path);
+                            if let Some(ref bh) = bastion {
+                                if let Ok(new_token) = super::sa_provisioner::provision_dash_sa(
+                                    &kubeconfig_path, &cluster_name, bh,
+                                ).await {
+                                    let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &new_token);
+                                    if let Ok(new_client) = build_client_with_endpoint(
+                                        &kubeconfig_path, ep, Some(&new_token),
+                                    ).await {
+                                        if probe_client(&new_client, CF_DOMAIN_PROBE_TIMEOUT).await {
+                                            let _ = tx.send(DiscoverEvent::Log {
+                                                message: format!("{}: reconnected after token refresh", cluster_name),
+                                            }).await;
+                                            let ver = fetch_server_version(&new_client).await;
+                                            let _ = tx.send(DiscoverEvent::Connected(ClusterClient {
+                                                name: cluster_name,
+                                                kubeconfig_path,
+                                                client: new_client,
+                                                tunnel_pid: None,
+                                                server_version: ver,
+                                                endpoint: Some(ep.clone()),
+                                            })).await;
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = tx.send(DiscoverEvent::Log {
+                                message: format!("{}: token re-provision failed, falling back", cluster_name),
+                            }).await;
                         } else {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
@@ -453,7 +507,8 @@ pub async fn discover_clusters_streaming_filtered(
                 let token = super::sa_provisioner::read_cached_token(&kubeconfig_path);
                 match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
-                        if probe_client(&client, CF_DOMAIN_PROBE_TIMEOUT).await {
+                        let probe = probe_client_auth(&client, CF_DOMAIN_PROBE_TIMEOUT).await;
+                        if probe == ProbeResult::Ok {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
                                     message: format!("{}: connected via domain", cluster_name),
@@ -471,6 +526,41 @@ pub async fn discover_clusters_streaming_filtered(
                                 }))
                                 .await;
                             return;
+                        } else if probe == ProbeResult::Unauthorized {
+                            // 401: stale token — invalidate, re-provision, retry once
+                            let _ = tx.send(DiscoverEvent::Log {
+                                message: format!("{}: 401 — re-provisioning SA token", cluster_name),
+                            }).await;
+                            super::sa_provisioner::invalidate_cached_token(&kubeconfig_path);
+                            if let Some(ref bh) = bastion {
+                                if let Ok(new_token) = super::sa_provisioner::provision_dash_sa(
+                                    &kubeconfig_path, &cluster_name, bh,
+                                ).await {
+                                    let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &new_token);
+                                    if let Ok(new_client) = build_client_with_endpoint(
+                                        &kubeconfig_path, ep, Some(&new_token),
+                                    ).await {
+                                        if probe_client(&new_client, CF_DOMAIN_PROBE_TIMEOUT).await {
+                                            let _ = tx.send(DiscoverEvent::Log {
+                                                message: format!("{}: reconnected after token refresh", cluster_name),
+                                            }).await;
+                                            let ver = fetch_server_version(&new_client).await;
+                                            let _ = tx.send(DiscoverEvent::Connected(ClusterClient {
+                                                name: cluster_name,
+                                                kubeconfig_path,
+                                                client: new_client,
+                                                tunnel_pid: None,
+                                                server_version: ver,
+                                                endpoint: Some(ep.clone()),
+                                            })).await;
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = tx.send(DiscoverEvent::Log {
+                                message: format!("{}: token re-provision failed, falling back", cluster_name),
+                            }).await;
                         } else {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
@@ -676,7 +766,8 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
 
                 match build_client_with_endpoint(&kubeconfig_path, ep, token.as_deref()).await {
                     Ok(client) => {
-                        if probe_client(&client, CF_DOMAIN_PROBE_TIMEOUT).await {
+                        let probe = probe_client_auth(&client, CF_DOMAIN_PROBE_TIMEOUT).await;
+                        if probe == ProbeResult::Ok {
                             eprintln!("{}: connected via domain ({})", cluster_name, ep);
                             let ver = fetch_server_version(&client).await;
                             return Some(ClusterClient {
@@ -687,6 +778,34 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
                                 server_version: ver,
                                 endpoint: Some(ep.clone()),
                             });
+                        } else if probe == ProbeResult::Unauthorized {
+                            // 401: stale token — invalidate, re-provision, retry once
+                            eprintln!("{}: 401 — re-provisioning SA token", cluster_name);
+                            super::sa_provisioner::invalidate_cached_token(&kubeconfig_path);
+                            if let Some(ref bh) = bastion {
+                                if let Ok(new_token) = super::sa_provisioner::provision_dash_sa(
+                                    &kubeconfig_path, &cluster_name, bh,
+                                ).await {
+                                    let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &new_token);
+                                    if let Ok(new_client) = build_client_with_endpoint(
+                                        &kubeconfig_path, ep, Some(&new_token),
+                                    ).await {
+                                        if probe_client(&new_client, CF_DOMAIN_PROBE_TIMEOUT).await {
+                                            eprintln!("{}: reconnected after token refresh ({})", cluster_name, ep);
+                                            let ver = fetch_server_version(&new_client).await;
+                                            return Some(ClusterClient {
+                                                name: cluster_name,
+                                                kubeconfig_path,
+                                                client: new_client,
+                                                tunnel_pid: None,
+                                                server_version: ver,
+                                                endpoint: Some(ep.clone()),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            eprintln!("{}: token re-provision failed, falling back", cluster_name);
                         } else {
                             eprintln!("{}: domain probe failed ({})", cluster_name, ep);
                         }
