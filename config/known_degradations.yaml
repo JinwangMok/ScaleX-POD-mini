@@ -1,0 +1,49 @@
+# known_degradations.yaml
+#
+# Explicitly approved degradations that MUST NOT trigger alerts or fail health checks.
+# Every entry requires: namespace, resource_kind, name, condition, reason, acknowledged_by.
+# Optional: ticket (defaults to "N/A")
+#
+# name field supports trailing '*' glob (e.g. "coredns-*" matches "coredns-5d78c9869d-xqbrf").
+# condition must match the Kubernetes condition/reason string exactly (case-insensitive).
+#
+# PURPOSE: This is the ONLY place where degraded-but-acceptable state is recorded.
+# Narrative prose in runbooks is NOT sufficient — every known-acceptable degradation
+# must have a structured entry here so that automated health re-verification can
+# suppress false-positive alerts without silently hiding real failures.
+
+known_degradations:
+  - namespace: "kube-system"
+    resource_kind: "Pod"
+    name: "coredns-*"
+    condition: "ContainerNotReady"
+    reason: >-
+      CoreDNS pods transiently report ContainerNotReady during the first 60 s after
+      cluster bootstrap while kube-dns endpoints propagate. This is a lab-only
+      startup artefact; the readiness probe recovers without intervention.
+    acknowledged_by: "jinwang"
+    ticket: "N/A"
+
+  - namespace: "argocd"
+    resource_kind: "Pod"
+    name: "argocd-dex-server-*"
+    condition: "CrashLoopBackOff"
+    reason: >-
+      dex-server is intentionally disabled in this lab environment because OIDC is
+      not yet wired to a Keycloak realm. The CrashLoopBackOff is expected during the
+      bootstrap phase and resolves once OIDC secrets are provisioned (tracked in
+      project_followup_cf_tunnel.md P2).
+    acknowledged_by: "jinwang"
+    ticket: "docs/superpowers/plans/2026-03-17-dash-oidc-auth-future.md"
+
+  - namespace: "kube-system"
+    resource_kind: "Pod"
+    name: "kube-vip-*"
+    condition: "NodeNotReady"
+    reason: >-
+      kube-vip pods on single-node test clusters briefly show NodeNotReady while the
+      ARP announcement for the VIP propagates on br0. This is structural to the
+      bare-metal VIP approach and resolves within 30 s; it does not affect cluster
+      reachability.
+    acknowledged_by: "jinwang"
+    ticket: "N/A"
