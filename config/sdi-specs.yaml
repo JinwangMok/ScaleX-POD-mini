@@ -46,9 +46,9 @@ spec:
           host: "playbox-2"
           roles: [control-plane, etcd, worker]
 
-    # Sandbox: workload cluster — 1 CP + 2 workers
+    # Sandbox: workload cluster — 1 CP + 3 workers
     # kube-vip (static pod, L2/ARP) provides VIP at 192.168.88.109
-    # CP co-located on playbox-0, workers spread across playbox-1/2
+    # CP co-located on playbox-0, workers spread across playbox-1/2/3
     - pool_name: "sandbox"
       purpose: "workload"
       placement:
@@ -74,4 +74,11 @@ spec:
           mem_gb: 4
           disk_gb: 40
           host: "playbox-2"
+          roles: [worker]
+        - node_name: "sandbox-worker-2"
+          ip: "192.168.88.122"
+          cpu: 4
+          mem_gb: 8
+          disk_gb: 60
+          host: "playbox-3"
           roles: [worker]
