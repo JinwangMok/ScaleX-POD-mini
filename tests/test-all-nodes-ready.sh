@@ -2,8 +2,9 @@
 # test-all-nodes-ready.sh — Verify all nodes in both clusters (tower, sandbox) report Ready
 #
 # Expected topology (from sdi-specs.yaml / inventory.ini):
-#   Tower:   tower-cp-0, tower-cp-1, tower-cp-2          (3 nodes)
-#   Sandbox: sandbox-cp-0, sandbox-worker-0, sandbox-worker-1 (3 nodes)
+#   Tower:   tower-cp-0, tower-cp-1, tower-cp-2                              (3 nodes)
+#   Sandbox: sandbox-cp-0, sandbox-worker-0, sandbox-worker-1, sandbox-worker-2 (4 nodes)
+#            sandbox-worker-2 is hosted on playbox-3 (added in AC 3)
 #
 # Uses .original kubeconfigs (direct VM IPs) with fallback to domain kubeconfigs.
 # Designed for E2E verification after cluster provisioning.
@@ -27,11 +28,11 @@ skip() { log "SKIP: $*"; ((SKIP++)); }
 # ── Expected node sets per cluster ────────────────────────────────
 declare -A EXPECTED_NODES
 EXPECTED_NODES[tower]="tower-cp-0 tower-cp-1 tower-cp-2"
-EXPECTED_NODES[sandbox]="sandbox-cp-0 sandbox-worker-0 sandbox-worker-1"
+EXPECTED_NODES[sandbox]="sandbox-cp-0 sandbox-worker-0 sandbox-worker-1 sandbox-worker-2"
 
 declare -A EXPECTED_COUNT
 EXPECTED_COUNT[tower]=3
-EXPECTED_COUNT[sandbox]=3
+EXPECTED_COUNT[sandbox]=4
 
 # Track which clusters have API connectivity (for tests 4-5)
 declare -A API_REACHABLE
