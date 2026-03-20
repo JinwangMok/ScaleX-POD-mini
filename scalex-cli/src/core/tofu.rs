@@ -715,7 +715,11 @@ mod tests {
             "sandbox-worker-0",
             "sandbox-worker-1",
         ] {
-            assert!(hcl.contains(node), "Regression: missing existing VM {}", node);
+            assert!(
+                hcl.contains(node),
+                "Regression: missing existing VM {}",
+                node
+            );
         }
 
         // IPs for existing nodes unchanged

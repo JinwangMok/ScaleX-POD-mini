@@ -5620,11 +5620,7 @@ mod tests {
         app.snapshots.push(ClusterSnapshot {
             name: "tower".into(),
             health: HealthStatus::Green,
-            namespaces: vec![
-                "default".into(),
-                "kube-system".into(),
-                "argocd".into(),
-            ],
+            namespaces: vec!["default".into(), "kube-system".into(), "argocd".into()],
             nodes: vec![],
             pods: vec![],
             deployments: vec![],
@@ -5699,10 +5695,7 @@ mod tests {
         assert_eq!(app.tree.len(), 8);
 
         // Verify namespace nodes present with correct labels
-        let ns_labels: Vec<&str> = app.tree[2..6]
-            .iter()
-            .map(|n| n.label.as_str())
-            .collect();
+        let ns_labels: Vec<&str> = app.tree[2..6].iter().map(|n| n.label.as_str()).collect();
         assert_eq!(
             ns_labels,
             vec!["All Namespaces", "default", "kube-system", "argocd"]
@@ -5786,7 +5779,10 @@ mod tests {
         app.tree_cursor = 4; // kube-system
         app.handle_event(AppEvent::Enter);
 
-        assert!(app.needs_refresh, "namespace selection should trigger refresh");
+        assert!(
+            app.needs_refresh,
+            "namespace selection should trigger refresh"
+        );
         assert!(
             app.refresh_selected_only,
             "namespace switch should set refresh_selected_only"
@@ -5803,7 +5799,10 @@ mod tests {
         app.tree_cursor = 4; // kube-system
         app.handle_event(AppEvent::Enter);
 
-        assert_eq!(app.table_cursor, 0, "table cursor should reset on namespace switch");
+        assert_eq!(
+            app.table_cursor, 0,
+            "table cursor should reset on namespace switch"
+        );
         assert_eq!(
             app.table_scroll_offset, 0,
             "table scroll offset should reset on namespace switch"
@@ -5875,11 +5874,7 @@ mod tests {
         let tower_snap = ClusterSnapshot {
             name: "tower".into(),
             health: HealthStatus::Green,
-            namespaces: vec![
-                "default".into(),
-                "kube-system".into(),
-                "argocd".into(),
-            ],
+            namespaces: vec!["default".into(), "kube-system".into(), "argocd".into()],
             nodes: vec![NodeInfo {
                 name: "tower-cp-0".into(),
                 status: "Ready".into(),
@@ -6261,7 +6256,11 @@ mod tests {
         app.selected_namespace = None; // all namespaces
 
         let snap = app.current_snapshot().unwrap();
-        assert_eq!(snap.pods.len(), 4, "all pods visible in all-namespaces mode");
+        assert_eq!(
+            snap.pods.len(),
+            4,
+            "all pods visible in all-namespaces mode"
+        );
         assert_eq!(snap.deployments.len(), 3, "all deploys visible");
         assert_eq!(snap.services.len(), 3, "all services visible");
     }

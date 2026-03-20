@@ -9,7 +9,6 @@
 /// - **Parsing** lives in `crate::models::degradation`.
 /// - **Suppression logic** (keyed on E2E check names) lives here.
 /// - **Rendering** (colored text for `--once`, TUI color) lives in `mod.rs` / `ui.rs`.
-
 pub use crate::models::degradation::{KnownDegradation, KnownDegradationsConfig};
 
 use std::path::Path;

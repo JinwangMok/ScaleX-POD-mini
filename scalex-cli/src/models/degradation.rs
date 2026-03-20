@@ -87,6 +87,7 @@ impl KnownDegradationsConfig {
     ///
     /// Both `resource_kind` and `condition` comparisons are case-insensitive.
     /// `name` supports `*` glob wildcards (see [`glob_match`]).
+    #[allow(dead_code)]
     pub fn is_known(
         &self,
         namespace: &str,
@@ -118,6 +119,7 @@ impl KnownDegradationsConfig {
 
     /// Return the first matching `KnownDegradation` entry, or `None` if no entry
     /// covers the given `(namespace, resource_kind, name, condition)` tuple.
+    #[allow(dead_code)]
     pub fn find_match(
         &self,
         namespace: &str,
@@ -143,6 +145,7 @@ impl KnownDegradationsConfig {
 /// - `"*-suffix"` matches any string ending with `"-suffix"`.
 /// - Multiple `*` tokens are matched left-to-right, consuming the minimum required
 ///   substring at each step.
+#[allow(dead_code)]
 pub fn glob_match(pattern: &str, value: &str) -> bool {
     if pattern == "*" {
         return true;
@@ -348,7 +351,12 @@ known_degradations:
     fn find_match_returns_correct_entry() {
         let cfg = make_cfg();
         let entry = cfg
-            .find_match("argocd", "Pod", "argocd-dex-server-7f8b9c-abc", "CrashLoopBackOff")
+            .find_match(
+                "argocd",
+                "Pod",
+                "argocd-dex-server-7f8b9c-abc",
+                "CrashLoopBackOff",
+            )
             .unwrap();
         assert_eq!(entry.namespace, "argocd");
         assert_eq!(entry.condition, "CrashLoopBackOff");
@@ -369,7 +377,10 @@ known_degradations:
         let cfg = make_cfg();
         let serialized = serde_yaml::to_string(&cfg).unwrap();
         let restored: KnownDegradationsConfig = serde_yaml::from_str(&serialized).unwrap();
-        assert_eq!(cfg.known_degradations.len(), restored.known_degradations.len());
+        assert_eq!(
+            cfg.known_degradations.len(),
+            restored.known_degradations.len()
+        );
         for (orig, rt) in cfg
             .known_degradations
             .iter()

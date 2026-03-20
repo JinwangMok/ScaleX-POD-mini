@@ -251,11 +251,9 @@ fn run_init(
                             let mut bridge_ok = false;
                             for attempt in 1..=12u64 {
                                 std::thread::sleep(std::time::Duration::from_secs(5));
-                                if let Ok(verify_cmd) = build_ssh_command(
-                                    node,
-                                    &verify_script,
-                                    &bm_config.target_nodes,
-                                ) {
+                                if let Ok(verify_cmd) =
+                                    build_ssh_command(node, &verify_script, &bm_config.target_nodes)
+                                {
                                     if execute_ssh(&verify_cmd).is_ok() {
                                         println!(
                                             "[sdi] {} — br0 verified after {}s",
@@ -684,7 +682,9 @@ fn run_init(
                 for (vm, host) in &failed_vms {
                     eprintln!("[sdi]   {} on {}", vm, host);
                 }
-                eprintln!("[sdi] Re-run `virsh list --all` on each host to confirm boot completes.");
+                eprintln!(
+                    "[sdi] Re-run `virsh list --all` on each host to confirm boot completes."
+                );
             }
         } else {
             println!("[dry-run] Would run: tofu init && tofu apply -auto-approve");
@@ -911,9 +911,7 @@ fn run_clean(
             // SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
             // Runs after KVM teardown to avoid removing packages while VMs are still active.
             let cleanup_script = host_prepare::generate_node_cleanup_script();
-            println!(
-                "[sdi]   Phase B: Full node cleanup (K8s + KVM packages) on all nodes..."
-            );
+            println!("[sdi]   Phase B: Full node cleanup (K8s + KVM packages) on all nodes...");
 
             let mut cleanup_results: Vec<(String, Result<(), String>)> = Vec::new();
             for (idx, node) in target_nodes.iter().enumerate() {
@@ -1282,11 +1280,9 @@ fn run_sync(
                             let mut bridge_ok = false;
                             for attempt in 1..=12u64 {
                                 std::thread::sleep(std::time::Duration::from_secs(5));
-                                if let Ok(verify_cmd) = build_ssh_command(
-                                    node,
-                                    &verify_script,
-                                    &bm_config.target_nodes,
-                                ) {
+                                if let Ok(verify_cmd) =
+                                    build_ssh_command(node, &verify_script, &bm_config.target_nodes)
+                                {
                                     if execute_ssh(&verify_cmd).is_ok() {
                                         println!(
                                             "[sdi] {} — br0 verified after {}s",
@@ -1642,10 +1638,7 @@ fn check_vms_running_on_hosts(
     let mut not_running: Vec<(String, String)> = Vec::new();
 
     for (host_name, vm_names) in &vms_by_host {
-        let node = bm_config
-            .target_nodes
-            .iter()
-            .find(|n| n.name == *host_name);
+        let node = bm_config.target_nodes.iter().find(|n| n.name == *host_name);
         let Some(node) = node else {
             eprintln!(
                 "[sdi] WARNING: host '{}' not found in baremetal config, skipping VM check",
@@ -1662,10 +1655,7 @@ fn check_vms_running_on_hosts(
                         if vm_is_running(vm_name, &output) {
                             println!("[sdi]   {} on {} — running ✓", vm_name, host_name);
                         } else {
-                            eprintln!(
-                                "[sdi]   {} on {} — NOT running ✗",
-                                vm_name, host_name
-                            );
+                            eprintln!("[sdi]   {} on {} — NOT running ✗", vm_name, host_name);
                             not_running.push((vm_name.clone(), host_name.clone()));
                         }
                     }

@@ -509,13 +509,8 @@ pub fn generate_bridge_nohup_launcher(
     cidr_prefix: u8,
     is_bond: bool,
 ) -> String {
-    let setup_script = generate_bridge_setup_script(
-        primary_nic,
-        ip_address,
-        gateway,
-        cidr_prefix,
-        is_bond,
-    );
+    let setup_script =
+        generate_bridge_setup_script(primary_nic, ip_address, gateway, cidr_prefix, is_bond);
     // Escape single quotes in the script body for embedding in a bash heredoc-style write.
     // We use a base64-encoded payload to avoid any quoting issues with the script content.
     // The launcher: (a) decode and write script, (b) chmod, (c) nohup launch, (d) exit 0.
@@ -540,7 +535,7 @@ exit 0
 fn base64_encode_script(s: &str) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = s.as_bytes();
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 2 < bytes.len() {
         let b0 = bytes[i] as usize;
@@ -764,21 +759,24 @@ mod tests {
             "launcher must write script to /tmp"
         );
         // Must exit 0 immediately — caller polls separately
-        assert!(launcher.contains("exit 0"), "launcher must exit 0 immediately");
+        assert!(
+            launcher.contains("exit 0"),
+            "launcher must exit 0 immediately"
+        );
     }
 
     #[test]
     fn test_base64_encode_decode_roundtrip() {
         // The launcher embeds a base64-encoded setup script; verify encode is correct
         // by checking that the launcher's payload decodes to something containing br0.
-        let launcher =
-            generate_bridge_nohup_launcher("eno1", "10.0.0.5", "10.0.0.1", 24, false);
+        let launcher = generate_bridge_nohup_launcher("eno1", "10.0.0.5", "10.0.0.1", 24, false);
         // Extract the base64 payload (single-quoted token after "echo '")
-        let payload_start = launcher.find("echo '").expect("launcher must have echo '...") + 6;
-        let payload_end = launcher[payload_start..]
-            .find("'")
-            .expect("closing quote")
-            + payload_start;
+        let payload_start = launcher
+            .find("echo '")
+            .expect("launcher must have echo '...")
+            + 6;
+        let payload_end =
+            launcher[payload_start..].find("'").expect("closing quote") + payload_start;
         let encoded = &launcher[payload_start..payload_end];
         // Decode using standard base64 alphabet
         let decoded = base64_decode_for_test(encoded);
@@ -1211,7 +1209,11 @@ mod tests {
             "cleanup must never enumerate bridge interfaces for deletion"
         );
         assert!(
-            !script.contains("ip link delete") || script.find("ip link delete").map(|p| !script[p..].starts_with("ip link delete br")).unwrap_or(true),
+            !script.contains("ip link delete")
+                || script
+                    .find("ip link delete")
+                    .map(|p| !script[p..].starts_with("ip link delete br"))
+                    .unwrap_or(true),
             "cleanup must never delete br0 or other bridge interfaces"
         );
         // Must NOT touch netplan config — network changes break SSH

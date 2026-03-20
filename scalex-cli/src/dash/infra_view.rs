@@ -14,6 +14,7 @@ use ratatui::Frame;
 /// A single VM card with static specs and optional K8s metrics.
 pub(super) struct VmCard {
     pub name: String,
+    #[allow(dead_code)]
     pub ip: String,
     pub status: String,
     pub cpu: u32,
@@ -495,8 +496,16 @@ mod tests {
         assert_eq!(boxes.len(), 1); // both VMs on playbox-0
         assert_eq!(boxes[0].vms.len(), 2);
         // sandbox VM should be in_selected_pool, tower VM should not
-        let sandbox_vm = boxes[0].vms.iter().find(|v| v.name == "sandbox-w-0").unwrap();
-        let tower_vm = boxes[0].vms.iter().find(|v| v.name == "tower-cp-0").unwrap();
+        let sandbox_vm = boxes[0]
+            .vms
+            .iter()
+            .find(|v| v.name == "sandbox-w-0")
+            .unwrap();
+        let tower_vm = boxes[0]
+            .vms
+            .iter()
+            .find(|v| v.name == "tower-cp-0")
+            .unwrap();
         assert!(sandbox_vm.in_selected_pool);
         assert!(!tower_vm.in_selected_pool);
         assert!(boxes[0].has_active_vms);
