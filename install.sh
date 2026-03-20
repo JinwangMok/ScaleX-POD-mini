@@ -1155,7 +1155,7 @@ except: pass
 
     if [[ -n "$cluster_api_endpoint" ]]; then
       # Explicit CF Tunnel transport selected (api_endpoint configured in k8s-clusters.yaml)
-      if curl -sk --connect-timeout 5 "${cluster_api_endpoint}/healthz" &>/dev/null; then
+      if [[ "$(curl -sk --connect-timeout 5 "${cluster_api_endpoint}/healthz" 2>/dev/null)" == "ok" ]]; then
         log_info "$(i18n "${cluster_name}: TRANSPORT=cf_tunnel (api_endpoint=${cluster_api_endpoint}) — CF Tunnel reachable, no SSH bastion needed" \
           "${cluster_name}: TRANSPORT=cf_tunnel (api_endpoint=${cluster_api_endpoint}) — CF 터널 접근 가능, SSH bastion 불필요")"
         continue
@@ -1408,9 +1408,9 @@ except Exception as e:
             "$(i18n "Run: scalex secrets apply or copy credentials/cloudflare-tunnel.json from your CF dashboard" "실행: scalex secrets apply 또는 CF 대시보드에서 credentials/cloudflare-tunnel.json 복사")"
         fi
 
-        if curl -sk --connect-timeout 5 --retry "$_cf_retries" --retry-delay 5 \
+        if [[ "$(curl -sk --connect-timeout 5 --retry "$_cf_retries" --retry-delay 5 \
           --retry-max-time "$_cf_wait" \
-          "${current_endpoint}/healthz" >/dev/null 2>&1; then
+          "${current_endpoint}/healthz" 2>/dev/null)" == "ok" ]]; then
           # Rewrite kubeconfig server field to domain URL
           local current_url; current_url=$(grep 'server:' "$kc_path" | head -1 | awk '{print $2}' | tr -d '"')
           sed -i "s|${current_url}|${current_endpoint}|g" "$kc_path"
@@ -2987,7 +2987,7 @@ phase_provision() {
   echo -e "${CYAN}[Phase 4/4] [Step 6/${total_steps}]${NC} $(i18n "Saving kubeconfig..." "kubeconfig 저장...")"
   mkdir -p "$SCALEX_HOME/credentials"
   if [[ -d "$REPO_DIR/_generated" ]]; then
-    find "$REPO_DIR/_generated" -name "admin.conf" -o -name "config" 2>/dev/null | while read -r kc; do
+    find "$REPO_DIR/_generated" -name "kubeconfig.yaml" -o -name "admin.conf" -o -name "config" 2>/dev/null | while read -r kc; do
       local cluster_dir; cluster_dir=$(basename "$(dirname "$kc")")
       mkdir -p "$SCALEX_HOME/credentials/${cluster_dir}"
       cp "$kc" "$SCALEX_HOME/credentials/${cluster_dir}/config"

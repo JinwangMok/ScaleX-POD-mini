@@ -25,7 +25,10 @@
 - playbox-1: 192.168.88.9 (워커)
 - playbox-2: 192.168.88.10 (워커)
 - playbox-3: 192.168.88.11 (워커 + GPU + 10G NIC)
-- tower-vm: 192.168.88.100 (playbox-0의 br0 브릿지 위)
+- tower-cp-0: 192.168.88.100, tower-cp-1: 192.168.88.101, tower-cp-2: 192.168.88.102 (HA CPs)
+- Tower kube-vip VIP: 192.168.88.99
+- sandbox-cp-0: 192.168.88.110, sandbox-worker-{0,1,2}: 192.168.88.120-122
+- Sandbox kube-vip VIP: 192.168.88.109
 
 ### Bond 구성
 - 단일 NIC 노드: bond0이 eno1을 래핑 (일관성을 위한 패스스루)
@@ -43,10 +46,10 @@
 Cloudflare Edge (퍼블릭 TLS)
   ▼
 Cloudflare Tunnel → cloudflared 파드
-  │ tower-api.jinwang.dev → https://192.168.88.100:6443
-  │ sandbox-api.jinwang.dev → https://192.168.88.110:6443
-  │ auth.jinwang.dev → http://keycloak.keycloak.svc:80
-  │ cd.jinwang.dev → http://argocd-server.argocd.svc:8080
+  │ tower-api.jinwang.dev → https://192.168.88.99:6443
+  │ sandbox-api.jinwang.dev → https://192.168.88.109:6443
+  │ auth.jinwang.dev → http://keycloak.keycloak.svc.tower.local:80
+  │ cd.jinwang.dev → http://argocd-server.argocd.svc.tower.local:80
   ▼
 kube-apiserver (OIDC 토큰 검증 → RBAC)
 ```
@@ -96,7 +99,10 @@ All nodes on 192.168.88.0/24 LAN:
 - playbox-1: 192.168.88.9 (worker)
 - playbox-2: 192.168.88.10 (worker)
 - playbox-3: 192.168.88.11 (worker + GPU + 10G NIC)
-- tower-vm: 192.168.88.100 (on br0 bridge of playbox-0)
+- tower-cp-0: 192.168.88.100, tower-cp-1: 192.168.88.101, tower-cp-2: 192.168.88.102 (HA CPs)
+- Tower kube-vip VIP: 192.168.88.99
+- sandbox-cp-0: 192.168.88.110, sandbox-worker-{0,1,2}: 192.168.88.120-122
+- Sandbox kube-vip VIP: 192.168.88.109
 
 ### Bond Configuration
 - Single-NIC nodes: bond0 wrapping eno1 (pass-through for consistency)
@@ -114,10 +120,10 @@ Client kubectl
 Cloudflare Edge (public TLS)
   ▼
 Cloudflare Tunnel → cloudflared pod
-  │ tower-api.jinwang.dev → https://192.168.88.100:6443
-  │ sandbox-api.jinwang.dev → https://192.168.88.110:6443
-  │ auth.jinwang.dev → http://keycloak.keycloak.svc:80
-  │ cd.jinwang.dev → http://argocd-server.argocd.svc:8080
+  │ tower-api.jinwang.dev → https://192.168.88.99:6443
+  │ sandbox-api.jinwang.dev → https://192.168.88.109:6443
+  │ auth.jinwang.dev → http://keycloak.keycloak.svc.tower.local:80
+  │ cd.jinwang.dev → http://argocd-server.argocd.svc.tower.local:80
   ▼
 kube-apiserver (validates OIDC token → RBAC)
 ```

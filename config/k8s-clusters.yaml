@@ -56,9 +56,12 @@ config:
           port: 6443
         supplementary_addresses_in_ssl_keys:
           - "192.168.88.99"    # kube-vip VIP
-          - "100.64.0.1"       # Tailscale bastion IP
+          - "192.168.88.100"   # tower-cp-0 node IP (sdi-specs: tower pool)
+          - "192.168.88.101"   # tower-cp-1 node IP (sdi-specs: tower pool)
+          - "192.168.88.102"   # tower-cp-2 node IP (sdi-specs: tower pool)
+          - "100.72.90.110"    # Tailscale bastion IP (playbox-0 reachable_node_ip from .baremetal-init.yaml)
 
-    # Sandbox: workload cluster — 1 CP + 2 workers, kube-vip VIP for future HA
+    # Sandbox: workload cluster — 1 CP + 3 workers, kube-vip VIP for stable API endpoint
     - cluster_name: "sandbox"
       api_endpoint: "https://sandbox-api.jinwang.dev"
       cluster_sdi_resource_pool: "sandbox"
@@ -86,7 +89,8 @@ config:
           port: 6443
         supplementary_addresses_in_ssl_keys:
           - "192.168.88.109"   # kube-vip VIP
-          - "100.64.0.1"       # Tailscale bastion IP
+          - "192.168.88.110"   # sandbox-cp-0 node IP (sdi-specs: sandbox pool)
+          - "100.72.90.110"    # Tailscale bastion IP (playbox-0 reachable_node_ip from .baremetal-init.yaml)
 
   argocd:
     namespace: "argocd"

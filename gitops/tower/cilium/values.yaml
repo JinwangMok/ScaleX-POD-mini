@@ -1,7 +1,7 @@
-k8sServiceHost: "192.168.88.100"
+k8sServiceHost: "192.168.88.99"
 k8sServicePort: 6443
 kubeProxyReplacement: true
-# Disable DNS proxy transparent mode to avoid conflict with NodeLocal DNSCache (nodelocaldns).
+# Disable DNS proxy transparent mode to avoid conflict with NodeLocal DNSCache.
 # When kubeProxyReplacement=true, Cilium auto-enables dnsProxy which conflicts with nodelocaldns.
 # Ref: https://github.com/cilium/cilium/issues/33144
 dnsProxy:
@@ -16,7 +16,7 @@ cluster:
 hubble:
   enabled: true
   peerService:
-    # Must match cluster DNS domain (set by Kubespray dns_domain: tower.local).
+    # Must match cluster DNS domain set by Kubespray dns_domain variable.
     # Default cluster.local causes hubble-relay DNS timeout on custom-domain clusters.
     clusterDomain: "tower.local"
   relay:

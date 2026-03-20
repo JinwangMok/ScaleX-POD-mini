@@ -77,11 +77,12 @@ load_tunnel_functions() {
   SCALEX_HOME="${base_dir}/.scalex"
   INSTALLER_DIR="${SCALEX_HOME}/installer"
   TUNNEL_STATE_FILE="${SCALEX_HOME}/tunnel-state.yaml"
+  LOG_DIR="${SCALEX_HOME}/installer/logs"
   API_TUNNEL_PIDS=()
   API_TUNNEL_BACKUPS=()
   TUNNEL_WATCHDOG_PID=""
   TUNNEL_CONF_DIR=""
-  mkdir -p "$INSTALLER_DIR"
+  mkdir -p "$INSTALLER_DIR" "$LOG_DIR"
 
   # Load actual functions from install.sh
   eval "$(extract_func '_ssh_tunnel_start')"
@@ -305,9 +306,11 @@ T2_MOCK_BIN="$T2_BASE/bin"
 create_fake_repo "$T2_REPO" "cfcluster" "10.99.0.2" "cfbastion"
 mkdir -p "$T2_MOCK_BIN"
 
-# curl succeeds for all URLs → CF Tunnel api_endpoint reachable → no SSH needed
+# curl outputs "ok" for all URLs → CF Tunnel healthz check passes → no SSH needed
+# install.sh checks: [[ "$(curl -sk ... /healthz)" == "ok" ]] so mock must output "ok"
 cat > "$T2_MOCK_BIN/curl" << 'ENDCURL2'
 #!/usr/bin/env bash
+echo "ok"
 exit 0
 ENDCURL2
 chmod +x "$T2_MOCK_BIN/curl"

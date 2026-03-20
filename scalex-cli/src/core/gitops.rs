@@ -745,11 +745,14 @@ contexts:
         assert_eq!(cilium_values_path("sandbox"), "sandbox/cilium/values.yaml");
     }
 
-    /// Verify that generate_cilium_values with a known CP IP produces
-    /// content that matches what the static gitops file should contain.
+    /// Verify that generate_cilium_values with the kube-vip VIP produces
+    /// content that matches what the static gitops file contains.
+    /// Tower cluster uses kube-vip VIP 192.168.88.99 (not individual CP IP 192.168.88.100)
+    /// so that Cilium can reach the API server even when tower-cp-0 is down.
     #[test]
     fn test_generated_cilium_values_match_static_tower_structure() {
-        let generated = generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
+        // Use VIP (192.168.88.99), not CP IP (192.168.88.100) — matches k8s-clusters.yaml kube_vip_address
+        let generated = generate_cilium_values("192.168.88.99", 6443, "tower.local", "tower", 1);
         let static_content = include_str!("../../../gitops/tower/cilium/values.yaml");
 
         // Both must have the same k8sServiceHost

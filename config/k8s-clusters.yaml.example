@@ -57,7 +57,7 @@ config:
       kubespray_extra_vars:
         kube_api_anonymous_auth: true
         supplementary_addresses_in_ssl_keys:
-          - "100.64.0.1"  # Tailscale bastion IP (for external kubectl via Tailscale)
+          - "100.72.90.110"  # Tailscale bastion IP (playbox-0 reachable_node_ip from .baremetal-init.yaml)
 
     - cluster_name: "sandbox"
       cluster_sdi_resource_pool: "sandbox"
@@ -89,7 +89,7 @@ config:
             cpu: "200m"
             memory: "512Mi"
         supplementary_addresses_in_ssl_keys:
-          - "100.64.0.1"  # Tailscale bastion IP
+          - "100.72.90.110"  # Tailscale bastion IP (playbox-0 reachable_node_ip from .baremetal-init.yaml)
 
     # Example: baremetal mode (no SDI virtualization layer)
     # - cluster_name: "prod"

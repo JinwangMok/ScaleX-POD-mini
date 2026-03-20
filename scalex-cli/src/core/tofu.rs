@@ -99,6 +99,15 @@ pub fn generate_tofu_main(spec: &SdiSpec, ssh_user: &str) -> String {
     hcl.push_str(&generate_cloudinit_data(spec));
     hcl.push('\n');
 
+    // Extract CIDR prefix from management_cidr (e.g., "192.168.88.0/24" -> "24")
+    let cidr_prefix = spec
+        .resource_pool
+        .network
+        .management_cidr
+        .rsplit('/')
+        .next()
+        .unwrap_or("24");
+
     // VM resources for each pool
     for pool in &spec.spec.sdi_pools {
         hcl.push_str(&format!(
@@ -112,6 +121,8 @@ pub fn generate_tofu_main(spec: &SdiSpec, ssh_user: &str) -> String {
                 &host,
                 &spec.resource_pool.network.management_bridge,
                 &spec.resource_pool.network.gateway,
+                cidr_prefix,
+                &spec.resource_pool.network.nameservers,
             ));
             hcl.push('\n');
         }
@@ -225,7 +236,14 @@ EOF
     )
 }
 
-fn generate_vm_resource(node: &NodeSpec, host: &str, bridge: &str, gateway: &str) -> String {
+fn generate_vm_resource(
+    node: &NodeSpec,
+    host: &str,
+    bridge: &str,
+    gateway: &str,
+    cidr_prefix: &str,
+    nameservers: &[String],
+) -> String {
     let provider = if host == "localhost" {
         String::new()
     } else {
@@ -268,17 +286,20 @@ version: 2
 ethernets:
   ens3:
     addresses:
-      - {ip}/24
-    gateway4: {gateway}
+      - {ip}/{cidr_prefix}
+    routes:
+      - to: default
+        via: {gateway}
     nameservers:
-      addresses: [8.8.8.8, 8.8.4.4]
+      addresses: [{nameservers_str}]
 EOF{provider}
 }}
 
 resource "libvirt_domain" "{name}" {{
-  name   = "{name}"
-  memory = {mem}
-  vcpu   = {vcpu}{provider}
+  name      = "{name}"
+  memory    = {mem}
+  vcpu      = {vcpu}
+  autostart = true{provider}
 
   cpu {{
     mode = "host-passthrough"
@@ -298,6 +319,8 @@ resource "libvirt_domain" "{name}" {{
 "#,
         ip = node.ip,
         gateway = gateway,
+        cidr_prefix = cidr_prefix,
+        nameservers_str = nameservers.join(", "),
     )
 }
 
@@ -402,8 +425,8 @@ mod tests {
         let hcl = generate_tofu_main(&spec, "root");
         assert!(hcl.contains("libvirt_domain"));
         assert!(hcl.contains("tower-cp-0"));
-        assert!(hcl.contains("memory = 3072"));
-        assert!(hcl.contains("vcpu   = 2"));
+        assert!(hcl.contains("memory    = 3072"));
+        assert!(hcl.contains("vcpu      = 2"));
     }
 
     #[test]
@@ -419,7 +442,7 @@ mod tests {
         spec.resource_pool.network.gateway = "10.0.0.1".to_string();
         let hcl = generate_tofu_main(&spec, "root");
         // Gateway must come from spec, not hardcoded
-        assert!(hcl.contains("gateway4: 10.0.0.1"));
+        assert!(hcl.contains("via: 10.0.0.1"));
     }
 
     #[test]

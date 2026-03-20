@@ -26,9 +26,9 @@ data:
           noTLSVerify: true
       # ArgoCD dashboard (in-cluster service)
       - hostname: cd.jinwang.dev
-        service: http://argocd-server.argocd.svc.cluster.local:80
+        service: http://argocd-server.argocd.svc.tower.local:80
       # Keycloak auth (in-cluster service)
       - hostname: auth.jinwang.dev
-        service: http://keycloak.keycloak.svc.cluster.local:80
+        service: http://keycloak.keycloak.svc.tower.local:80
       # Catch-all: return 404
       - service: http_status:404

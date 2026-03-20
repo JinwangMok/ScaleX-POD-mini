@@ -209,10 +209,12 @@ fn run_init(
 
     println!("\n[cluster] All clusters initialized.");
 
-    // Step 4: Update GitOps Cilium values with correct control-plane IPs
+    // Step 4: Update GitOps Cilium values with correct API server IP.
+    // Prefer kube-vip VIP (HA) when kube_vip_enabled=true; fall back to first CP node IP.
     for cluster in &k8s_config.config.clusters {
-        let cp_ip = find_control_plane_ip(cluster, sdi_spec.as_ref());
-        if let Some(ip) = cp_ip {
+        let api_ip = get_kube_vip_address(cluster)
+            .or_else(|| find_control_plane_ip(cluster, sdi_spec.as_ref()));
+        if let Some(ip) = api_ip {
             let cilium_cluster_name = cluster
                 .cilium
                 .as_ref()
@@ -467,12 +469,12 @@ fn update_gitops_cilium_values(
 
     if dry_run {
         println!(
-            "[dry-run] Wrote Cilium values for {} (CP: {})",
+            "[dry-run] Wrote Cilium values for {} (k8sServiceHost: {})",
             cluster_name, control_plane_ip
         );
     } else {
         println!(
-            "[cluster] Updated gitops/{}/cilium/ with CP IP {}",
+            "[cluster] Updated gitops/{}/cilium/ with k8sServiceHost={}",
             cluster_name, control_plane_ip
         );
     }
@@ -489,6 +491,26 @@ pub fn clusters_requiring_sdi(config: &K8sClustersConfig) -> Vec<String> {
         .filter(|c| c.cluster_mode == ClusterMode::Sdi)
         .map(|c| c.cluster_name.clone())
         .collect()
+}
+
+/// Extract the kube-vip VIP address from a cluster's kubespray_extra_vars.
+/// Returns Some(vip_address) when kube_vip_enabled=true and kube_vip_address is set.
+/// Returns None otherwise (e.g., single-node or non-HA clusters without kube-vip).
+/// Pure function.
+pub fn get_kube_vip_address(cluster: &crate::models::cluster::ClusterDef) -> Option<String> {
+    let extra_vars = cluster.kubespray_extra_vars.as_ref()?;
+    // Only return the VIP when kube-vip is explicitly enabled
+    let enabled = extra_vars
+        .get("kube_vip_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+    extra_vars
+        .get("kube_vip_address")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Find the control-plane node IP for a given cluster.
@@ -1023,6 +1045,63 @@ kubespray_version: "v2.30.0"
         let cluster = make_sdi_cluster("tower", "tower-pool");
         let ip = find_control_plane_ip(&cluster, None);
         assert_eq!(ip, None, "SDI mode without spec must return None");
+    }
+
+    // --- get_kube_vip_address ---
+
+    #[test]
+    fn test_get_kube_vip_address_returns_vip_when_enabled() {
+        let mut cluster = make_sdi_cluster("tower", "tower");
+        cluster.kubespray_extra_vars = Some(serde_yaml::from_str(
+            "kube_vip_enabled: true\nkube_vip_address: \"192.168.88.99\"",
+        ).unwrap());
+        let vip = get_kube_vip_address(&cluster);
+        assert_eq!(vip, Some("192.168.88.99".to_string()), "must return VIP when kube-vip enabled");
+    }
+
+    #[test]
+    fn test_get_kube_vip_address_returns_none_when_disabled() {
+        let mut cluster = make_sdi_cluster("tower", "tower");
+        cluster.kubespray_extra_vars = Some(serde_yaml::from_str(
+            "kube_vip_enabled: false\nkube_vip_address: \"192.168.88.99\"",
+        ).unwrap());
+        let vip = get_kube_vip_address(&cluster);
+        assert_eq!(vip, None, "must return None when kube-vip disabled");
+    }
+
+    #[test]
+    fn test_get_kube_vip_address_returns_none_without_extra_vars() {
+        let cluster = make_sdi_cluster("tower", "tower");
+        // make_sdi_cluster does not set kubespray_extra_vars
+        let vip = get_kube_vip_address(&cluster);
+        assert_eq!(vip, None, "must return None when no extra_vars");
+    }
+
+    #[test]
+    fn test_get_kube_vip_address_returns_none_without_address_field() {
+        let mut cluster = make_sdi_cluster("tower", "tower");
+        cluster.kubespray_extra_vars = Some(serde_yaml::from_str(
+            "kube_vip_enabled: true",
+        ).unwrap());
+        let vip = get_kube_vip_address(&cluster);
+        assert_eq!(vip, None, "must return None when enabled but kube_vip_address missing");
+    }
+
+    #[test]
+    fn test_get_kube_vip_address_actual_config() {
+        // Verify with actual k8s-clusters.yaml (has kube_vip_enabled: true for both clusters)
+        let k8s_content = include_str!("../../../config/k8s-clusters.yaml");
+        let k8s_config: K8sClustersConfig = serde_yaml::from_str(k8s_content).unwrap();
+
+        let tower = k8s_config.config.clusters.iter().find(|c| c.cluster_name == "tower").unwrap();
+        let tower_vip = get_kube_vip_address(tower);
+        assert_eq!(tower_vip, Some("192.168.88.99".to_string()),
+            "tower cluster must use kube-vip VIP 192.168.88.99");
+
+        let sandbox = k8s_config.config.clusters.iter().find(|c| c.cluster_name == "sandbox").unwrap();
+        let sandbox_vip = get_kube_vip_address(sandbox);
+        assert_eq!(sandbox_vip, Some("192.168.88.109".to_string()),
+            "sandbox cluster must use kube-vip VIP 192.168.88.109");
     }
 
     // --- Sprint 31d: clusters_needing_gitops_update with 3+ clusters ---

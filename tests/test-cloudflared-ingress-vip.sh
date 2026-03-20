@@ -8,7 +8,7 @@
 #   2. Kustomization includes config.yaml resource
 #   3. tower-api ingress rule points to tower VIP (192.168.88.99)
 #   4. sandbox-api ingress rule points to sandbox VIP (192.168.88.109)
-#   5. No individual node IPs in ingress rules (not .100/.101/.102/.110/.120/.121)
+#   5. No individual node IPs in ingress rules (not .100/.101/.102/.110/.120/.121/.122)
 #   6. Deployment mounts cloudflared-config volume
 #   7. Deployment uses --config flag pointing to mounted path
 #   8. ArgoCD ingress rule uses in-cluster service (cd.jinwang.dev)
@@ -94,7 +94,7 @@ if [[ -f "$CONFIG_YAML" ]]; then
   # Extract only the ingress service lines (not comments)
   NODE_IPS_FOUND=false
   for ip in "192.168.88.100" "192.168.88.101" "192.168.88.102" \
-            "192.168.88.110" "192.168.88.120" "192.168.88.121"; do
+            "192.168.88.110" "192.168.88.120" "192.168.88.121" "192.168.88.122"; do
     if grep -v '^\s*#' "$CONFIG_YAML" | grep -q "$ip"; then
       fail "Individual node IP $ip found in ingress rules (should use VIP)"
       NODE_IPS_FOUND=true
