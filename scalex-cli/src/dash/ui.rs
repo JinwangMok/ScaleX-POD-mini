@@ -1,6 +1,7 @@
 use crate::dash::app::{ActivePanel, ActiveView, App, ConnectionStatus, NodeType, ResourceView};
 use crate::dash::data::{self, HealthStatus};
 use crate::dash::filter;
+use crate::dash::infra_view;
 use crate::dash::theme;
 use crate::dash::toast;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -548,7 +549,22 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
         ResourceView::Events,
     ];
     let mut title_spans: Vec<Span> = vec![Span::styled(" ", Style::default().fg(theme::FG))];
-    if app.active_tab == 0 {
+    if app.active_view == ActiveView::Infra {
+        title_spans.push(Span::styled(
+            "[Infra] ",
+            Style::default()
+                .fg(theme::BRIGHT_AQUA)
+                .add_modifier(Modifier::BOLD),
+        ));
+        let pool_label = app
+            .selected_sdi_pool
+            .as_deref()
+            .unwrap_or("All Pools");
+        title_spans.push(Span::styled(
+            pool_label,
+            Style::default().fg(theme::FG),
+        ));
+    } else if app.active_tab == 0 {
         for i in 0..6 {
             if SHORTCUT_VIEWS[i] == app.resource_view {
                 title_spans.push(Span::styled(
@@ -617,13 +633,17 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
         (inner, None)
     };
 
-    match app.active_tab {
-        0 => render_resources_tab(f, app, content_area),
-        1 => render_top_tab(f, app, content_area),
-        _ => {
-            let msg = Paragraph::new("Custom tab (press ? for help)")
-                .style(Style::default().fg(theme::FG4));
-            f.render_widget(msg, content_area);
+    if app.active_view == ActiveView::Infra {
+        infra_view::render_infra_view(f, app, content_area);
+    } else {
+        match app.active_tab {
+            0 => render_resources_tab(f, app, content_area),
+            1 => render_top_tab(f, app, content_area),
+            _ => {
+                let msg = Paragraph::new("Custom tab (press ? for help)")
+                    .style(Style::default().fg(theme::FG4));
+                f.render_widget(msg, content_area);
+            }
         }
     }
 

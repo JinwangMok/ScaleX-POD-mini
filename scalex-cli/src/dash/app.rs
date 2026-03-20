@@ -88,6 +88,8 @@ pub enum ActiveView {
     Static,
     /// Dynamic resource view from command mode (`:deploy`, `:crd`, etc.)
     Dynamic,
+    /// SDI infrastructure visualization view (bare-metal hosts + VM grid)
+    Infra,
 }
 
 /// Request for a one-shot dynamic resource fetch.
@@ -238,6 +240,13 @@ pub struct App {
     /// Index: cluster name → position in `snapshots` vec for O(1) lookup
     pub snapshot_index: HashMap<String, usize>,
     pub infra: InfraSnapshot,
+
+    /// SDI pool filter: None = all pools (InfraHeader), Some(name) = single pool (InfraItem)
+    pub selected_sdi_pool: Option<String>,
+    /// Cursor position within the flattened VM list in infra view
+    pub infra_vm_cursor: usize,
+    /// Scroll offset for infra view
+    pub infra_scroll_offset: usize,
 
     // Timing
     pub api_latency_ms: u64,
@@ -492,6 +501,9 @@ impl App {
             snapshots: Vec::new(),
             snapshot_index: HashMap::new(),
             infra: InfraSnapshot::default(),
+            selected_sdi_pool: None,
+            infra_vm_cursor: 0,
+            infra_scroll_offset: 0,
             api_latency_ms: 0,
             show_help: false,
             help_scroll_offset: 0,
@@ -611,6 +623,9 @@ impl App {
             snapshots: Vec::new(),
             snapshot_index: HashMap::new(),
             infra: InfraSnapshot::default(),
+            selected_sdi_pool: None,
+            infra_vm_cursor: 0,
+            infra_scroll_offset: 0,
             api_latency_ms: 0,
             show_help: false,
             help_scroll_offset: 0,
@@ -1061,12 +1076,18 @@ impl App {
             }
             AppEvent::ResourceType(c) => {
                 if let Some(rv) = ResourceView::from_char(c) {
-                    // Switch back to static view if we were in dynamic view
-                    if self.active_view == ActiveView::Dynamic {
-                        self.active_view = ActiveView::Static;
-                        self.dynamic_resource_data = None;
-                        self.pending_dynamic_fetch = None;
-                        self.cancel_watcher = true;
+                    // Switch back to static view if we were in dynamic or infra view
+                    match self.active_view {
+                        ActiveView::Dynamic => {
+                            self.active_view = ActiveView::Static;
+                            self.dynamic_resource_data = None;
+                            self.pending_dynamic_fetch = None;
+                            self.cancel_watcher = true;
+                        }
+                        ActiveView::Infra => {
+                            self.active_view = ActiveView::Static;
+                        }
+                        ActiveView::Static => {}
                     }
                     if self.resource_view != rv {
                         self.resource_view = rv;
@@ -1135,6 +1156,9 @@ impl App {
                     self.search_query = None;
                     self.table_cursor = 0;
                     self.table_scroll_offset = 0;
+                } else if self.active_view == ActiveView::Infra {
+                    // Exit infra view back to static
+                    self.active_view = ActiveView::Static;
                 }
             }
             AppEvent::CharInput(':') => {
@@ -1592,6 +1616,42 @@ impl App {
         }
     }
 
+    /// Handle Enter on a VM in infra view: jump to K8s Nodes view for the matching cluster.
+    fn handle_infra_vm_enter(&mut self) {
+        let host_boxes = super::infra_view::collect_host_boxes(self);
+        // Find the VM at the current cursor position
+        for hbox in &host_boxes {
+            for vm in &hbox.vms {
+                if vm.in_selected_pool && vm.flat_index == self.infra_vm_cursor {
+                    if let Some(ref cluster_name) = vm.cluster_name {
+                        // Switch to the cluster's Nodes view
+                        self.selected_cluster = Some(cluster_name.clone());
+                        self.active_view = ActiveView::Static;
+                        self.resource_view = ResourceView::Nodes;
+                        self.active_tab = 0;
+                        self.needs_refresh = true;
+                        self.needs_redraw = true;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Count total VMs visible in the current infra view (respects pool filter).
+    pub fn infra_vm_count(&self) -> usize {
+        self.infra
+            .sdi_pools
+            .iter()
+            .filter(|p| {
+                self.selected_sdi_pool
+                    .as_ref()
+                    .is_none_or(|sel| &p.pool_name == sel)
+            })
+            .map(|p| p.nodes.len())
+            .sum()
+    }
+
     /// Sync footer resource label. Called before draw.
     #[allow(dead_code)]
     pub fn sync_footer_resource_label(&mut self) {
@@ -1627,6 +1687,11 @@ impl App {
                 self.adjust_sidebar_scroll();
             }
             ActivePanel::Center => {
+                // Infra view: move VM cursor
+                if self.active_view == ActiveView::Infra {
+                    self.infra_vm_cursor = self.infra_vm_cursor.saturating_sub(1);
+                    return;
+                }
                 if self.active_tab == 1 {
                     // Top tab: line-by-line scroll (Paragraph, no row selection)
                     self.table_scroll_offset = self.table_scroll_offset.saturating_sub(1);
@@ -1650,6 +1715,14 @@ impl App {
                 self.adjust_sidebar_scroll();
             }
             ActivePanel::Center => {
+                // Infra view: move VM cursor
+                if self.active_view == ActiveView::Infra {
+                    let vm_count = self.infra_vm_count();
+                    if vm_count > 0 && self.infra_vm_cursor + 1 < vm_count {
+                        self.infra_vm_cursor += 1;
+                    }
+                    return;
+                }
                 if self.active_tab == 1 {
                     // Top tab: line-by-line scroll (Paragraph, no row selection)
                     let max = self.top_tab_line_count();
@@ -1827,6 +1900,11 @@ impl App {
     }
 
     fn handle_enter(&mut self) {
+        // Infra view: Enter on VM jumps to K8s node view
+        if self.active_panel == ActivePanel::Center && self.active_view == ActiveView::Infra {
+            self.handle_infra_vm_enter();
+            return;
+        }
         if self.active_panel != ActivePanel::Sidebar {
             return;
         }
@@ -1892,18 +1970,30 @@ impl App {
                 self.fetched_resources.clear();
             }
             NodeType::InfraHeader => {
-                if self.tree[idx].expanded {
-                    // Collapse: remove children and reset loaded flag
-                    self.tree[idx].expanded = false;
-                    self.tree[idx].children_loaded = false;
-                    self.remove_children(idx);
-                } else {
+                if !self.tree[idx].expanded {
                     // Expand: populate infra children from cached data
                     self.tree[idx].expanded = true;
                     self.sync_infra_tree();
                 }
+                // Switch to infra visualization view
+                self.active_view = ActiveView::Infra;
+                self.selected_sdi_pool = None;
+                self.infra_vm_cursor = 0;
+                self.infra_scroll_offset = 0;
+                self.active_tab = 0;
+                self.active_panel = ActivePanel::Center;
+                self.needs_redraw = true;
             }
-            NodeType::InfraItem(_) => {}
+            NodeType::InfraItem(pool_name) => {
+                let pool_name = pool_name.clone();
+                self.active_view = ActiveView::Infra;
+                self.selected_sdi_pool = Some(pool_name);
+                self.infra_vm_cursor = 0;
+                self.infra_scroll_offset = 0;
+                self.active_tab = 0;
+                self.active_panel = ActivePanel::Center;
+                self.needs_redraw = true;
+            }
         }
     }
 
@@ -2740,6 +2830,9 @@ mod tests {
             snapshots: vec![],
             snapshot_index: HashMap::new(),
             infra: InfraSnapshot::default(),
+            selected_sdi_pool: None,
+            infra_vm_cursor: 0,
+            infra_scroll_offset: 0,
             api_latency_ms: 0,
             show_help: false,
             help_scroll_offset: 0,

@@ -81,6 +81,12 @@ pub struct NodeInfo {
     pub kubelet_version: String,
     /// Pre-computed display string for Top tab: "  v1.33.1  CPU: 8/8  MEM: 7.5Gi/7.8Gi"
     pub top_display: String,
+    /// InternalIP address from node.status.addresses (for VM-to-Node mapping)
+    pub internal_ip: String,
+    /// Per-node CPU usage as percentage of capacity. None = no metrics.
+    pub cpu_usage_percent: Option<f64>,
+    /// Per-node MEM usage as percentage of capacity. None = no metrics.
+    pub mem_usage_percent: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -376,6 +382,12 @@ pub async fn fetch_nodes(client: &Client, timeout: Duration) -> Result<Vec<NodeI
                 kubelet_version, cpu_display, mem_display
             );
 
+            let internal_ip = status
+                .and_then(|s| s.addresses.as_ref())
+                .and_then(|addrs| addrs.iter().find(|a| a.type_ == "InternalIP"))
+                .map(|a| a.address.clone())
+                .unwrap_or_default();
+
             NodeInfo {
                 name: meta.name.clone().unwrap_or_default(),
                 status: node_status,
@@ -392,6 +404,9 @@ pub async fn fetch_nodes(client: &Client, timeout: Duration) -> Result<Vec<NodeI
                 mem_display,
                 kubelet_version,
                 top_display,
+                internal_ip,
+                cpu_usage_percent: None,
+                mem_usage_percent: None,
             }
         })
         .collect())
@@ -921,6 +936,26 @@ pub async fn fetch_cluster_snapshot(
         node_metrics.as_deref(),
         pod_metrics.as_deref(),
     );
+
+    // Enrich nodes with per-node metrics for infra view VM-to-Node mapping
+    if let Some(ref metrics) = node_metrics {
+        for node in &mut nodes {
+            if let Some(nm) = metrics.iter().find(|m| m.name == node.name) {
+                let cpu_cap = parse_k8s_quantity(&node.cpu_capacity).unwrap_or(0.0);
+                let mem_cap = parse_k8s_quantity(&node.mem_capacity).unwrap_or(0.0);
+                node.cpu_usage_percent = Some(if cpu_cap > 0.0 {
+                    (nm.cpu_usage / cpu_cap) * 100.0
+                } else {
+                    0.0
+                });
+                node.mem_usage_percent = Some(if mem_cap > 0.0 {
+                    (nm.mem_usage / mem_cap) * 100.0
+                } else {
+                    0.0
+                });
+            }
+        }
+    }
 
     Ok(ClusterSnapshot {
         name: cluster_name.to_string(),
