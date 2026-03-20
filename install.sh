@@ -477,13 +477,7 @@ wait_for_tunnel_port() {
     "${cluster_name}: 터널 포트 ${port} 준비 대기 중 (최대 ${max_wait}초)...")"
 
   while [[ $elapsed -lt $max_wait ]]; do
-    # Check tunnel process is still alive first
-    if ! kill -0 "$pid" 2>/dev/null; then
-      log_error "$(i18n "${cluster_name}: SSH tunnel process (PID $pid) died before port ${port} became ready" \
-        "${cluster_name}: SSH 터널 프로세스 (PID $pid) 포트 ${port} 준비 전 종료됨")"
-      return 1
-    fi
-    # Check if local port is now listening (try nc first, then ss, then /dev/tcp)
+    # Check if local port is now listening (port check FIRST — more reliable than PID check)
     if nc -z localhost "$port" 2>/dev/null; then
       log_info "$(i18n "${cluster_name}: tunnel port ${port} is listening (${elapsed}s)" \
         "${cluster_name}: 터널 포트 ${port} 수신 준비 완료 (${elapsed}초)")"
@@ -492,6 +486,20 @@ wait_for_tunnel_port() {
       log_info "$(i18n "${cluster_name}: tunnel port ${port} is listening (${elapsed}s)" \
         "${cluster_name}: 터널 포트 ${port} 수신 준비 완료 (${elapsed}초)")"
       return 0
+    fi
+    # PID check as secondary signal — only fail if process is dead AND port not bound
+    if ! kill -0 "$pid" 2>/dev/null; then
+      # Double-check port one more time (process may have daemonized with a new PID)
+      sleep 1
+      if nc -z localhost "$port" 2>/dev/null || \
+         { command -v ss &>/dev/null && ss -tlnp 2>/dev/null | grep -q ":${port} "; }; then
+        log_info "$(i18n "${cluster_name}: tunnel port ${port} is listening (process re-parented)" \
+          "${cluster_name}: 터널 포트 ${port} 수신 준비 완료 (프로세스 재배치됨)")"
+        return 0
+      fi
+      log_error "$(i18n "${cluster_name}: SSH tunnel process (PID $pid) died before port ${port} became ready" \
+        "${cluster_name}: SSH 터널 프로세스 (PID $pid) 포트 ${port} 준비 전 종료됨")"
+      return 1
     fi
     sleep 1
     elapsed=$((elapsed + 1))
@@ -832,6 +840,18 @@ validate_tunnel_credentials() {
       exit 2
     fi
     log_info "$(i18n "SSH key credential verified: $ssh_key" "SSH 키 자격 증명 확인: $ssh_key")"
+
+    # Ensure SSH agent is running with the key loaded (required for libvirt provider qemu+ssh)
+    if ! ssh-add -l &>/dev/null; then
+      if [[ -z "$SSH_AUTH_SOCK" ]]; then
+        eval "$(ssh-agent -s)" &>/dev/null
+        log_info "$(i18n "Started SSH agent (PID: $SSH_AGENT_PID)" "SSH 에이전트 시작 (PID: $SSH_AGENT_PID)")"
+      fi
+      ssh-add "$ssh_key" &>/dev/null 2>&1 || true
+      log_info "$(i18n "SSH key loaded into agent: $ssh_key" "SSH 키를 에이전트에 로드: $ssh_key")"
+    else
+      log_info "$(i18n "SSH agent already running with key loaded" "SSH 에이전트 이미 실행 중 (키 로드 완료)")"
+    fi
   fi
 
   # --- Cloudflare Tunnel credential validation ---
