@@ -12,6 +12,7 @@ pub mod filter;
 #[allow(dead_code)]
 pub mod help_overlay;
 pub mod infra;
+pub mod infra_view;
 #[allow(dead_code)]
 pub mod keybinding_registry;
 pub mod kube_client;
