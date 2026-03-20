@@ -74,8 +74,8 @@ mask_secrets() {
 }
 
 log_raw() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | mask_secrets >> "$LOG_FILE"; }
-log_info() { log_raw "INFO: $*"; echo -e "${GREEN}[INFO]${NC} $*"; }
-log_warn() { log_raw "WARN: $*"; echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_info() { log_raw "INFO: $*"; echo -e "${GREEN}[INFO]${NC} $*" >&2; }
+log_warn() { log_raw "WARN: $*"; echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 log_error() { log_raw "ERROR: $*"; echo -e "${RED}[ERROR]${NC} $*" >&2; }
 log_phase() { log_raw "PHASE: $*"; echo -e "\n${BOLD}${BLUE}═══ $* ═══${NC}\n"; }
 
@@ -843,7 +843,7 @@ validate_tunnel_credentials() {
 
     # Ensure SSH agent is running with the key loaded (required for libvirt provider qemu+ssh)
     if ! ssh-add -l &>/dev/null; then
-      if [[ -z "$SSH_AUTH_SOCK" ]]; then
+      if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
         eval "$(ssh-agent -s)" &>/dev/null
         log_info "$(i18n "Started SSH agent (PID: $SSH_AGENT_PID)" "SSH 에이전트 시작 (PID: $SSH_AGENT_PID)")"
       fi
