@@ -284,39 +284,68 @@ pub async fn discover_clusters_streaming(
                             return;
                         } else if probe == ProbeResult::Unauthorized {
                             // 401: stale token — invalidate, re-provision, retry once
-                            let _ = tx.send(DiscoverEvent::Log {
-                                message: format!("{}: 401 — re-provisioning SA token", cluster_name),
-                            }).await;
+                            let _ = tx
+                                .send(DiscoverEvent::Log {
+                                    message: format!(
+                                        "{}: 401 — re-provisioning SA token",
+                                        cluster_name
+                                    ),
+                                })
+                                .await;
                             super::sa_provisioner::invalidate_cached_token(&kubeconfig_path);
                             if let Some(ref bh) = bastion {
                                 if let Ok(new_token) = super::sa_provisioner::provision_dash_sa(
-                                    &kubeconfig_path, &cluster_name, bh,
-                                ).await {
-                                    let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &new_token);
+                                    &kubeconfig_path,
+                                    &cluster_name,
+                                    bh,
+                                )
+                                .await
+                                {
+                                    let _ = super::sa_provisioner::cache_token(
+                                        &kubeconfig_path,
+                                        &new_token,
+                                    );
                                     if let Ok(new_client) = build_client_with_endpoint(
-                                        &kubeconfig_path, ep, Some(&new_token),
-                                    ).await {
-                                        if probe_client(&new_client, CF_DOMAIN_PROBE_TIMEOUT).await {
-                                            let _ = tx.send(DiscoverEvent::Log {
-                                                message: format!("{}: reconnected after token refresh", cluster_name),
-                                            }).await;
+                                        &kubeconfig_path,
+                                        ep,
+                                        Some(&new_token),
+                                    )
+                                    .await
+                                    {
+                                        if probe_client(&new_client, CF_DOMAIN_PROBE_TIMEOUT).await
+                                        {
+                                            let _ = tx
+                                                .send(DiscoverEvent::Log {
+                                                    message: format!(
+                                                        "{}: reconnected after token refresh",
+                                                        cluster_name
+                                                    ),
+                                                })
+                                                .await;
                                             let ver = fetch_server_version(&new_client).await;
-                                            let _ = tx.send(DiscoverEvent::Connected(ClusterClient {
-                                                name: cluster_name,
-                                                kubeconfig_path,
-                                                client: new_client,
-                                                tunnel_pid: None,
-                                                server_version: ver,
-                                                endpoint: Some(ep.clone()),
-                                            })).await;
+                                            let _ = tx
+                                                .send(DiscoverEvent::Connected(ClusterClient {
+                                                    name: cluster_name,
+                                                    kubeconfig_path,
+                                                    client: new_client,
+                                                    tunnel_pid: None,
+                                                    server_version: ver,
+                                                    endpoint: Some(ep.clone()),
+                                                }))
+                                                .await;
                                             return;
                                         }
                                     }
                                 }
                             }
-                            let _ = tx.send(DiscoverEvent::Log {
-                                message: format!("{}: token re-provision failed, falling back", cluster_name),
-                            }).await;
+                            let _ = tx
+                                .send(DiscoverEvent::Log {
+                                    message: format!(
+                                        "{}: token re-provision failed, falling back",
+                                        cluster_name
+                                    ),
+                                })
+                                .await;
                         } else {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
@@ -528,39 +557,68 @@ pub async fn discover_clusters_streaming_filtered(
                             return;
                         } else if probe == ProbeResult::Unauthorized {
                             // 401: stale token — invalidate, re-provision, retry once
-                            let _ = tx.send(DiscoverEvent::Log {
-                                message: format!("{}: 401 — re-provisioning SA token", cluster_name),
-                            }).await;
+                            let _ = tx
+                                .send(DiscoverEvent::Log {
+                                    message: format!(
+                                        "{}: 401 — re-provisioning SA token",
+                                        cluster_name
+                                    ),
+                                })
+                                .await;
                             super::sa_provisioner::invalidate_cached_token(&kubeconfig_path);
                             if let Some(ref bh) = bastion {
                                 if let Ok(new_token) = super::sa_provisioner::provision_dash_sa(
-                                    &kubeconfig_path, &cluster_name, bh,
-                                ).await {
-                                    let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &new_token);
+                                    &kubeconfig_path,
+                                    &cluster_name,
+                                    bh,
+                                )
+                                .await
+                                {
+                                    let _ = super::sa_provisioner::cache_token(
+                                        &kubeconfig_path,
+                                        &new_token,
+                                    );
                                     if let Ok(new_client) = build_client_with_endpoint(
-                                        &kubeconfig_path, ep, Some(&new_token),
-                                    ).await {
-                                        if probe_client(&new_client, CF_DOMAIN_PROBE_TIMEOUT).await {
-                                            let _ = tx.send(DiscoverEvent::Log {
-                                                message: format!("{}: reconnected after token refresh", cluster_name),
-                                            }).await;
+                                        &kubeconfig_path,
+                                        ep,
+                                        Some(&new_token),
+                                    )
+                                    .await
+                                    {
+                                        if probe_client(&new_client, CF_DOMAIN_PROBE_TIMEOUT).await
+                                        {
+                                            let _ = tx
+                                                .send(DiscoverEvent::Log {
+                                                    message: format!(
+                                                        "{}: reconnected after token refresh",
+                                                        cluster_name
+                                                    ),
+                                                })
+                                                .await;
                                             let ver = fetch_server_version(&new_client).await;
-                                            let _ = tx.send(DiscoverEvent::Connected(ClusterClient {
-                                                name: cluster_name,
-                                                kubeconfig_path,
-                                                client: new_client,
-                                                tunnel_pid: None,
-                                                server_version: ver,
-                                                endpoint: Some(ep.clone()),
-                                            })).await;
+                                            let _ = tx
+                                                .send(DiscoverEvent::Connected(ClusterClient {
+                                                    name: cluster_name,
+                                                    kubeconfig_path,
+                                                    client: new_client,
+                                                    tunnel_pid: None,
+                                                    server_version: ver,
+                                                    endpoint: Some(ep.clone()),
+                                                }))
+                                                .await;
                                             return;
                                         }
                                     }
                                 }
                             }
-                            let _ = tx.send(DiscoverEvent::Log {
-                                message: format!("{}: token re-provision failed, falling back", cluster_name),
-                            }).await;
+                            let _ = tx
+                                .send(DiscoverEvent::Log {
+                                    message: format!(
+                                        "{}: token re-provision failed, falling back",
+                                        cluster_name
+                                    ),
+                                })
+                                .await;
                         } else {
                             let _ = tx
                                 .send(DiscoverEvent::Log {
@@ -784,14 +842,29 @@ pub async fn discover_clusters(dir: &Path) -> Result<Vec<ClusterClient>> {
                             super::sa_provisioner::invalidate_cached_token(&kubeconfig_path);
                             if let Some(ref bh) = bastion {
                                 if let Ok(new_token) = super::sa_provisioner::provision_dash_sa(
-                                    &kubeconfig_path, &cluster_name, bh,
-                                ).await {
-                                    let _ = super::sa_provisioner::cache_token(&kubeconfig_path, &new_token);
+                                    &kubeconfig_path,
+                                    &cluster_name,
+                                    bh,
+                                )
+                                .await
+                                {
+                                    let _ = super::sa_provisioner::cache_token(
+                                        &kubeconfig_path,
+                                        &new_token,
+                                    );
                                     if let Ok(new_client) = build_client_with_endpoint(
-                                        &kubeconfig_path, ep, Some(&new_token),
-                                    ).await {
-                                        if probe_client(&new_client, CF_DOMAIN_PROBE_TIMEOUT).await {
-                                            eprintln!("{}: reconnected after token refresh ({})", cluster_name, ep);
+                                        &kubeconfig_path,
+                                        ep,
+                                        Some(&new_token),
+                                    )
+                                    .await
+                                    {
+                                        if probe_client(&new_client, CF_DOMAIN_PROBE_TIMEOUT).await
+                                        {
+                                            eprintln!(
+                                                "{}: reconnected after token refresh ({})",
+                                                cluster_name, ep
+                                            );
                                             let ver = fetch_server_version(&new_client).await;
                                             return Some(ClusterClient {
                                                 name: cluster_name,
@@ -1504,7 +1577,10 @@ mod tests {
         let (url, host, port) = result.unwrap();
         assert_eq!(url, "https://sandbox-api.jinwang.dev");
         assert_eq!(host, "sandbox-api.jinwang.dev");
-        assert_eq!(port, 6443u16, "default port should be 6443 when no port specified");
+        assert_eq!(
+            port, 6443u16,
+            "default port should be 6443 when no port specified"
+        );
     }
 
     /// Four clusters (matching 4 bare-metal node topology) all appear in scan.

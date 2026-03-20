@@ -107,9 +107,8 @@ pub fn compute_cluster_status(clusters: &[(String, u32, bool)]) -> LayerStatus {
 
 /// Compute cluster layer status with node readiness detail.
 /// clusters: Vec<(name, total_nodes, ready_nodes, has_kubeconfig)>
-pub fn compute_cluster_status_with_readiness(
-    clusters: &[(String, u32, u32, bool)],
-) -> LayerStatus {
+#[allow(dead_code)]
+pub fn compute_cluster_status_with_readiness(clusters: &[(String, u32, u32, bool)]) -> LayerStatus {
     if clusters.is_empty() {
         return LayerStatus {
             name: "Clusters".to_string(),

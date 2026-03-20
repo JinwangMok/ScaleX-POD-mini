@@ -291,7 +291,11 @@ keycloak:
         let secrets = make_secrets_token_only();
         let specs = secrets_for_cluster("management", &secrets);
 
-        assert_eq!(specs.len(), 3, "management cluster needs 3 secrets with token fallback");
+        assert_eq!(
+            specs.len(),
+            3,
+            "management cluster needs 3 secrets with token fallback"
+        );
 
         // cloudflared-tunnel-token (legacy token mode, only when no credentials_file)
         assert_eq!(specs[2].name, "cloudflared-tunnel-token");
@@ -321,7 +325,9 @@ keycloak:
         };
         let specs = secrets_for_cluster("management", &secrets);
         assert_eq!(specs.len(), 2, "without cloudflare, only 2 secrets needed");
-        assert!(specs.iter().all(|s| s.name != "cloudflared-tunnel-credentials"));
+        assert!(specs
+            .iter()
+            .all(|s| s.name != "cloudflared-tunnel-credentials"));
         assert!(specs.iter().all(|s| s.name != "cloudflared-tunnel-token"));
     }
 
@@ -522,7 +528,11 @@ cloudflare:
             .split("---")
             .filter(|s| !s.trim().is_empty())
             .collect();
-        assert_eq!(docs.len(), 3, "management + cloudflare credentials = 3 secrets");
+        assert_eq!(
+            docs.len(),
+            3,
+            "management + cloudflare credentials = 3 secrets"
+        );
         assert!(result.contains("cloudflared-tunnel-credentials"));
         assert!(result.contains("credentials.json"));
     }

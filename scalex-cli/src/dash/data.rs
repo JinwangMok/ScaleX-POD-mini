@@ -1109,7 +1109,10 @@ pub fn run_e2e_checks(
         }
     }
 
-    let passed = checks.iter().filter(|c| c.status == CheckStatus::Pass).count();
+    let passed = checks
+        .iter()
+        .filter(|c| c.status == CheckStatus::Pass)
+        .count();
     let failed = checks
         .iter()
         .filter(|c| c.status == CheckStatus::Fail)
@@ -1171,16 +1174,16 @@ fn check_cluster_api_reachable(
             CheckStatus::Fail
         },
         message: if all_ok {
-            format!(
-                "All {} cluster(s) API reachable",
-                expected_clusters.len()
-            )
+            format!("All {} cluster(s) API reachable", expected_clusters.len())
         } else {
             let missing: Vec<&&str> = expected_clusters
                 .iter()
                 .filter(|&&c| !discovered.contains(&c))
                 .collect();
-            format!("Cluster(s) unreachable: {}", missing.iter().map(|c| **c).collect::<Vec<_>>().join(", "))
+            format!(
+                "Cluster(s) unreachable: {}",
+                missing.iter().map(|c| **c).collect::<Vec<_>>().join(", ")
+            )
         },
         details,
     }
@@ -1227,7 +1230,11 @@ fn check_all_nodes_ready(snapshots: &[ClusterSnapshot]) -> CheckResult {
         },
         message: if all_ok {
             let total: usize = snapshots.iter().map(|s| s.nodes.len()).sum();
-            format!("All {} nodes Ready across {} cluster(s)", total, snapshots.len())
+            format!(
+                "All {} nodes Ready across {} cluster(s)",
+                total,
+                snapshots.len()
+            )
         } else {
             "Some nodes not Ready".to_string()
         },
@@ -1262,10 +1269,7 @@ fn check_namespaces_listed(snapshots: &[ClusterSnapshot]) -> CheckResult {
             CheckStatus::Fail
         },
         message: if all_ok {
-            format!(
-                "Namespace listing OK on {} cluster(s)",
-                snapshots.len()
-            )
+            format!("Namespace listing OK on {} cluster(s)", snapshots.len())
         } else {
             "Namespace listing failed on some cluster(s)".to_string()
         },
@@ -1300,7 +1304,12 @@ fn check_argocd_synced(snapshots: &[ClusterSnapshot]) -> CheckResult {
             let passed = match argocd_server {
                 Some(d) => {
                     // Parse "N/M" ready format to check availability
-                    d.ready.split('/').next().and_then(|n| n.parse::<i32>().ok()).unwrap_or(0) > 0
+                    d.ready
+                        .split('/')
+                        .next()
+                        .and_then(|n| n.parse::<i32>().ok())
+                        .unwrap_or(0)
+                        > 0
                 }
                 None => false,
             };
@@ -1377,10 +1386,7 @@ fn check_cf_tunnel_running(snapshots: &[ClusterSnapshot]) -> CheckResult {
                 })
                 .collect();
 
-            let running = cf_pods
-                .iter()
-                .filter(|p| p.status == "Running")
-                .count();
+            let running = cf_pods.iter().filter(|p| p.status == "Running").count();
             let total = cf_pods.len();
 
             let passed = running > 0;
@@ -1408,7 +1414,10 @@ fn check_cf_tunnel_running(snapshots: &[ClusterSnapshot]) -> CheckResult {
                 } else if cf_pods.is_empty() {
                     "CF Tunnel pod not found in tower cluster".to_string()
                 } else {
-                    format!("CF Tunnel not running — {}/{} pod(s) healthy", running, total)
+                    format!(
+                        "CF Tunnel not running — {}/{} pod(s) healthy",
+                        running, total
+                    )
                 },
                 details: vec![CheckDetail {
                     cluster: "tower".to_string(),
@@ -1481,8 +1490,7 @@ fn check_cilium_healthy(snapshots: &[ClusterSnapshot]) -> CheckResult {
         return CheckResult {
             name: "cilium_healthy".to_string(),
             status: CheckStatus::Skip,
-            message: "hubble-relay not deployed on any cluster — skipping Cilium check"
-                .to_string(),
+            message: "hubble-relay not deployed on any cluster — skipping Cilium check".to_string(),
             details,
         };
     }
@@ -1530,7 +1538,9 @@ fn check_kyverno_healthy(snapshots: &[ClusterSnapshot]) -> CheckResult {
                         || p.name.starts_with("kyverno-background")
                         || p.name.starts_with("kyverno-reports")
                         || p.name == "kyverno"
-                        || (p.name.starts_with("kyverno-") && !p.name.contains("cleanup") && !p.name.contains("test")))
+                        || (p.name.starts_with("kyverno-")
+                            && !p.name.contains("cleanup")
+                            && !p.name.contains("test")))
             })
             .collect();
 
@@ -1542,7 +1552,10 @@ fn check_kyverno_healthy(snapshots: &[ClusterSnapshot]) -> CheckResult {
             });
         } else {
             any_deployed = true;
-            let running = kyverno_pods.iter().filter(|p| p.status == "Running").count();
+            let running = kyverno_pods
+                .iter()
+                .filter(|p| p.status == "Running")
+                .count();
             let total = kyverno_pods.len();
             // Require at least one Running kyverno pod (admission controller)
             let passed = running > 0;
@@ -2631,11 +2644,7 @@ mod tests {
         ClusterSnapshot {
             name: cluster_name.into(),
             health: HealthStatus::Green,
-            namespaces: vec![
-                "default".into(),
-                "kube-system".into(),
-                "monitoring".into(),
-            ],
+            namespaces: vec!["default".into(), "kube-system".into(), "monitoring".into()],
             nodes: vec![NodeInfo {
                 name: "node-0".into(),
                 status: "Ready".into(),
@@ -2836,7 +2845,11 @@ mod tests {
         let nodes = vec![
             NodeInfo {
                 name: format!("{}-cp-0", name),
-                status: if nodes_ready { "Ready".into() } else { "NotReady".into() },
+                status: if nodes_ready {
+                    "Ready".into()
+                } else {
+                    "NotReady".into()
+                },
                 roles: vec!["control-plane".into()],
                 ..Default::default()
             },
@@ -2876,19 +2889,17 @@ mod tests {
             });
         }
 
-        let mut pods = vec![
-            PodInfo {
-                name: "coredns-abc".into(),
-                namespace: "kube-system".into(),
-                status: "Running".into(),
-                ready: "1/1".into(),
-                restarts: 0,
-                restarts_display: "0".into(),
-                age: "1d".into(),
-                node: format!("{}-cp-0", name),
-                containers: vec!["coredns".into()],
-            },
-        ];
+        let mut pods = vec![PodInfo {
+            name: "coredns-abc".into(),
+            namespace: "kube-system".into(),
+            status: "Running".into(),
+            ready: "1/1".into(),
+            restarts: 0,
+            restarts_display: "0".into(),
+            age: "1d".into(),
+            node: format!("{}-cp-0", name),
+            containers: vec!["coredns".into()],
+        }];
         if with_cf_tunnel {
             pods.push(PodInfo {
                 name: "cloudflared-tunnel-xyz".into(),
@@ -2931,7 +2942,11 @@ mod tests {
 
         ClusterSnapshot {
             name: name.into(),
-            health: if nodes_ready { HealthStatus::Green } else { HealthStatus::Red },
+            health: if nodes_ready {
+                HealthStatus::Green
+            } else {
+                HealthStatus::Red
+            },
             namespaces: vec!["default".into(), "kube-system".into(), "argocd".into()],
             nodes,
             pods,
@@ -2956,9 +2971,11 @@ mod tests {
         assert_eq!(report.total, 7);
         for check in &report.checks {
             assert_eq!(
-                check.status, CheckStatus::Pass,
+                check.status,
+                CheckStatus::Pass,
                 "check '{}' should pass: {}",
-                check.name, check.message
+                check.name,
+                check.message
             );
         }
     }
@@ -3092,7 +3109,10 @@ mod tests {
         let cilium_check = &report.checks[5];
         assert_eq!(cilium_check.name, "cilium_healthy");
         assert_eq!(cilium_check.status, CheckStatus::Fail);
-        assert!(cilium_check.message.contains("DNS timeout") || cilium_check.message.contains("not Running"));
+        assert!(
+            cilium_check.message.contains("DNS timeout")
+                || cilium_check.message.contains("not Running")
+        );
     }
 
     #[test]
@@ -3179,7 +3199,11 @@ mod tests {
         };
 
         let report = run_e2e_checks(&snapshots, &["tower"], &inv);
-        let argocd_check = report.checks.iter().find(|c| c.name == "argocd_synced").unwrap();
+        let argocd_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "argocd_synced")
+            .unwrap();
 
         // Status must be KnownDegraded, not Fail
         assert_eq!(
@@ -3209,7 +3233,11 @@ mod tests {
         let tower = make_check_snapshot("tower", true, false, true, true, true);
         let snapshots = vec![tower];
         let report = run_e2e_checks(&snapshots, &["tower"], &Default::default());
-        let argocd_check = report.checks.iter().find(|c| c.name == "argocd_synced").unwrap();
+        let argocd_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "argocd_synced")
+            .unwrap();
         assert_eq!(
             argocd_check.status,
             CheckStatus::Fail,
@@ -3228,7 +3256,10 @@ mod tests {
         // metrics-server reports CPU in nanocores (e.g., "250000000n" = 0.25 cores)
         let cpu = parse_k8s_quantity("250000000n");
         assert!(cpu.is_some());
-        assert!((cpu.unwrap() - 0.25).abs() < 1e-6, "250000000n should parse to 0.25 cores");
+        assert!(
+            (cpu.unwrap() - 0.25).abs() < 1e-6,
+            "250000000n should parse to 0.25 cores"
+        );
     }
 
     #[test]
@@ -3236,7 +3267,10 @@ mod tests {
         // metrics-server also reports CPU in millicores (e.g., "125m" = 0.125 cores)
         let cpu = parse_k8s_quantity("125m");
         assert!(cpu.is_some());
-        assert!((cpu.unwrap() - 0.125).abs() < 1e-9, "125m should parse to 0.125 cores");
+        assert!(
+            (cpu.unwrap() - 0.125).abs() < 1e-9,
+            "125m should parse to 0.125 cores"
+        );
     }
 
     #[test]
@@ -3245,7 +3279,10 @@ mod tests {
         let mem = parse_k8s_quantity("1048576Ki");
         assert!(mem.is_some());
         let gib = 1024.0 * 1024.0 * 1024.0;
-        assert!((mem.unwrap() - gib).abs() < 1.0, "1048576Ki should parse to 1GiB");
+        assert!(
+            (mem.unwrap() - gib).abs() < 1.0,
+            "1048576Ki should parse to 1GiB"
+        );
     }
 
     #[test]
@@ -3255,7 +3292,7 @@ mod tests {
         let nodes = vec![NodeInfo {
             name: "n1".into(),
             status: "Ready".into(),
-            cpu_capacity: "4".into(),         // 4 cores
+            cpu_capacity: "4".into(),          // 4 cores
             mem_capacity: "8589934592".into(), // 8GiB in bytes
             cpu_allocatable: "4".into(),
             mem_allocatable: "8589934592".into(),
@@ -3264,7 +3301,7 @@ mod tests {
         }];
         let metrics = vec![NodeMetrics {
             name: "n1".into(),
-            cpu_usage: 1.0,                       // 1 core = 25%
+            cpu_usage: 1.0,                            // 1 core = 25%
             mem_usage: 2.0 * 1024.0 * 1024.0 * 1024.0, // 2GiB = 25%
         }];
         let usage = compute_resource_usage(&nodes, &[], Some(&metrics), None);
@@ -3342,7 +3379,8 @@ mod tests {
                     assert!(
                         result.is_some(),
                         "parse_k8s_quantity({:?}) returned None, expected Some({})",
-                        input, exp
+                        input,
+                        exp
                     );
                     assert!(
                         (result.unwrap() - exp).abs() < exp.abs() * 1e-4 + 1.0,
@@ -3369,12 +3407,12 @@ mod tests {
         // Verify format_k8s_memory handles typical metrics-server outputs without producing
         // garbled output or panicking (ensures "no parse errors" AC for memory display)
         let cases = [
-            ("7816040Ki", "7.5Gi"),     // Node memory (Ki → Gi)
-            ("8Gi", "8Gi"),             // Already in Gi
-            ("512Mi", "512Mi"),         // Already in Mi
-            ("1073741824", "1Gi"),      // Plain bytes → Gi
-            ("0Ki", "0B"),              // Zero bytes
-            ("", "N/A"),                // Empty → explicit N/A (not blank)
+            ("7816040Ki", "7.5Gi"), // Node memory (Ki → Gi)
+            ("8Gi", "8Gi"),         // Already in Gi
+            ("512Mi", "512Mi"),     // Already in Mi
+            ("1073741824", "1Gi"),  // Plain bytes → Gi
+            ("0Ki", "0B"),          // Zero bytes
+            ("", "N/A"),            // Empty → explicit N/A (not blank)
         ];
         for (input, expected) in &cases {
             let result = format_k8s_memory(input);

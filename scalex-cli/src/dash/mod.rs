@@ -1,10 +1,10 @@
 pub mod app;
 #[allow(dead_code)]
 pub mod command_mode;
-pub mod degradation;
 #[allow(dead_code)]
 pub mod container_selector;
 pub mod data;
+pub mod degradation;
 #[allow(dead_code)]
 pub mod dynamic_resource;
 pub mod event;
@@ -164,9 +164,8 @@ pub mod headless {
         // Checks mode: run 7 E2E health checks and return pass/fail JSON
         if is_checks {
             let expected: Vec<&str> = target_clusters.iter().map(|c| c.name.as_str()).collect();
-            let degradations = degradation::load(
-                &std::path::PathBuf::from("config/known_degradations.yaml"),
-            );
+            let degradations =
+                degradation::load(&std::path::PathBuf::from("config/known_degradations.yaml"));
             let report = data::run_e2e_checks(&cluster_data, &expected, &degradations);
             let output = serde_json::to_string_pretty(&report)?;
             println!("{}", output);
@@ -280,22 +279,21 @@ pub mod once {
             };
             println!(
                 " {}{}{} [{}]{} {}{}{}",
-                BOLD, color, symbol, label, RESET,
-                color, check.name, RESET
+                BOLD, color, symbol, label, RESET, color, check.name, RESET
             );
-            println!(
-                "        {}{}{}",
-                DIM, check.message, RESET
-            );
+            println!("        {}{}{}", DIM, check.message, RESET);
             // Per-cluster detail lines (indented)
             for detail in &check.details {
                 let cluster_prefix = format!("  {}", detail.cluster);
                 if detail.passed {
-                    println!("        {}  {}{}{}", DIM, cluster_prefix, RESET, format!(" — {}", detail.message));
+                    println!(
+                        "        {}  {} — {}{}",
+                        DIM, cluster_prefix, detail.message, RESET
+                    );
                 } else {
                     println!(
-                        "        {}{}  {}{}{}",
-                        color, cluster_prefix, detail.message, RESET, ""
+                        "        {}{}  {}{}",
+                        color, cluster_prefix, detail.message, RESET
                     );
                 }
             }
@@ -312,7 +310,10 @@ pub mod once {
         };
         println!(
             " {}{}Overall: [{}]{} — {} pass  {} fail  {} known-degraded  {} total",
-            BOLD, overall_color, overall_label, RESET,
+            BOLD,
+            overall_color,
+            overall_label,
+            RESET,
             report.passed,
             report.failed,
             report.known_degraded,

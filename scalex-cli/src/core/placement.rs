@@ -88,7 +88,7 @@ impl UnplacedVm {
 ///    - Weighted composite score based on remaining headroom (CPU:MEM:DISK = 1:2:1)
 ///    - Same-pool anti-affinity penalty (x0.3) when `spread: true`
 ///    - Cross-pool VM count penalty (x0.85 per existing VM) to balance load
-///    Assign to the best candidate. Deduct resources cumulatively.
+///    - Assign to the best candidate. Deduct resources cumulatively.
 ///
 /// Mutates `spec` in-place: fills in `node.host = Some(chosen)` for unplaced VMs.
 /// Returns a PlacementPlan describing all assignments.
@@ -142,11 +142,7 @@ pub fn resolve_placement(
                     budget.mem_gb -= node.mem_gb as f64;
                     budget.disk_gb -= node.disk_gb as f64;
                     budget.vm_count += 1;
-                    if node
-                        .devices
-                        .as_ref()
-                        .map_or(false, |d| d.gpu_passthrough)
-                    {
+                    if node.devices.as_ref().is_some_and(|d| d.gpu_passthrough) {
                         budget.gpu_assigned += 1;
                     }
                 }
@@ -175,10 +171,7 @@ pub fn resolve_placement(
                 cpu: node.cpu as f64,
                 mem_gb: node.mem_gb as f64,
                 disk_gb: node.disk_gb as f64,
-                needs_gpu: node
-                    .devices
-                    .as_ref()
-                    .map_or(false, |d| d.gpu_passthrough),
+                needs_gpu: node.devices.as_ref().is_some_and(|d| d.gpu_passthrough),
                 candidate_hosts: pool.placement.hosts.clone(),
                 spread: pool.placement.spread,
             });
@@ -339,6 +332,7 @@ pub fn format_placement_table(plan: &PlacementPlan) -> String {
 }
 
 /// Format placement plan with per-host utilization summary.
+#[allow(dead_code)]
 pub fn format_placement_detail(
     plan: &PlacementPlan,
     pool_summary: &ResourcePoolSummary,
@@ -386,9 +380,7 @@ mod tests {
         )
     }
 
-    fn make_pool_summary_with_gpu(
-        nodes: Vec<(&str, u32, u64, u64, usize)>,
-    ) -> ResourcePoolSummary {
+    fn make_pool_summary_with_gpu(nodes: Vec<(&str, u32, u64, u64, usize)>) -> ResourcePoolSummary {
         let node_summaries: Vec<NodeResourceSummary> = nodes
             .iter()
             .map(|(name, cpu, mem_mb, disk_gb, gpus)| NodeResourceSummary {

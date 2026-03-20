@@ -556,14 +556,8 @@ fn render_center(f: &mut Frame, app: &App, area: Rect) {
                 .fg(theme::BRIGHT_AQUA)
                 .add_modifier(Modifier::BOLD),
         ));
-        let pool_label = app
-            .selected_sdi_pool
-            .as_deref()
-            .unwrap_or("All Pools");
-        title_spans.push(Span::styled(
-            pool_label,
-            Style::default().fg(theme::FG),
-        ));
+        let pool_label = app.selected_sdi_pool.as_deref().unwrap_or("All Pools");
+        title_spans.push(Span::styled(pool_label, Style::default().fg(theme::FG)));
     } else if app.active_tab == 0 {
         for i in 0..6 {
             if SHORTCUT_VIEWS[i] == app.resource_view {

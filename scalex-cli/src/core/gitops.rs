@@ -331,8 +331,7 @@ mod tests {
 
     #[test]
     fn test_generate_cilium_values_tower() {
-        let values =
-            generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
+        let values = generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
         assert!(
             values.contains("k8sServiceHost: \"192.168.88.100\""),
             "tower cilium must have tower CP IP"
@@ -351,8 +350,7 @@ mod tests {
 
     #[test]
     fn test_generate_cilium_values_sandbox() {
-        let values =
-            generate_cilium_values("192.168.88.110", 6443, "sandbox.local", "sandbox", 2);
+        let values = generate_cilium_values("192.168.88.110", 6443, "sandbox.local", "sandbox", 2);
         assert!(
             values.contains("k8sServiceHost: \"192.168.88.110\""),
             "sandbox cilium must have sandbox CP IP"
@@ -365,10 +363,8 @@ mod tests {
 
     #[test]
     fn test_generate_cilium_values_different_clusters_differ() {
-        let tower =
-            generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
-        let sandbox =
-            generate_cilium_values("192.168.88.110", 6443, "sandbox.local", "sandbox", 2);
+        let tower = generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
+        let sandbox = generate_cilium_values("192.168.88.110", 6443, "sandbox.local", "sandbox", 2);
         assert_ne!(
             tower, sandbox,
             "different clusters must produce different values"
@@ -753,8 +749,7 @@ contexts:
     /// content that matches what the static gitops file should contain.
     #[test]
     fn test_generated_cilium_values_match_static_tower_structure() {
-        let generated =
-            generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
+        let generated = generate_cilium_values("192.168.88.100", 6443, "tower.local", "tower", 1);
         let static_content = include_str!("../../../gitops/tower/cilium/values.yaml");
 
         // Both must have the same k8sServiceHost

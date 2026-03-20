@@ -218,8 +218,7 @@ fn run_init(
                 .as_ref()
                 .map(|c| c.cluster_name.clone())
                 .unwrap_or_else(|| cluster.cluster_name.clone());
-            let cilium_cluster_id =
-                cluster.cilium.as_ref().map(|c| c.cluster_id).unwrap_or(0);
+            let cilium_cluster_id = cluster.cilium.as_ref().map(|c| c.cluster_id).unwrap_or(0);
             update_gitops_cilium_values(
                 &cluster.cluster_name,
                 &ip,
