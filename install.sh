@@ -2889,6 +2889,27 @@ phase_provision() {
           log_error "$(i18n "Auto mode: cluster init failed — aborting provisioning" "자동 모드: 클러스터 초기화 실패 — 프로비저닝 중단")"
           return 1
         fi
+        # Fix /opt/cni/bin permissions on all VMs after Kubespray (it sets kube:root 755,
+        # but Cilium init container needs write access to copy cilium-mount binary)
+        log_info "$(i18n "Fixing /opt/cni/bin permissions on all VMs..." "/opt/cni/bin 권한 수정 중...")"
+        local _sdi_state="${REPO_DIR}/_generated/sdi/sdi-state.json"
+        if [[ -f "$_sdi_state" ]]; then
+          local _vm_ips; _vm_ips=$(python3 -c "
+import json
+with open('${_sdi_state}') as f:
+    pools = json.load(f)
+if not isinstance(pools, list): pools = [pools]
+for pool in pools:
+    for node in pool.get('nodes', []):
+        print(node.get('ip', ''))
+" 2>/dev/null)
+          while IFS= read -r _vm_ip; do
+            [[ -z "$_vm_ip" ]] && continue
+            ssh -i "${ssh_key}" -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no \
+              -J playbox-0 "ubuntu@${_vm_ip}" 'sudo chmod 777 /opt/cni/bin' 2>/dev/null || true
+          done <<< "$_vm_ips"
+          log_info "$(i18n "/opt/cni/bin permissions fixed on all VMs" "/opt/cni/bin 권한 수정 완료")"
+        fi
         phase4_step_mark_done 3
         echo -e "  ${GREEN}OK${NC}"
       fi
