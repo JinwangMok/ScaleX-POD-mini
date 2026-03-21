@@ -74,7 +74,13 @@ pub fn build_ssh_command(
             }
         }
     } else {
-        args.push(format!("{}@{}", node.admin_user, node.node_ip));
+        // Direct reachable node: use reachable_node_ip (if set) with optional DNAT port
+        let target_ip = node.reachable_node_ip.as_deref().unwrap_or(&node.node_ip);
+        if let Some(port) = node.reachable_node_port {
+            args.push("-p".to_string());
+            args.push(port.to_string());
+        }
+        args.push(format!("{}@{}", node.admin_user, target_ip));
         args.push(remote_command.to_string());
     }
 
@@ -155,6 +161,7 @@ mod tests {
             direct_reachable: direct,
             node_ip: ip.to_string(),
             reachable_node_ip: None,
+            reachable_node_port: None,
             reachable_via: None,
             admin_user: "admin".to_string(),
             ssh_auth_mode: SshAuthMode::Key,
@@ -226,6 +233,7 @@ mod tests {
             direct_reachable: false,
             node_ip: "10.0.0.2".to_string(),
             reachable_node_ip: None,
+            reachable_node_port: None,
             reachable_via: Some(vec!["bastion".to_string()]),
             admin_user: "admin".to_string(),
             ssh_auth_mode: SshAuthMode::Key,
@@ -259,6 +267,7 @@ mod tests {
             direct_reachable: false,
             node_ip: "192.168.88.8".to_string(),
             reachable_node_ip: Some("100.64.0.1".to_string()),
+            reachable_node_port: None,
             reachable_via: None,
             admin_user: "jinwang".to_string(),
             ssh_auth_mode: SshAuthMode::Key,

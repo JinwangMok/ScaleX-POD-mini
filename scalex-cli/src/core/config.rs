@@ -31,6 +31,8 @@ pub struct NodeConnectionConfig {
     pub node_ip: String,
     #[serde(default, rename = "reachable_node_ip")]
     pub reachable_node_ip: Option<String>,
+    #[serde(default, rename = "reachable_node_port")]
+    pub reachable_node_port: Option<u16>,
     #[serde(default, rename = "reachable_via")]
     pub reachable_via: Option<Vec<String>>,
     #[serde(rename = "adminUser")]

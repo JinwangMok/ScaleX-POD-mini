@@ -6062,6 +6062,7 @@ config:
                 direct_reachable: true,
                 node_ip: "192.168.88.8".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: None,
                 admin_user: "jinwang".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Password,

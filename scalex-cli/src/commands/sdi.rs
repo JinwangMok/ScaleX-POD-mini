@@ -472,9 +472,19 @@ fn run_init(
                 );
                 local_port += 1;
             } else {
-                // Direct node: keep hostname-based URI (SSH config provides Host/Port/ProxyJump).
-                // This supports Mikrotik DNAT port forwarding via ~/.ssh/config entries.
-                // No replacement needed — generate_tofu_main already uses the hostname.
+                // Direct node: use reachable IP (and optional DNAT port) in the URI.
+                // The Go libvirt SSH client does NOT read ~/.ssh/config, so we must
+                // embed the IP:port directly in the qemu+ssh URI.
+                let ip = node.reachable_node_ip.as_deref().unwrap_or(&node.node_ip);
+                let uri = if let Some(port) = node.reachable_node_port {
+                    format!("qemu+ssh://{}@{}:{}/system?no_verify=1", ssh_user, ip, port)
+                } else {
+                    format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, ip)
+                };
+                hcl = hcl.replace(
+                    &format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, node.name),
+                    &uri,
+                );
             }
         }
 
@@ -1802,6 +1812,7 @@ mod tests {
             direct_reachable: true,
             node_ip: "192.168.88.8".to_string(),
             reachable_node_ip: None,
+            reachable_node_port: None,
             reachable_via: None,
             admin_user: "admin".to_string(),
             ssh_auth_mode: crate::core::config::SshAuthMode::Key,
@@ -1824,6 +1835,7 @@ mod tests {
                 direct_reachable: true,
                 node_ip: "192.168.88.8".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: None,
                 admin_user: "admin".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Key,
@@ -1836,6 +1848,7 @@ mod tests {
                 direct_reachable: false,
                 node_ip: "192.168.88.9".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: Some(vec!["playbox-0".to_string()]),
                 admin_user: "admin".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Password,
@@ -2245,6 +2258,7 @@ mod tests {
                 direct_reachable: false,
                 node_ip: "192.168.88.8".to_string(),
                 reachable_node_ip: Some("100.64.0.1".to_string()),
+            reachable_node_port: None,
                 reachable_via: None,
                 admin_user: "jinwang".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Password,
@@ -2257,6 +2271,7 @@ mod tests {
                 direct_reachable: false,
                 node_ip: "192.168.88.9".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: Some(vec!["playbox-0".to_string()]),
                 admin_user: "jinwang".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Password,
@@ -2269,6 +2284,7 @@ mod tests {
                 direct_reachable: false,
                 node_ip: "192.168.88.10".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: Some(vec!["playbox-0".to_string()]),
                 admin_user: "jinwang".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Password,
@@ -2281,6 +2297,7 @@ mod tests {
                 direct_reachable: false,
                 node_ip: "192.168.88.11".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: Some(vec!["playbox-0".to_string()]),
                 admin_user: "jinwang".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Password,
@@ -2307,6 +2324,7 @@ mod tests {
                 direct_reachable: true,
                 node_ip: "10.0.0.1".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: None,
                 admin_user: "alice".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Key,
@@ -2319,6 +2337,7 @@ mod tests {
                 direct_reachable: true,
                 node_ip: "10.0.0.2".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: None,
                 admin_user: "bob".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Key,
@@ -2530,6 +2549,7 @@ mod tests {
                 direct_reachable: false,
                 node_ip: "192.168.88.8".to_string(),
                 reachable_node_ip: Some("100.64.0.1".to_string()),
+            reachable_node_port: None,
                 reachable_via: None,
                 admin_user: "jinwang".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Password,
@@ -2542,6 +2562,7 @@ mod tests {
                 direct_reachable: false,
                 node_ip: "192.168.88.9".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: Some(vec!["playbox-0".to_string()]),
                 admin_user: "jinwang".to_string(),
                 ssh_auth_mode: crate::core::config::SshAuthMode::Password,
@@ -2747,6 +2768,7 @@ mod tests {
                 direct_reachable: false,
                 node_ip: "192.168.88.8".to_string(),
                 reachable_node_ip: Some("100.64.0.1".to_string()),
+            reachable_node_port: None,
                 reachable_via: None,
                 admin_user: "jinwang".to_string(),
                 ssh_auth_mode: SshAuthMode::Password,
@@ -2759,6 +2781,7 @@ mod tests {
                 direct_reachable: false,
                 node_ip: "192.168.88.9".to_string(),
                 reachable_node_ip: None,
+            reachable_node_port: None,
                 reachable_via: Some(vec!["playbox-0".to_string()]),
                 admin_user: "jinwang".to_string(),
                 ssh_auth_mode: SshAuthMode::Password,
