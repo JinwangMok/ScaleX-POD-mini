@@ -2905,7 +2905,7 @@ for pool in pools:
 " 2>/dev/null)
           while IFS= read -r _pre_ip; do
             [[ -z "$_pre_ip" ]] && continue
-            ssh -i "${ssh_key}" -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no \
+            ssh -i ~/.ssh/id_ed25519 -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no \
               -J playbox-0 "ubuntu@${_pre_ip}" 'sudo mkdir -p /opt/cni/bin && sudo chmod 777 /opt/cni/bin' 2>/dev/null || true
           done <<< "$_pre_ips"
         fi
