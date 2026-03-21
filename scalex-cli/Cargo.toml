@@ -17,7 +17,7 @@ dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 
 # TUI dashboard (scalex dash)
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = { version = "0.28", features = ["event-stream"] }
 futures = "0.3"
 kube = { version = "0.98", features = ["client", "runtime", "derive", "ws"] }
