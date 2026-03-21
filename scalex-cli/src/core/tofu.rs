@@ -25,16 +25,17 @@ pub fn generate_tofu_host_infra(
     hcl.push('\n');
 
     // Provider blocks — one per host (SSH-based libvirt)
+    // Uses hostname alias (e.g., "playbox-0") instead of raw IP so that
+    // the Go SSH client reads ~/.ssh/config for Port, ProxyJump, etc.
     for host in hosts {
         hcl.push_str(&format!(
             r#"provider "libvirt" {{
   alias = "{name}"
-  uri   = "qemu+ssh://{ssh_user}@{ip}/system?no_verify=1"
+  uri   = "qemu+ssh://{ssh_user}@{name}/system?no_verify=1"
 }}
 "#,
             name = host.name,
             ssh_user = host.ssh_user,
-            ip = host.ip,
         ));
         hcl.push('\n');
     }
@@ -477,8 +478,8 @@ mod tests {
             "missing provider block"
         );
         assert!(
-            hcl.contains("qemu+ssh://admin@192.168.88.8/system"),
-            "SSH URI must use ssh_user from HostInfraInput"
+            hcl.contains("qemu+ssh://admin@playbox-0/system"),
+            "SSH URI must use hostname alias, not IP"
         );
 
         // Must create a libvirt storage pool on the host
@@ -521,7 +522,7 @@ mod tests {
         // All 4 hosts must have providers with correct ssh_user
         for host in &hosts {
             assert!(
-                hcl.contains(&format!("qemu+ssh://{}@{}/system", host.ssh_user, host.ip)),
+                hcl.contains(&format!("qemu+ssh://{}@{}/system", host.ssh_user, host.name)),
                 "missing provider for {} (ip: {})",
                 host.name,
                 host.ip
@@ -561,7 +562,7 @@ mod tests {
         }];
         let hcl = generate_tofu_host_infra(&hosts, "br0", "192.168.88.0/24", "192.168.88.1");
         assert!(
-            hcl.contains("qemu+ssh://jinwang@192.168.88.8/system"),
+            hcl.contains("qemu+ssh://jinwang@playbox-0/system"),
             "SSH URI must use ssh_user 'jinwang', not 'root'"
         );
         assert!(
@@ -868,8 +869,8 @@ mod tests {
             "Single-node host infra must have exactly 1 storage pool"
         );
         assert!(
-            hcl.contains("qemu+ssh://admin@10.0.0.1/system"),
-            "Must use correct ssh_user and IP"
+            hcl.contains("qemu+ssh://admin@solo/system"),
+            "Must use correct ssh_user and hostname"
         );
     }
 }

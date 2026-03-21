@@ -2566,8 +2566,8 @@ mod tests {
         assert!(hcl.contains("playbox-0"), "HCL must reference playbox-0");
         assert!(hcl.contains("playbox-1"), "HCL must reference playbox-1");
         assert!(
-            hcl.contains("192.168.88.8"),
-            "HCL must contain playbox-0 IP"
+            hcl.contains("qemu+ssh://jinwang@playbox-0/system"),
+            "HCL must use hostname alias in provider URI"
         );
         assert!(hcl.contains("jinwang"), "HCL must contain ssh_user");
         assert!(hcl.contains("libvirt"), "HCL must use libvirt provider");
@@ -2799,11 +2799,11 @@ mod tests {
         assert!(hcl.contains("playbox-0"), "HCL must contain playbox-0");
         assert!(hcl.contains("playbox-1"), "HCL must contain playbox-1");
         assert!(
-            hcl.contains("jinwang@192.168.88.8"),
+            hcl.contains("jinwang@playbox-0"),
             "HCL must contain correct SSH URI for playbox-0"
         );
         assert!(
-            hcl.contains("jinwang@192.168.88.9"),
+            hcl.contains("jinwang@playbox-1"),
             "HCL must contain correct SSH URI for playbox-1"
         );
         assert!(

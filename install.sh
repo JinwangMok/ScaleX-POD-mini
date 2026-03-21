@@ -1484,7 +1484,7 @@ generate_ssh_config() {
   config_block+="$marker"$'\n'
 
   # Parse nodes from YAML (simple line-based parser)
-  local name="" ip="" reachable_ip="" user="" auth_mode="" via=""
+  local name="" ip="" reachable_ip="" reachable_port="" user="" auth_mode="" via=""
   local in_node=false
 
   while IFS= read -r line; do
@@ -1498,6 +1498,7 @@ generate_ssh_config() {
         else
           config_block+="    HostName $ip"$'\n'
         fi
+        [[ -n "$reachable_port" ]] && config_block+="    Port $reachable_port"$'\n'
         config_block+="    User $user"$'\n'
         [[ "$auth_mode" == "key" ]] && config_block+="    IdentityFile $ssh_key"$'\n'
         [[ -n "$via" ]] && config_block+="    ProxyJump $via"$'\n'
@@ -1506,11 +1507,13 @@ generate_ssh_config() {
         config_block+="    ServerAliveCountMax 10"$'\n'$'\n'
       fi
       name="${BASH_REMATCH[1]}"
-      ip="" reachable_ip="" user="" auth_mode="" via=""
+      ip="" reachable_ip="" reachable_port="" user="" auth_mode="" via=""
       in_node=true
     elif $in_node; then
       if [[ "$line" =~ reachable_node_ip:[[:space:]]*\"?([^\"]+)\"? ]]; then
         reachable_ip="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ reachable_node_port:[[:space:]]*\"?([0-9]+)\"? ]]; then
+        reachable_port="${BASH_REMATCH[1]}"
       elif [[ "$line" =~ node_ip:[[:space:]]*\"?([^\"]+)\"? ]]; then
         ip="${BASH_REMATCH[1]}"
       elif [[ "$line" =~ adminUser:[[:space:]]*\"?([^\"]+)\"? ]]; then
@@ -1531,6 +1534,7 @@ generate_ssh_config() {
     else
       config_block+="    HostName $ip"$'\n'
     fi
+    [[ -n "$reachable_port" ]] && config_block+="    Port $reachable_port"$'\n'
     config_block+="    User $user"$'\n'
     [[ "$auth_mode" == "key" ]] && config_block+="    IdentityFile $ssh_key"$'\n'
     [[ -n "$via" ]] && config_block+="    ProxyJump $via"$'\n'
