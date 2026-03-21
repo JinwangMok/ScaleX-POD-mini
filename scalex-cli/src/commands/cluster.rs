@@ -427,23 +427,32 @@ fn run_kubespray(cluster_dir: &std::path::Path, cluster_name: &str) -> anyhow::R
                         .output();
                     eprintln!("[cluster] {} — /opt/cni/bin permissions fixed, waiting for Cilium recovery (up to 120s)...", cluster_name);
 
-                    // Wait up to 120s for nodes to become Ready (Cilium self-heals on next retry)
-                    let admin_conf = cluster_dir.join("artifacts/admin.conf");
+                    // Wait up to 120s for nodes to become Ready (Cilium self-heals on next retry).
+                    // Use ansible to run kubectl on the first control-plane node (since the local
+                    // machine may not have direct access to the K8s API behind NAT).
                     let mut recovered = false;
+                    let first_cp = format!("{}[0]", cluster_name);  // e.g., "tower[0]" selects first host in group
                     for attempt in 0..24 {
                         std::thread::sleep(std::time::Duration::from_secs(5));
-                        if let Ok(check) = std::process::Command::new("kubectl")
+                        if let Ok(check) = std::process::Command::new("ansible")
                             .args([
-                                "--kubeconfig",
-                                &admin_conf.display().to_string(),
-                                "get",
-                                "nodes",
-                                "-o",
-                                "jsonpath={.items[*].status.conditions[?(@.type==\"Ready\")].status}",
+                                "-i",
+                                &inventory_path.display().to_string(),
+                                &first_cp,
+                                "--become",
+                                "-m",
+                                "command",
+                                "-a",
+                                "kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes -o jsonpath={.items[*].status.conditions[?(@.type==\"Ready\")].status}",
                             ])
+                            .current_dir(&kubespray_dir)
                             .output()
                         {
-                            let statuses = String::from_utf8_lossy(&check.stdout);
+                            let out = String::from_utf8_lossy(&check.stdout);
+                            // Ansible output contains the command result after ">>"; extract the jsonpath line
+                            let statuses = out.lines()
+                                .find(|l| l.contains("True") || l.contains("False"))
+                                .unwrap_or("");
                             if !statuses.is_empty() && statuses.split_whitespace().all(|s| s == "True") {
                                 eprintln!("[cluster] {} — all nodes Ready after {}s", cluster_name, (attempt + 1) * 5);
                                 recovered = true;

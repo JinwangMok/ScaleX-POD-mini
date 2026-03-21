@@ -1466,8 +1466,8 @@ generate_ssh_config() {
 
   [[ -f "$yaml_file" ]] || return 0
 
-  # Skip if already configured
-  if [[ -f "$ssh_config" ]] && grep -q "$marker" "$ssh_config"; then
+  # Skip if already configured (check both auto-generated and manual markers)
+  if [[ -f "$ssh_config" ]] && grep -qE "ScaleX managed|ScaleX-POD-mini" "$ssh_config"; then
     log_info "$(i18n "SSH config already configured — skipping" "SSH config 이미 설정됨 — 건너뜀")"
     return 0
   fi
