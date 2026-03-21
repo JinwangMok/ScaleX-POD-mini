@@ -401,7 +401,7 @@ echo "[scalex] Cleaning Kubernetes directories..."
 sudo rm -rf /etc/kubernetes
 sudo rm -rf /var/lib/kubelet
 sudo rm -rf /etc/cni
-sudo rm -rf /opt/cni
+sudo rm -rf /opt/cni/bin/* 2>/dev/null || true  # remove contents only, not the directory
 sudo rm -rf /var/lib/containerd
 sudo rm -rf /run/containerd
 sudo rm -rf /var/lib/calico
@@ -473,7 +473,9 @@ sudo systemctl stop libvirtd 2>/dev/null || true
 sudo systemctl disable libvirtd 2>/dev/null || true
 
 echo "[scalex] Removing KVM/libvirt packages..."
-sudo apt-get purge -y -qq qemu-kvm libvirt-daemon-system libvirt-clients virtinst bridge-utils 2>/dev/null || true
+# SAFETY: bridge-utils is intentionally excluded — it provides brctl which may be
+# needed by br0/bond0. Removing it can disrupt network interfaces SSH depends on.
+sudo apt-get purge -y -qq qemu-kvm libvirt-daemon-system libvirt-clients virtinst 2>/dev/null || true
 sudo rm -rf /var/lib/libvirt || true
 sudo rm -rf /etc/libvirt || true
 
