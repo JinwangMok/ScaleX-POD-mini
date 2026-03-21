@@ -379,6 +379,8 @@ fn run_kubespray(cluster_dir: &std::path::Path, cluster_name: &str) -> anyhow::R
     let vars_path = std::fs::canonicalize(cluster_dir.join("cluster-vars.yml"))
         .unwrap_or_else(|_| cluster_dir.join("cluster-vars.yml"));
 
+    let kubespray_dir = find_kubespray_dir()?;
+
     let output = std::process::Command::new("ansible-playbook")
         .args([
             "-i",
@@ -388,7 +390,7 @@ fn run_kubespray(cluster_dir: &std::path::Path, cluster_name: &str) -> anyhow::R
             &format!("@{}", vars_path.display()),
             "--become",
         ])
-        .current_dir(find_kubespray_dir()?)
+        .current_dir(&kubespray_dir)
         .output();
 
     match output {
@@ -399,6 +401,60 @@ fn run_kubespray(cluster_dir: &std::path::Path, cluster_name: &str) -> anyhow::R
             }
             if !out.status.success() {
                 let stderr = String::from_utf8_lossy(&out.stderr);
+                // Check if this is a Cilium CNI permission issue (common with Kubespray's
+                // containernetworking-plugins setting /opt/cni/bin to 755 kube:root).
+                // Fix permissions and let Cilium self-heal via CrashLoopBackOff retry.
+                if stdout.contains("cni plugin not initialized")
+                    || stdout.contains("NetworkPluginNotReady")
+                {
+                    eprintln!(
+                        "[cluster] {} — Cilium CNI not ready (likely /opt/cni/bin permission issue). Fixing...",
+                        cluster_name
+                    );
+                    // Fix /opt/cni/bin permissions via ansible ad-hoc
+                    let _ = std::process::Command::new("ansible")
+                        .args([
+                            "-i",
+                            &inventory_path.display().to_string(),
+                            "all",
+                            "--become",
+                            "-m",
+                            "file",
+                            "-a",
+                            "path=/opt/cni/bin state=directory mode=0777",
+                        ])
+                        .current_dir(&kubespray_dir)
+                        .output();
+                    eprintln!("[cluster] {} — /opt/cni/bin permissions fixed, waiting for Cilium recovery (up to 120s)...", cluster_name);
+
+                    // Wait up to 120s for nodes to become Ready (Cilium self-heals on next retry)
+                    let admin_conf = cluster_dir.join("artifacts/admin.conf");
+                    let mut recovered = false;
+                    for attempt in 0..24 {
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                        if let Ok(check) = std::process::Command::new("kubectl")
+                            .args([
+                                "--kubeconfig",
+                                &admin_conf.display().to_string(),
+                                "get",
+                                "nodes",
+                                "-o",
+                                "jsonpath={.items[*].status.conditions[?(@.type==\"Ready\")].status}",
+                            ])
+                            .output()
+                        {
+                            let statuses = String::from_utf8_lossy(&check.stdout);
+                            if !statuses.is_empty() && statuses.split_whitespace().all(|s| s == "True") {
+                                eprintln!("[cluster] {} — all nodes Ready after {}s", cluster_name, (attempt + 1) * 5);
+                                recovered = true;
+                                break;
+                            }
+                        }
+                    }
+                    if recovered {
+                        return Ok(());
+                    }
+                }
                 eprintln!("[cluster] kubespray error for {}: {}", cluster_name, stderr);
                 anyhow::bail!("kubespray failed for cluster '{}'", cluster_name);
             }

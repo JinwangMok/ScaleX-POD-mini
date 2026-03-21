@@ -2885,6 +2885,26 @@ phase_provision() {
         echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex cluster init — $(i18n "already done, skipping" "이미 완료됨, 건너뜀")"
       else
         echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex cluster init..."
+        # Pre-fix /opt/cni/bin permissions on all VMs BEFORE Kubespray (Kubespray sets kube:root 755
+        # during CNI plugin install, but Cilium init container needs write access immediately after)
+        local _sdi_state_pre="${REPO_DIR}/_generated/sdi/sdi-state.json"
+        if [[ -f "$_sdi_state_pre" ]]; then
+          log_info "$(i18n "Pre-Kubespray: ensuring /opt/cni/bin permissions on all VMs..." "Kubespray 전: 모든 VM에 /opt/cni/bin 권한 설정...")"
+          local _pre_ips; _pre_ips=$(python3 -c "
+import json
+with open('${_sdi_state_pre}') as f:
+    pools = json.load(f)
+if not isinstance(pools, list): pools = [pools]
+for pool in pools:
+    for node in pool.get('nodes', []):
+        print(node.get('ip', ''))
+" 2>/dev/null)
+          while IFS= read -r _pre_ip; do
+            [[ -z "$_pre_ip" ]] && continue
+            ssh -i "${ssh_key}" -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no \
+              -J playbox-0 "ubuntu@${_pre_ip}" 'sudo mkdir -p /opt/cni/bin && sudo chmod 777 /opt/cni/bin' 2>/dev/null || true
+          done <<< "$_pre_ips"
+        fi
         if ! (cd "$REPO_DIR" && scalex cluster init config/k8s-clusters.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
           log_error "$(i18n "Auto mode: cluster init failed — aborting provisioning" "자동 모드: 클러스터 초기화 실패 — 프로비저닝 중단")"
           return 1
