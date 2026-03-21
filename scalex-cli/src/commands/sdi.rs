@@ -472,12 +472,9 @@ fn run_init(
                 );
                 local_port += 1;
             } else {
-                // Direct or Tailscale node: use the reachable IP directly
-                let ip = node.reachable_node_ip.as_deref().unwrap_or(&node.node_ip);
-                hcl = hcl.replace(
-                    &format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, node.name),
-                    &format!("qemu+ssh://{}@{}/system?no_verify=1", ssh_user, ip),
-                );
+                // Direct node: keep hostname-based URI (SSH config provides Host/Port/ProxyJump).
+                // This supports Mikrotik DNAT port forwarding via ~/.ssh/config entries.
+                // No replacement needed — generate_tofu_main already uses the hostname.
             }
         }
 
