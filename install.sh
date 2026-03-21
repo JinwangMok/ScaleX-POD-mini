@@ -2929,7 +2929,7 @@ for pool in pools:
 " 2>/dev/null)
           while IFS= read -r _vm_ip; do
             [[ -z "$_vm_ip" ]] && continue
-            ssh -i "${ssh_key}" -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no \
+            ssh -i ~/.ssh/id_ed25519 -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no \
               -J playbox-0 "ubuntu@${_vm_ip}" 'sudo chmod 777 /opt/cni/bin' 2>/dev/null || true
           done <<< "$_vm_ips"
           log_info "$(i18n "/opt/cni/bin permissions fixed on all VMs" "/opt/cni/bin 권한 수정 완료")"
