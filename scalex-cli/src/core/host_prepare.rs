@@ -484,8 +484,31 @@ sudo rm -rf /etc/libvirt || true
 # Only libvirt's own virtual network interfaces (virbr*, vnet*) were already
 # removed above by virsh net-destroy. br0, bond0, and physical NICs are untouched.
 echo "[scalex] Phase 3: Cleaning up remaining packages..."
+
+# SAFETY: Pin network-critical packages as manually installed BEFORE autoremove.
+# After purging libvirt-daemon-system, its auto-installed dependencies (e.g.
+# bridge-utils, ebtables) become orphans that autoremove would remove.
+# bridge-utils provides brctl needed for br0; ebtables provides bridge netfilter.
+echo "[scalex] Pinning network-critical packages to prevent autoremove..."
+for pkg in bridge-utils ebtables iptables iproute2 netplan.io systemd; do
+    sudo apt-mark manual "$pkg" 2>/dev/null || true
+done
+
 sudo apt-get autoremove -y -qq 2>/dev/null || true
 sudo apt-get clean
+
+# SAFETY: Post-cleanup network verification — abort loudly if br0 or default route is lost.
+echo "[scalex] Verifying network connectivity after cleanup..."
+if ip link show br0 &>/dev/null; then
+    echo "[scalex]   OK: br0 interface present"
+else
+    echo "[scalex]   WARNING: br0 interface NOT found (may be using direct NIC — OK if no bridge was configured)"
+fi
+if ip route show default &>/dev/null && ip route show default | grep -q 'default'; then
+    echo "[scalex]   OK: default route present"
+else
+    echo "[scalex]   CRITICAL: default route LOST — network may be broken!"
+fi
 
 echo "[scalex] === Node cleanup complete. Network interfaces (br0/bond) preserved. ==="
 "#
@@ -1639,6 +1662,50 @@ mod tests {
         assert!(
             etcd_pos < services_stop_pos,
             "etcd wipe must precede K8s services stop"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_pins_network_packages_before_autoremove() {
+        let script = generate_node_cleanup_script();
+        let apt_mark_pos = script
+            .find("apt-mark manual")
+            .expect("cleanup must pin network packages via apt-mark manual");
+        let autoremove_pos = script
+            .find("apt-get autoremove")
+            .expect("cleanup must have apt-get autoremove");
+        assert!(
+            apt_mark_pos < autoremove_pos,
+            "apt-mark manual must run BEFORE apt-get autoremove to protect network packages"
+        );
+        // Verify critical network packages are pinned
+        for pkg in &["bridge-utils", "ebtables", "iptables", "iproute2", "netplan.io"] {
+            assert!(
+                script.contains(pkg),
+                "cleanup must pin network-critical package: {}",
+                pkg
+            );
+        }
+    }
+
+    #[test]
+    fn test_cleanup_verifies_network_after_autoremove() {
+        let script = generate_node_cleanup_script();
+        let autoremove_pos = script.find("apt-get autoremove").unwrap();
+        let verify_pos = script
+            .find("Verifying network connectivity")
+            .expect("cleanup must verify network after autoremove");
+        assert!(
+            autoremove_pos < verify_pos,
+            "network verification must run AFTER autoremove"
+        );
+        assert!(
+            script.contains("ip link show br0"),
+            "cleanup must check br0 interface after autoremove"
+        );
+        assert!(
+            script.contains("ip route show default"),
+            "cleanup must check default route after autoremove"
         );
     }
 }

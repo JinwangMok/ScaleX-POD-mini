@@ -250,7 +250,7 @@ pub fn generate_cilium_helm_install_args(
         values_path.to_string(),
         "--wait".to_string(),
         "--timeout".to_string(),
-        "300s".to_string(),
+        "600s".to_string(),
     ]
 }
 
