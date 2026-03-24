@@ -166,10 +166,11 @@ async fn probe_client_auth(client: &Client, timeout: Duration) -> ProbeResult {
 ///   - Remote bastion → API server round-trip (may exceed 2s on slow links)
 const TUNNEL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Fetch K8s API server version with a tight timeout (500ms).
+/// Fetch K8s API server version with a generous timeout (5s).
+/// CF Tunnel connections can exceed 4s latency, so 500ms was too tight.
 /// Returns None on timeout or any error — never blocks discovery.
 async fn fetch_server_version(client: &Client) -> Option<String> {
-    tokio::time::timeout(Duration::from_millis(500), client.apiserver_version())
+    tokio::time::timeout(CF_DOMAIN_PROBE_TIMEOUT, client.apiserver_version())
         .await
         .ok()?
         .ok()
@@ -1601,5 +1602,224 @@ mod tests {
         assert!(names.contains(&"sandbox".to_string()));
         assert!(names.contains(&"staging".to_string()));
         assert!(names.contains(&"prod".to_string()));
+    }
+
+    // -------------------------------------------------------------------------
+    // AC-10a: Kubeconfig context loading and cluster switching verification
+    // Verifies that tower and sandbox kubeconfig contexts are correctly
+    // structured, parseable, and loadable into the TUI cluster selector
+    // without connection errors.
+    // -------------------------------------------------------------------------
+
+    /// Tower kubeconfig context follows the `kubernetes-admin-{cluster}@{cluster}`
+    /// naming convention produced by kubespray + install.sh (tunnel-rewritten).
+    /// Validates that extract_server_url parses the tunnel-rewritten server URL.
+    #[test]
+    fn tower_kubeconfig_context_name_follows_convention() {
+        let dir = tempfile::tempdir().unwrap();
+        let tower_dir = dir.path().join("tower");
+        std::fs::create_dir_all(&tower_dir).unwrap();
+        let kc_path = tower_dir.join("kubeconfig.yaml");
+
+        // Simulate the tunnel-rewritten kubeconfig install.sh writes for tower.
+        // Server is 127.0.0.1:16443 (local tunnel port) — same format as real cluster.
+        let content = "apiVersion: v1\n\
+            clusters:\n\
+            - cluster:\n\
+                server: https://127.0.0.1:16443\n\
+              name: tower\n\
+            contexts:\n\
+            - context:\n\
+                cluster: tower\n\
+                user: kubernetes-admin-tower\n\
+              name: kubernetes-admin-tower@tower\n\
+            current-context: kubernetes-admin-tower@tower\n\
+            kind: Config\n\
+            preferences: {}\n\
+            users:\n\
+            - name: kubernetes-admin-tower\n\
+              user:\n\
+                token: test-token\n";
+        std::fs::write(&kc_path, content).unwrap();
+
+        // scan_kubeconfig_names must find it (feeds the TUI cluster selector)
+        let names = scan_kubeconfig_names(dir.path());
+        assert_eq!(names, vec!["tower".to_string()]);
+
+        // extract_server_url must succeed (used by auto-tunnel logic)
+        let result = extract_server_url(&kc_path);
+        assert!(
+            result.is_some(),
+            "extract_server_url must succeed on tower kubeconfig"
+        );
+        let (url, ip, port) = result.unwrap();
+        assert_eq!(url, "https://127.0.0.1:16443");
+        assert_eq!(ip, "127.0.0.1");
+        assert_eq!(port, 16443u16);
+
+        // Context name convention: kubernetes-admin-tower@tower
+        let raw = std::fs::read_to_string(&kc_path).unwrap();
+        assert!(
+            raw.contains("name: kubernetes-admin-tower@tower"),
+            "tower context must follow kubernetes-admin-tower@tower convention"
+        );
+        assert!(
+            raw.contains("current-context: kubernetes-admin-tower@tower"),
+            "current-context must be kubernetes-admin-tower@tower"
+        );
+    }
+
+    /// Sandbox kubeconfig context follows the `kubernetes-admin-{cluster}@{cluster}`
+    /// naming convention with a distinct tunnel port (16445) from tower (16443).
+    #[test]
+    fn sandbox_kubeconfig_context_name_follows_convention() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox_dir = dir.path().join("sandbox");
+        std::fs::create_dir_all(&sandbox_dir).unwrap();
+        let kc_path = sandbox_dir.join("kubeconfig.yaml");
+
+        // Simulate tunnel-rewritten kubeconfig for sandbox (port 16445).
+        let content = "apiVersion: v1\n\
+            clusters:\n\
+            - cluster:\n\
+                server: https://127.0.0.1:16445\n\
+              name: sandbox\n\
+            contexts:\n\
+            - context:\n\
+                cluster: sandbox\n\
+                user: kubernetes-admin-sandbox\n\
+              name: kubernetes-admin-sandbox@sandbox\n\
+            current-context: kubernetes-admin-sandbox@sandbox\n\
+            kind: Config\n\
+            preferences: {}\n\
+            users:\n\
+            - name: kubernetes-admin-sandbox\n\
+              user:\n\
+                token: test-token\n";
+        std::fs::write(&kc_path, content).unwrap();
+
+        // scan must find sandbox
+        let names = scan_kubeconfig_names(dir.path());
+        assert_eq!(names, vec!["sandbox".to_string()]);
+
+        // Server URL parseable with correct tunnel port
+        let result = extract_server_url(&kc_path);
+        assert!(
+            result.is_some(),
+            "extract_server_url must succeed on sandbox kubeconfig"
+        );
+        let (url, ip, port) = result.unwrap();
+        assert_eq!(url, "https://127.0.0.1:16445");
+        assert_eq!(ip, "127.0.0.1");
+        assert_eq!(port, 16445u16);
+
+        // Context naming convention
+        let raw = std::fs::read_to_string(&kc_path).unwrap();
+        assert!(
+            raw.contains("name: kubernetes-admin-sandbox@sandbox"),
+            "sandbox context must follow kubernetes-admin-sandbox@sandbox convention"
+        );
+        assert!(
+            raw.contains("current-context: kubernetes-admin-sandbox@sandbox"),
+            "current-context must be kubernetes-admin-sandbox@sandbox"
+        );
+    }
+
+    /// Both tower and sandbox kubeconfigs are found together — simulating the real
+    /// `_generated/clusters/` directory layout after install.sh completes.
+    #[test]
+    fn scan_finds_both_tower_and_sandbox_in_generated_layout() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for (name, port) in &[("tower", 16443u16), ("sandbox", 16445u16)] {
+            let cluster_dir = dir.path().join(name);
+            std::fs::create_dir_all(&cluster_dir).unwrap();
+            let content = format!(
+                "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:{}\n  \
+                 name: {}\ncontexts:\n- context:\n    cluster: {}\n    \
+                 user: kubernetes-admin-{}\n  name: kubernetes-admin-{}@{}\n\
+                 current-context: kubernetes-admin-{}@{}\nkind: Config\n",
+                port, name, name, name, name, name, name, name
+            );
+            std::fs::write(cluster_dir.join("kubeconfig.yaml"), &content).unwrap();
+        }
+
+        let names = scan_kubeconfig_names(dir.path());
+
+        // Both clusters present, sorted alphabetically (sandbox before tower)
+        assert_eq!(names.len(), 2, "must find exactly tower and sandbox");
+        assert_eq!(names[0], "sandbox", "sandbox sorts before tower");
+        assert_eq!(names[1], "tower", "tower sorts after sandbox");
+    }
+
+    /// Tower and sandbox kubeconfigs use different local tunnel ports so SSH tunnels
+    /// do not collide. Verifies port uniqueness via extract_server_url.
+    #[test]
+    fn tower_and_sandbox_tunnel_ports_are_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut parsed_ports: Vec<u16> = Vec::new();
+
+        for (name, port) in &[("tower", 16443u16), ("sandbox", 16445u16)] {
+            let cluster_dir = dir.path().join(name);
+            std::fs::create_dir_all(&cluster_dir).unwrap();
+            let content = format!(
+                "clusters:\n- cluster:\n    server: https://127.0.0.1:{}\n",
+                port
+            );
+            let kc_path = cluster_dir.join("kubeconfig.yaml");
+            std::fs::write(&kc_path, &content).unwrap();
+
+            let result = extract_server_url(&kc_path);
+            assert!(
+                result.is_some(),
+                "must parse {} kubeconfig server URL",
+                name
+            );
+            let (_, _, parsed_port) = result.unwrap();
+            parsed_ports.push(parsed_port);
+        }
+
+        assert_ne!(
+            parsed_ports[0], parsed_ports[1],
+            "tower (port {}) and sandbox (port {}) must use distinct tunnel ports \
+             to avoid SSH tunnel collision",
+            parsed_ports[0], parsed_ports[1]
+        );
+    }
+
+    /// Cluster names from scan_kubeconfig_names are valid identifiers that can
+    /// be used directly as App::new_with_names arguments — no path separators,
+    /// no empty strings, exactly matching the cluster directory names.
+    #[test]
+    fn scan_result_cluster_names_are_valid_app_identifiers() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for name in &["tower", "sandbox"] {
+            let d = dir.path().join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("kubeconfig.yaml"), "apiVersion: v1").unwrap();
+        }
+
+        let names = scan_kubeconfig_names(dir.path());
+
+        assert_eq!(names.len(), 2, "must find exactly 2 clusters");
+        for name in &names {
+            assert!(!name.is_empty(), "cluster name must not be empty");
+            assert!(
+                !name.contains('/'),
+                "cluster name '{}' must not contain '/'",
+                name
+            );
+            assert!(
+                !name.contains('\\'),
+                "cluster name '{}' must not contain '\\'",
+                name
+            );
+        }
+        assert!(names.contains(&"tower".to_string()), "tower must be present");
+        assert!(
+            names.contains(&"sandbox".to_string()),
+            "sandbox must be present"
+        );
     }
 }

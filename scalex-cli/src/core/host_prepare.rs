@@ -321,14 +321,120 @@ pub fn generate_node_cleanup_script() -> String {
     r#"#!/bin/bash
 set -euo pipefail
 
-echo "[scalex] === Node Cleanup: Resetting to bare-metal state ==="
+# ─── Logging Setup ───────────────────────────────────────────────────────────
+# Every phase marker is written to LOG_FILE with an ISO-8601 timestamp.
+# The log persists on the remote node at /var/log/scalex-clean.log for
+# post-hoc diagnosis. Falls back to /tmp if /var/log is not writable.
+LOG_FILE=/var/log/scalex-clean.log
+sudo touch "$LOG_FILE" 2>/dev/null && sudo chmod 644 "$LOG_FILE" 2>/dev/null \
+    || LOG_FILE=/tmp/scalex-clean.log
+
+log_step() {
+    local msg="$1"
+    local ts
+    ts=$(date '+%Y-%m-%dT%H:%M:%S')
+    echo "[scalex] ${msg}"
+    printf '%s [scalex] %s\n' "${ts}" "${msg}" | sudo tee -a "${LOG_FILE}" >/dev/null
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
+log_step "=== Node Cleanup: Resetting to bare-metal state ==="
 # SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
 
+# ─── Pre-flight: Enumerate and protect network interfaces ───
+# Build the protected-interface list BEFORE any removal logic executes.
+# Interfaces captured here will never be removed, even if their names happen
+# to match a CNI/overlay pattern.
+log_step "Pre-flight: Cataloguing network interfaces to protect..."
+
+SCALEX_PROTECTED_IFACES=""
+while IFS= read -r _iface_entry; do
+    _iface=$(echo "$_iface_entry" | awk -F': ' '{print $2}' | cut -d'@' -f1)
+    case "$_iface" in
+        lo) ;;  # loopback — skip (not a data-plane iface)
+        br0|br[0-9]*)
+            SCALEX_PROTECTED_IFACES="$SCALEX_PROTECTED_IFACES $_iface"
+            log_step "  PROTECTED (bridge): $_iface" ;;
+        bond*)
+            SCALEX_PROTECTED_IFACES="$SCALEX_PROTECTED_IFACES $_iface"
+            log_step "  PROTECTED (bond): $_iface" ;;
+        eth*|enp*|ens*|em*|eno*)
+            SCALEX_PROTECTED_IFACES="$SCALEX_PROTECTED_IFACES $_iface"
+            log_step "  PROTECTED (physical NIC): $_iface" ;;
+    esac
+done < <(ip -o link show 2>/dev/null || true)
+
+# Explicitly protect the interface carrying the default route.
+# This covers interfaces (e.g. a directly-assigned physical NIC or a tunnel)
+# that carry the default route but were not already matched by the name-pattern
+# loop above.  The awk extracts the 'dev <name>' token from the default route line.
+_default_route_iface=$(ip route show default 2>/dev/null \
+    | awk '/^default/ {for(i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}' || true)
+if [ -n "$_default_route_iface" ]; then
+    _already_protected=0
+    for _p in $SCALEX_PROTECTED_IFACES; do
+        [ "$_p" = "$_default_route_iface" ] && _already_protected=1 && break
+    done
+    if [ "$_already_protected" -eq 0 ]; then
+        SCALEX_PROTECTED_IFACES="$SCALEX_PROTECTED_IFACES $_default_route_iface"
+        log_step "  PROTECTED (default-route carrier): $_default_route_iface"
+    fi
+fi
+log_step "Pre-flight complete. Protected interfaces:${SCALEX_PROTECTED_IFACES:- (none detected)}"
+
+# Helper: returns 0 (true) if the given interface name is in the protected list.
+_scalex_is_protected() {
+    local _check="$1"
+    for _p in $SCALEX_PROTECTED_IFACES; do
+        [ "$_check" = "$_p" ] && return 0
+    done
+    return 1
+}
+
+# Early-exit guard: abort the cleanup script immediately if the named interface
+# is in the protected list.  Use this before any explicit (non-loop) ip link delete
+# call so that a mismatch between expected and actual network topology never
+# silently removes a management interface.  On match, logs a CRITICAL banner and
+# terminates with a non-zero exit code — no further cleanup steps execute.
+_scalex_abort_if_protected() {
+    local _check="$1"
+    if _scalex_is_protected "$_check"; then
+        log_step "CRITICAL: attempt to remove protected interface '$_check' — aborting cleanup to preserve SSH/network"
+        exit 1
+    fi
+}
+
+# ─── Pre-clean network verification ─────────────────────────────────────────
+# Assert br0 and the default route exist BEFORE any cleanup logic executes.
+# If either check fails the node is already in a degraded network state — we
+# refuse to proceed so we do not make a broken node worse, and to alert the
+# operator immediately rather than after destructive changes have been made.
+# Exit code 2 signals a pre-clean network pre-condition failure.
+log_step "Pre-clean network verification: asserting br0 and default route..."
+_SCALEX_PRECLEAN_FAIL=0
+if ip link show br0 &>/dev/null; then
+    log_step "  PRE-CLEAN OK: br0 interface present"
+else
+    log_step "  PRE-CLEAN CRITICAL: br0 interface NOT found — refusing to proceed with cleanup"
+    _SCALEX_PRECLEAN_FAIL=1
+fi
+if ip route show default 2>/dev/null | grep -q 'default'; then
+    log_step "  PRE-CLEAN OK: default route present"
+else
+    log_step "  PRE-CLEAN CRITICAL: default route NOT found — refusing to proceed with cleanup"
+    _SCALEX_PRECLEAN_FAIL=1
+fi
+if [ "$_SCALEX_PRECLEAN_FAIL" -ne 0 ]; then
+    log_step "ABORT: pre-clean network verification failed — br0 or default route missing. Cleanup refused."
+    exit 2
+fi
+log_step "Pre-clean network verification passed. Proceeding with cleanup."
+
 # ─── Phase 1: Kubernetes cluster teardown ───
-echo "[scalex] Phase 1: K8s cluster teardown..."
+log_step "Phase 1: K8s cluster teardown..."
 
 if command -v kubeadm &>/dev/null; then
-    echo "[scalex] Running kubeadm reset (with --cleanup-tmp-dir)..."
+    log_step "Running kubeadm reset (with --cleanup-tmp-dir)..."
     # Auto-detect CRI socket: prefer containerd socket, fall back to kubeadm default
     if [ -S /run/containerd/containerd.sock ]; then
         sudo kubeadm reset -f --cleanup-tmp-dir \
@@ -339,19 +445,22 @@ if command -v kubeadm &>/dev/null; then
 fi
 
 # ─── Phase 1a: CNI cleanup (Cilium) ───
-echo "[scalex] Phase 1a: CNI cleanup — removing Cilium interfaces and eBPF state..."
+log_step "Phase 1a: CNI cleanup — removing Cilium interfaces and eBPF state..."
 
 # Remove Cilium virtual network interfaces
 for iface in cilium_host cilium_net cilium_vxlan; do
     if ip link show "$iface" &>/dev/null; then
+        # Abort immediately if a protected interface somehow matches a Cilium name
+        _scalex_abort_if_protected "$iface"
         sudo ip link set "$iface" down 2>/dev/null || true
         sudo ip link delete "$iface" 2>/dev/null || true
-        echo "[scalex]   Removed Cilium interface: $iface"
+        log_step "  Removed Cilium interface: $iface"
     fi
 done
 
 # Remove per-pod lxc* virtual interfaces created by Cilium
 for iface in $(ip link show 2>/dev/null | grep -oP '(?<=\d: )lxc[^\s@:]+' 2>/dev/null || true); do
+    _scalex_abort_if_protected "$iface"
     sudo ip link set "$iface" down 2>/dev/null || true
     sudo ip link delete "$iface" 2>/dev/null || true
 done
@@ -359,8 +468,13 @@ done
 # Remove CNI/overlay virtual interfaces (Flannel VXLAN, Calico VXLAN, veth pairs, dummy)
 # SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
 # Only matches prefixes that are exclusively K8s/CNI-created (never physical or bridge).
+# Double-guarded: regex whitelist AND pre-flight protected-interface check.
 while IFS= read -r virt_iface; do
     [ -z "$virt_iface" ] && continue
+    if _scalex_is_protected "$virt_iface"; then
+        log_step "  SKIP (protected interface, will not remove): $virt_iface"
+        continue
+    fi
     sudo ip link set "$virt_iface" down 2>/dev/null || true
     sudo ip link delete "$virt_iface" 2>/dev/null || true
 done < <(sudo ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d'@' -f1 | \
@@ -378,7 +492,7 @@ sudo rm -rf /run/cilium
 sudo rm -rf /var/lib/cilium
 
 # ─── Phase 1b: etcd wipe ───
-echo "[scalex] Phase 1b: etcd wipe — removing data dir, WAL, snapshots, member data..."
+log_step "Phase 1b: etcd wipe — removing data dir, WAL, snapshots, member data..."
 
 # Primary etcd data directory (contains WAL/ and snap/ subdirs for member data)
 sudo rm -rf /var/lib/etcd
@@ -387,17 +501,17 @@ sudo rm -rf /var/lib/etcd-events
 # External etcd certificate directory (separate from /etc/kubernetes for stacked etcd)
 sudo rm -rf /etc/etcd
 
-echo "[scalex] Stopping Kubernetes services..."
+log_step "Stopping Kubernetes services..."
 sudo systemctl stop kubelet 2>/dev/null || true
 sudo systemctl stop containerd 2>/dev/null || true
 sudo systemctl disable kubelet 2>/dev/null || true
 sudo systemctl disable containerd 2>/dev/null || true
 
-echo "[scalex] Removing Kubernetes packages..."
+log_step "Removing Kubernetes packages..."
 sudo apt-get purge -y -qq kubeadm kubelet kubectl containerd.io 2>/dev/null || true
 sudo apt-get purge -y -qq kubernetes-cni cri-tools 2>/dev/null || true
 
-echo "[scalex] Cleaning Kubernetes directories..."
+log_step "Cleaning Kubernetes directories..."
 sudo rm -rf /etc/kubernetes
 sudo rm -rf /var/lib/kubelet
 sudo rm -rf /etc/cni
@@ -409,7 +523,7 @@ sudo rm -rf /etc/calico
 sudo rm -rf /var/run/calico
 sudo rm -rf /var/lib/cni
 
-echo "[scalex] Flushing iptables rules (all tables, policy reset to ACCEPT)..."
+log_step "Flushing iptables rules (all tables, policy reset to ACCEPT)..."
 # Reset filter policies to ACCEPT first — prevents host lockout when rules are flushed
 sudo iptables -P INPUT ACCEPT 2>/dev/null || true
 sudo iptables -P FORWARD ACCEPT 2>/dev/null || true
@@ -438,17 +552,17 @@ if command -v ipset &>/dev/null; then
 fi
 
 # ─── Phase 2: KVM/libvirt teardown ───
-echo "[scalex] Phase 2: Removing KVM/libvirt..."
+log_step "Phase 2: Removing KVM/libvirt..."
 
 if command -v virsh &>/dev/null; then
     VIRSH="virsh -c qemu:///system"
 
-    echo "[scalex] Stopping all running VM domains..."
+    log_step "Stopping all running VM domains..."
     for vm in $($VIRSH list --state-running --name 2>/dev/null | grep -v '^$'); do
         $VIRSH destroy "$vm" 2>/dev/null || true
     done
 
-    echo "[scalex] Removing storage volumes from all pools..."
+    log_step "Removing storage volumes from all pools..."
     for pool in $($VIRSH pool-list --all --name 2>/dev/null | grep -v '^$'); do
         $VIRSH pool-refresh "$pool" 2>/dev/null || true
         for vol in $($VIRSH vol-list "$pool" 2>/dev/null | tail -n +3 | awk '{print $1}' | grep -v '^$'); do
@@ -458,7 +572,7 @@ if command -v virsh &>/dev/null; then
         $VIRSH pool-undefine "$pool" 2>/dev/null || true
     done
 
-    echo "[scalex] Undefining all VM domains..."
+    log_step "Undefining all VM domains..."
     for vm in $($VIRSH list --all --name 2>/dev/null | grep -v '^$'); do
         $VIRSH undefine "$vm" --nvram 2>/dev/null || \
             $VIRSH undefine "$vm" 2>/dev/null || true
@@ -468,11 +582,11 @@ if command -v virsh &>/dev/null; then
     $VIRSH net-undefine default 2>/dev/null || true
 fi
 
-echo "[scalex] Stopping libvirt services..."
+log_step "Stopping libvirt services..."
 sudo systemctl stop libvirtd 2>/dev/null || true
 sudo systemctl disable libvirtd 2>/dev/null || true
 
-echo "[scalex] Removing KVM/libvirt packages..."
+log_step "Removing KVM/libvirt packages..."
 # SAFETY: bridge-utils is intentionally excluded — it provides brctl which may be
 # needed by br0/bond0. Removing it can disrupt network interfaces SSH depends on.
 sudo apt-get purge -y -qq qemu-kvm libvirt-daemon-system libvirt-clients virtinst 2>/dev/null || true
@@ -483,34 +597,48 @@ sudo rm -rf /etc/libvirt || true
 # SAFETY: Never modify network interfaces (br0/bond) — SSH depends on them.
 # Only libvirt's own virtual network interfaces (virbr*, vnet*) were already
 # removed above by virsh net-destroy. br0, bond0, and physical NICs are untouched.
-echo "[scalex] Phase 3: Cleaning up remaining packages..."
+log_step "Phase 3: Cleaning up remaining packages..."
 
-# SAFETY: Pin network-critical packages as manually installed BEFORE autoremove.
-# After purging libvirt-daemon-system, its auto-installed dependencies (e.g.
-# bridge-utils, ebtables) become orphans that autoremove would remove.
+# SAFETY: Pin network-critical packages as manually installed.
+# Orphan package removal (e.g. apt-get with --autoremove flag) is intentionally
+# NEVER used here — it risks removing bridge-utils and ebtables that br0/bond0
+# network interfaces depend on. SSH connectivity would be lost. We pin explicitly.
 # bridge-utils provides brctl needed for br0; ebtables provides bridge netfilter.
-echo "[scalex] Pinning network-critical packages to prevent autoremove..."
+log_step "Pinning network-critical packages (explicit list, no orphan removal)..."
 for pkg in bridge-utils ebtables iptables iproute2 netplan.io systemd; do
     sudo apt-mark manual "$pkg" 2>/dev/null || true
 done
 
-sudo apt-get autoremove -y -qq 2>/dev/null || true
 sudo apt-get clean
 
-# SAFETY: Post-cleanup network verification — abort loudly if br0 or default route is lost.
-echo "[scalex] Verifying network connectivity after cleanup..."
+# ─── Post-clean network verification ────────────────────────────────────────
+# Assert br0 and the default route are STILL present after all cleanup phases.
+# If either is now missing, the cleanup violated network safety — fail loudly so
+# the operator knows to restore connectivity before attempting reprovisioning.
+# Exit code 3 signals a post-clean network regression.
+# NOTE: Also satisfies the `ip link show br0` / `ip route show default` assertions
+# checked by test_cleanup_verifies_network_after_package_ops.
+log_step "Verifying network connectivity after cleanup..."
+_SCALEX_POSTCLEAN_FAIL=0
 if ip link show br0 &>/dev/null; then
-    echo "[scalex]   OK: br0 interface present"
+    log_step "  POST-CLEAN OK: br0 interface present"
 else
-    echo "[scalex]   WARNING: br0 interface NOT found (may be using direct NIC — OK if no bridge was configured)"
+    log_step "  POST-CLEAN CRITICAL: br0 interface LOST after cleanup — SSH/network may be broken!"
+    _SCALEX_POSTCLEAN_FAIL=1
 fi
-if ip route show default &>/dev/null && ip route show default | grep -q 'default'; then
-    echo "[scalex]   OK: default route present"
+if ip route show default 2>/dev/null | grep -q 'default'; then
+    log_step "  POST-CLEAN OK: default route present"
 else
-    echo "[scalex]   CRITICAL: default route LOST — network may be broken!"
+    log_step "  POST-CLEAN CRITICAL: default route LOST after cleanup — network broken!"
+    _SCALEX_POSTCLEAN_FAIL=1
 fi
+if [ "$_SCALEX_POSTCLEAN_FAIL" -ne 0 ]; then
+    log_step "ABORT: post-clean network verification failed — br0 or default route was lost during cleanup!"
+    exit 3
+fi
+log_step "Post-clean network verification passed."
 
-echo "[scalex] === Node cleanup complete. Network interfaces (br0/bond) preserved. ==="
+log_step "=== Node cleanup complete. Network interfaces (br0/bond) preserved. ==="
 "#
     .to_string()
 }
@@ -1192,10 +1320,11 @@ mod tests {
                 || script.contains("iptables -F 2>/dev/null || true"),
             "iptables flush must use || true"
         );
-        // apt-get autoremove must be soft
+        // apt-get autoremove must NOT be present (network safety: it can remove
+        // bridge-utils/ebtables that br0/bond0 depend on)
         assert!(
-            script.contains("apt-get autoremove -y -qq 2>/dev/null || true"),
-            "apt-get autoremove must use || true"
+            !script.contains("apt-get autoremove"),
+            "apt-get autoremove must be completely absent from cleanup script"
         );
     }
 
@@ -1666,17 +1795,18 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_pins_network_packages_before_autoremove() {
+    fn test_cleanup_pins_network_packages_no_autoremove() {
         let script = generate_node_cleanup_script();
-        let apt_mark_pos = script
-            .find("apt-mark manual")
-            .expect("cleanup must pin network packages via apt-mark manual");
-        let autoremove_pos = script
-            .find("apt-get autoremove")
-            .expect("cleanup must have apt-get autoremove");
+        // apt-mark manual must be present to pin network-critical packages
         assert!(
-            apt_mark_pos < autoremove_pos,
-            "apt-mark manual must run BEFORE apt-get autoremove to protect network packages"
+            script.contains("apt-mark manual"),
+            "cleanup must pin network packages via apt-mark manual"
+        );
+        // apt-get autoremove must be completely absent — it is unsafe on bare-metal
+        // because it can remove bridge-utils/ebtables that br0/bond0 depend on.
+        assert!(
+            !script.contains("apt-get autoremove"),
+            "apt-get autoremove must be completely absent (network safety requirement)"
         );
         // Verify critical network packages are pinned
         for pkg in &["bridge-utils", "ebtables", "iptables", "iproute2", "netplan.io"] {
@@ -1689,23 +1819,670 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_verifies_network_after_autoremove() {
+    fn test_cleanup_verifies_network_after_package_ops() {
         let script = generate_node_cleanup_script();
-        let autoremove_pos = script.find("apt-get autoremove").unwrap();
-        let verify_pos = script
-            .find("Verifying network connectivity")
-            .expect("cleanup must verify network after autoremove");
+        // Network verification must be present after package operations
         assert!(
-            autoremove_pos < verify_pos,
-            "network verification must run AFTER autoremove"
+            script.contains("Verifying network connectivity"),
+            "cleanup must verify network connectivity after package operations"
+        );
+        // apt-get autoremove must be completely absent
+        assert!(
+            !script.contains("apt-get autoremove"),
+            "apt-get autoremove must be completely absent (network safety requirement)"
+        );
+        // apt-get clean (cache only, no package removal) must still run
+        assert!(
+            script.contains("apt-get clean"),
+            "cleanup must run apt-get clean to free cache"
         );
         assert!(
             script.contains("ip link show br0"),
-            "cleanup must check br0 interface after autoremove"
+            "cleanup must check br0 interface after package operations"
         );
         assert!(
             script.contains("ip route show default"),
-            "cleanup must check default route after autoremove"
+            "cleanup must check default route after package operations"
         );
+    }
+
+    // ===== Sub-AC 2 pre-flight: Protected-interface enumeration =====
+    // These tests verify the pre-flight section that catalogues br0/bond/physical
+    // NIC interfaces BEFORE any removal logic executes, and that subsequent
+    // removal loops respect the resulting protected list.
+
+    /// Pre-flight cataloguing must occur before Phase 1 K8s removal begins.
+    /// The protected-interface list must be built at script start — before any
+    /// `ip link delete`, kubeadm reset, or package purge runs.
+    #[test]
+    fn test_cleanup_preflight_catalogues_before_phase1_removal() {
+        let script = generate_node_cleanup_script();
+        let preflight_pos = script
+            .find("Pre-flight: Cataloguing network interfaces")
+            .expect("cleanup must include pre-flight interface cataloguing section");
+        let phase1_pos = script
+            .find("Phase 1: K8s cluster teardown")
+            .expect("cleanup must include Phase 1 K8s teardown");
+        assert!(
+            preflight_pos < phase1_pos,
+            "pre-flight interface cataloguing must occur BEFORE Phase 1 removal logic"
+        );
+    }
+
+    /// SCALEX_PROTECTED_IFACES variable must be initialised before Phase 1.
+    /// Any removal loop that references the variable requires it to exist first.
+    #[test]
+    fn test_cleanup_preflight_variable_set_before_phase1() {
+        let script = generate_node_cleanup_script();
+        let var_set_pos = script
+            .find("SCALEX_PROTECTED_IFACES")
+            .expect("SCALEX_PROTECTED_IFACES must be set in cleanup script");
+        let phase1_pos = script
+            .find("Phase 1: K8s cluster teardown")
+            .expect("Phase 1 must exist");
+        assert!(
+            var_set_pos < phase1_pos,
+            "SCALEX_PROTECTED_IFACES must be initialised before Phase 1 removal begins"
+        );
+    }
+
+    /// Pre-flight must detect and protect bridge interfaces (br0, br*).
+    /// Bridge interfaces are the primary management-network carrier on bare-metal.
+    #[test]
+    fn test_cleanup_preflight_protects_bridge_interfaces() {
+        let script = generate_node_cleanup_script();
+        // Pattern matching for br0 and br[0-9]* must appear in the pre-flight block
+        assert!(
+            script.contains("br0") && script.contains("br[0-9]"),
+            "pre-flight must detect and protect br0 and br[0-9]* bridge interfaces"
+        );
+        // Must log the PROTECTED (bridge) label
+        assert!(
+            script.contains("PROTECTED (bridge)"),
+            "pre-flight must log 'PROTECTED (bridge)' for detected bridge interfaces"
+        );
+    }
+
+    /// Pre-flight must detect and protect bond interfaces (bond*).
+    /// Bond interfaces aggregate physical NICs; removing them severs SSH.
+    #[test]
+    fn test_cleanup_preflight_protects_bond_interfaces() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("bond*)"),
+            "pre-flight must match bond* interfaces in case statement"
+        );
+        assert!(
+            script.contains("PROTECTED (bond)"),
+            "pre-flight must log 'PROTECTED (bond)' for detected bond interfaces"
+        );
+    }
+
+    /// Pre-flight must detect and protect physical NIC prefixes (eth*, enp*, ens*, em*, eno*).
+    /// Physical NICs are the ultimate SSH transport; they must never be removed.
+    #[test]
+    fn test_cleanup_preflight_protects_physical_nics() {
+        let script = generate_node_cleanup_script();
+        // All common physical NIC naming conventions must be covered
+        for prefix in &["eth*", "enp*", "ens*", "em*", "eno*"] {
+            assert!(
+                script.contains(prefix),
+                "pre-flight must detect and protect physical NIC prefix: {prefix}"
+            );
+        }
+        assert!(
+            script.contains("PROTECTED (physical NIC)"),
+            "pre-flight must log 'PROTECTED (physical NIC)' for detected physical NICs"
+        );
+    }
+
+    /// The _scalex_is_protected() helper function must be defined in the script.
+    /// It provides a reusable check used by each removal loop.
+    #[test]
+    fn test_cleanup_preflight_defines_is_protected_helper() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("_scalex_is_protected()"),
+            "cleanup script must define _scalex_is_protected() helper function"
+        );
+        // Helper must be defined before the CNI virtual-interface loop uses it
+        let helper_pos = script
+            .find("_scalex_is_protected()")
+            .expect("helper must be defined");
+        let cni_loop_pos = script
+            .find("_scalex_is_protected \"$virt_iface\"")
+            .expect("CNI loop must call _scalex_is_protected");
+        assert!(
+            helper_pos < cni_loop_pos,
+            "_scalex_is_protected() must be defined before its first call site"
+        );
+    }
+
+    /// CNI virtual interface removal loop must call _scalex_is_protected() and skip
+    /// any interface found in the protected list.
+    #[test]
+    fn test_cleanup_cni_loop_skips_protected_interfaces() {
+        let script = generate_node_cleanup_script();
+        // The CNI virtual-interface loop must contain the protection guard
+        assert!(
+            script.contains("_scalex_is_protected \"$virt_iface\""),
+            "CNI virtual interface removal loop must guard each interface with _scalex_is_protected"
+        );
+        // Must emit a SKIP log entry when a protected interface is encountered
+        assert!(
+            script.contains("SKIP (protected interface"),
+            "CNI loop must log 'SKIP (protected interface ...)' when skipping a protected iface"
+        );
+        // Protection check must appear inside the virt_iface loop body (before the delete)
+        let guard_pos = script
+            .find("_scalex_is_protected \"$virt_iface\"")
+            .unwrap();
+        let delete_pos = script
+            .find("sudo ip link delete \"$virt_iface\"")
+            .expect("CNI loop must still contain the ip link delete command");
+        assert!(
+            guard_pos < delete_pos,
+            "protection guard must appear before ip link delete in the CNI loop"
+        );
+    }
+
+    // ===== Sub-AC 3: Per-step timestamped logging to /var/log/scalex-clean.log =====
+
+    /// Sub-AC 3: Cleanup script must define LOG_FILE pointing to /var/log/scalex-clean.log.
+    /// This is the persistent per-node log for post-hoc diagnosis of cleanup runs.
+    #[test]
+    fn test_cleanup_log_file_path_is_var_log() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("LOG_FILE=/var/log/scalex-clean.log"),
+            "cleanup script must set LOG_FILE=/var/log/scalex-clean.log"
+        );
+    }
+
+    /// Sub-AC 3: Cleanup script must define a log_step() helper function.
+    /// log_step() is responsible for writing each phase marker to both stdout
+    /// and the persistent log file on the remote node.
+    #[test]
+    fn test_cleanup_defines_log_step_function() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("log_step()"),
+            "cleanup script must define log_step() helper function"
+        );
+    }
+
+    /// Sub-AC 3: log_step() must emit a timestamp on every call.
+    /// Timestamps use ISO-8601 format (date '+%Y-%m-%dT%H:%M:%S') to make log
+    /// entries sortable and unambiguous for diagnosis.
+    #[test]
+    fn test_cleanup_log_step_emits_timestamp() {
+        let script = generate_node_cleanup_script();
+        // Must capture a timestamp inside the function
+        assert!(
+            script.contains("date '+%Y-%m-%dT%H:%M:%S'"),
+            "log_step() must use date '+%Y-%m-%dT%H:%M:%S' for ISO-8601 timestamps"
+        );
+    }
+
+    /// Sub-AC 3: log_step() must write to the log file via tee -a.
+    /// Using `tee -a` appends each entry without truncating the log, and lets
+    /// the timestamp entry appear in both stdout (for SSH session visibility) and
+    /// the persistent log file on the remote node.
+    #[test]
+    fn test_cleanup_log_step_appends_to_log_file() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("tee -a \"${LOG_FILE}\""),
+            "log_step() must append to LOG_FILE via tee -a"
+        );
+    }
+
+    /// Sub-AC 3: log_step() must still emit [scalex] prefix to stdout.
+    /// Existing tooling (install.sh, test assertions) relies on the [scalex] prefix
+    /// being present in SSH session output.
+    #[test]
+    fn test_cleanup_log_step_emits_scalex_prefix_to_stdout() {
+        let script = generate_node_cleanup_script();
+        // The log_step function body must echo the [scalex] prefix
+        assert!(
+            script.contains("echo \"[scalex] ${msg}\""),
+            "log_step() must echo '[scalex] <msg>' to stdout"
+        );
+    }
+
+    /// Sub-AC 3: LOG_FILE setup must precede all phase markers.
+    /// The log file variable and log_step function must be defined before any
+    /// log_step call so the first phase marker is always captured in the log.
+    #[test]
+    fn test_cleanup_log_setup_before_first_phase_marker() {
+        let script = generate_node_cleanup_script();
+        let log_file_pos = script
+            .find("LOG_FILE=/var/log/scalex-clean.log")
+            .expect("LOG_FILE must be defined");
+        let first_log_step_pos = script
+            .find("log_step \"=== Node Cleanup")
+            .expect("first log_step call must be present");
+        assert!(
+            log_file_pos < first_log_step_pos,
+            "LOG_FILE must be set before the first log_step call"
+        );
+    }
+
+    /// Sub-AC 3: log_step() function definition must precede its first call site.
+    #[test]
+    fn test_cleanup_log_step_defined_before_first_call() {
+        let script = generate_node_cleanup_script();
+        let fn_def_pos = script
+            .find("log_step()")
+            .expect("log_step() must be defined");
+        let first_call_pos = script
+            .find("log_step \"=== Node Cleanup")
+            .expect("first log_step call must exist");
+        assert!(
+            fn_def_pos < first_call_pos,
+            "log_step() must be defined before its first call site"
+        );
+    }
+
+    /// Sub-AC 3: Every major phase header must use log_step, not plain echo.
+    /// This ensures each phase is captured in /var/log/scalex-clean.log with
+    /// a timestamp, making it possible to diagnose partial-failure scenarios.
+    #[test]
+    fn test_cleanup_phase_headers_use_log_step() {
+        let script = generate_node_cleanup_script();
+        // Each phase header should appear as a log_step argument, not a bare echo
+        let phases = [
+            "Phase 1: K8s cluster teardown",
+            "Phase 1a: CNI cleanup",
+            "Phase 1b: etcd wipe",
+            "Phase 2: Removing KVM/libvirt",
+            "Phase 3: Cleaning up remaining packages",
+        ];
+        for phase in &phases {
+            // Must appear as argument to log_step (quoted string)
+            let log_step_call = format!("log_step \"{phase}");
+            assert!(
+                script.contains(&log_step_call),
+                "phase header must use log_step: {phase}"
+            );
+            // Must NOT appear as argument to a bare echo call
+            let bare_echo = format!("echo \"[scalex] {phase}");
+            assert!(
+                !script.contains(&bare_echo),
+                "phase header must not use bare echo (use log_step instead): {phase}"
+            );
+        }
+    }
+
+    /// Sub-AC 3: log_step() must fall back to /tmp/scalex-clean.log if
+    /// /var/log is not writable (e.g. read-only rootfs or permission denied).
+    #[test]
+    fn test_cleanup_log_file_has_writable_fallback() {
+        let script = generate_node_cleanup_script();
+        // Must attempt to create the log file with sudo touch
+        assert!(
+            script.contains("sudo touch \"$LOG_FILE\""),
+            "log setup must create LOG_FILE with sudo touch"
+        );
+        // Must fall back to /tmp if /var/log is not writable
+        assert!(
+            script.contains("LOG_FILE=/tmp/scalex-clean.log"),
+            "log setup must fall back to /tmp/scalex-clean.log if /var/log is not writable"
+        );
+    }
+
+    // ===== Sub-AC 6b: Interface-protection guards — default route + early-exit =====
+
+    /// Sub-AC 6b: Pre-flight must detect and protect the interface carrying the
+    /// default route.  A bare-metal node may use an interface (e.g. a direct NIC
+    /// that does not match br0/bond*/eth*/enp* patterns) as its default-route
+    /// carrier.  Removing that interface would sever SSH.
+    #[test]
+    fn test_cleanup_preflight_protects_default_route_carrier() {
+        let script = generate_node_cleanup_script();
+        // Must log the PROTECTED (default-route carrier) label when detected
+        assert!(
+            script.contains("PROTECTED (default-route carrier)"),
+            "pre-flight must log 'PROTECTED (default-route carrier)' for the default-route interface"
+        );
+    }
+
+    /// Sub-AC 6b: Default-route interface detection must use `ip route show default`
+    /// and extract the 'dev <name>' field via awk.
+    #[test]
+    fn test_cleanup_default_route_detection_uses_ip_route_show() {
+        let script = generate_node_cleanup_script();
+        // Must query the routing table for the default route
+        assert!(
+            script.contains("ip route show default"),
+            "pre-flight must call 'ip route show default' to detect the default-route interface"
+        );
+        // Must extract the 'dev' token to get the interface name
+        assert!(
+            script.contains("\"dev\""),
+            "pre-flight awk must match the 'dev' token in the default route line"
+        );
+    }
+
+    /// Sub-AC 6b: Default-route detection must occur before 'Pre-flight complete' log.
+    /// The protected-interface list must be fully built before the completion message.
+    #[test]
+    fn test_cleanup_default_route_detection_before_preflight_complete() {
+        let script = generate_node_cleanup_script();
+        let detect_pos = script
+            .find("ip route show default")
+            .expect("ip route show default must be present");
+        let complete_pos = script
+            .find("Pre-flight complete.")
+            .expect("Pre-flight complete message must be present");
+        assert!(
+            detect_pos < complete_pos,
+            "default-route detection must occur before 'Pre-flight complete' log"
+        );
+    }
+
+    /// Sub-AC 6b: The `_scalex_abort_if_protected()` early-exit guard function
+    /// must be defined in the script.
+    #[test]
+    fn test_cleanup_defines_abort_if_protected() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("_scalex_abort_if_protected()"),
+            "cleanup script must define _scalex_abort_if_protected() early-exit guard"
+        );
+    }
+
+    /// Sub-AC 6b: `_scalex_abort_if_protected()` must call `exit 1` to terminate
+    /// the entire cleanup script when a protected interface is about to be touched.
+    #[test]
+    fn test_cleanup_abort_if_protected_exits_on_match() {
+        let script = generate_node_cleanup_script();
+        // Must contain exit 1 inside the abort guard context
+        assert!(
+            script.contains("exit 1"),
+            "_scalex_abort_if_protected() must call exit 1 to terminate the script"
+        );
+        // exit 1 must appear after the CRITICAL log message (ordered within the function)
+        let critical_pos = script
+            .find("CRITICAL: attempt to remove protected interface")
+            .expect("abort guard must log a CRITICAL message");
+        let exit1_pos = script
+            .find("exit 1")
+            .expect("abort guard must contain exit 1");
+        assert!(
+            critical_pos < exit1_pos,
+            "CRITICAL log message must precede exit 1 in the abort guard"
+        );
+    }
+
+    /// Sub-AC 6b: `_scalex_abort_if_protected()` must emit a CRITICAL banner that
+    /// names the interface and explains the abort reason.
+    #[test]
+    fn test_cleanup_abort_if_protected_logs_critical_message() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("CRITICAL: attempt to remove protected interface"),
+            "abort guard must log a CRITICAL message naming the offending interface"
+        );
+        assert!(
+            script.contains("aborting cleanup to preserve SSH/network"),
+            "abort guard message must explain the abort reason (SSH/network preservation)"
+        );
+    }
+
+    /// Sub-AC 6b: `_scalex_abort_if_protected()` must be defined AFTER
+    /// `_scalex_is_protected()` (since it delegates to it) and BEFORE Phase 1.
+    #[test]
+    fn test_cleanup_abort_if_protected_defined_before_phase1() {
+        let script = generate_node_cleanup_script();
+        let abort_def_pos = script
+            .find("_scalex_abort_if_protected()")
+            .expect("_scalex_abort_if_protected() must be defined");
+        let phase1_pos = script
+            .find("Phase 1: K8s cluster teardown")
+            .expect("Phase 1 must exist");
+        assert!(
+            abort_def_pos < phase1_pos,
+            "_scalex_abort_if_protected() must be defined before Phase 1 removal begins"
+        );
+        // Must also be defined after _scalex_is_protected (dependency order)
+        let is_protected_def_pos = script
+            .find("_scalex_is_protected()")
+            .expect("_scalex_is_protected() must be defined");
+        assert!(
+            is_protected_def_pos < abort_def_pos,
+            "_scalex_abort_if_protected() must be defined after _scalex_is_protected()"
+        );
+    }
+
+    /// Sub-AC 6b: The Cilium named-interface removal loop must call
+    /// `_scalex_abort_if_protected` before attempting to delete each interface.
+    /// This guards against the (unlikely but catastrophic) case where a node
+    /// names a protected interface with a Cilium-like name.
+    #[test]
+    fn test_cleanup_cilium_loop_uses_abort_guard() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("_scalex_abort_if_protected \"$iface\""),
+            "Cilium interface removal loop must call _scalex_abort_if_protected for each iface"
+        );
+        // The abort guard must precede the ip link delete in the loop body
+        let guard_pos = script
+            .find("_scalex_abort_if_protected \"$iface\"")
+            .expect("abort guard call must exist");
+        let delete_pos = script
+            .find("sudo ip link delete \"$iface\"")
+            .expect("ip link delete must exist in Cilium loop");
+        assert!(
+            guard_pos < delete_pos,
+            "_scalex_abort_if_protected must be called before ip link delete"
+        );
+    }
+
+    // ===== Sub-AC 6c: Pre-clean and post-clean br0 + default route verification =====
+    // These tests verify that the cleanup script asserts br0 and the default route are
+    // present both BEFORE and AFTER the cleanup phases, and fails loudly (non-zero exit)
+    // if either check is violated.
+
+    /// Sub-AC 6c: Pre-clean verification must be present in the cleanup script.
+    /// The block must log a recognisable header so operators can locate it in
+    /// /var/log/scalex-clean.log when diagnosing failures.
+    #[test]
+    fn test_cleanup_preclean_verification_present() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("Pre-clean network verification"),
+            "cleanup script must include a pre-clean network verification block"
+        );
+    }
+
+    /// Sub-AC 6c: Pre-clean verification must assert br0 exists via `ip link show br0`.
+    /// br0 is the management-network bridge; its absence before cleanup means the
+    /// node is already in a degraded state and cleanup should refuse to proceed.
+    #[test]
+    fn test_cleanup_preclean_checks_br0() {
+        let script = generate_node_cleanup_script();
+        // ip link show br0 must appear in the pre-clean block (before Phase 1)
+        let preclean_pos = script
+            .find("Pre-clean network verification")
+            .expect("pre-clean block must be present");
+        let phase1_pos = script
+            .find("Phase 1: K8s cluster teardown")
+            .expect("Phase 1 must be present");
+        // ip link show br0 must exist somewhere in the script (checked by other tests too)
+        assert!(
+            script.contains("ip link show br0"),
+            "pre-clean verification must check br0 via 'ip link show br0'"
+        );
+        // The check must appear within the pre-clean block (before Phase 1)
+        let br0_check_pos = script.find("ip link show br0").expect("ip link show br0 must exist");
+        assert!(
+            preclean_pos < br0_check_pos && br0_check_pos < phase1_pos,
+            "ip link show br0 check must be inside the pre-clean block (after pre-clean header, before Phase 1)"
+        );
+    }
+
+    /// Sub-AC 6c: Pre-clean verification must assert the default route is present.
+    /// No default route before cleanup means the node is already unreachable; abort.
+    #[test]
+    fn test_cleanup_preclean_checks_default_route() {
+        let script = generate_node_cleanup_script();
+        let preclean_pos = script
+            .find("Pre-clean network verification")
+            .expect("pre-clean block must be present");
+        let phase1_pos = script
+            .find("Phase 1: K8s cluster teardown")
+            .expect("Phase 1 must be present");
+        // Check that the pre-clean block (substring between header and Phase 1) contains
+        // the default-route check.  We use the substring to avoid matching the earlier
+        // occurrence of 'ip route show default' that lives in the pre-flight section.
+        let preclean_block = &script[preclean_pos..phase1_pos];
+        assert!(
+            preclean_block.contains("ip route show default"),
+            "pre-clean block must contain 'ip route show default' to assert the default route"
+        );
+    }
+
+    /// Sub-AC 6c: Pre-clean verification must fail loudly with exit 2 when
+    /// br0 or the default route is missing.  A non-zero exit ensures `set -e`
+    /// propagates the failure back to the caller.
+    #[test]
+    fn test_cleanup_preclean_fails_with_exit2() {
+        let script = generate_node_cleanup_script();
+        // exit 2 must be present (reserved for pre-clean failures)
+        assert!(
+            script.contains("exit 2"),
+            "pre-clean verification must use 'exit 2' to signal a pre-condition failure"
+        );
+        // The abort message must be present so operators understand why cleanup stopped
+        assert!(
+            script.contains("pre-clean network verification failed"),
+            "pre-clean abort path must log 'pre-clean network verification failed'"
+        );
+        // exit 2 must appear after the CRITICAL log messages (structured abort flow)
+        let critical_pos = script
+            .find("PRE-CLEAN CRITICAL")
+            .expect("pre-clean CRITICAL message must be present");
+        let exit2_pos = script.find("exit 2").expect("exit 2 must be present");
+        assert!(
+            critical_pos < exit2_pos,
+            "PRE-CLEAN CRITICAL log must precede exit 2 in the pre-clean block"
+        );
+    }
+
+    /// Sub-AC 6c: Pre-clean verification must run AFTER the pre-flight interface
+    /// cataloguing (so the protected-interface list is built) but BEFORE Phase 1
+    /// (so no cleanup has occurred yet).
+    #[test]
+    fn test_cleanup_preclean_ordering() {
+        let script = generate_node_cleanup_script();
+        let preflight_pos = script
+            .find("Pre-flight complete.")
+            .expect("pre-flight complete message must be present");
+        let preclean_pos = script
+            .find("Pre-clean network verification")
+            .expect("pre-clean block must be present");
+        let phase1_pos = script
+            .find("Phase 1: K8s cluster teardown")
+            .expect("Phase 1 must be present");
+        assert!(
+            preflight_pos < preclean_pos,
+            "pre-clean verification must run AFTER pre-flight interface cataloguing"
+        );
+        assert!(
+            preclean_pos < phase1_pos,
+            "pre-clean verification must run BEFORE Phase 1 removal"
+        );
+    }
+
+    /// Sub-AC 6c: Post-clean verification must fail loudly with exit 3 when
+    /// br0 or the default route is missing after cleanup.
+    /// Merely logging CRITICAL is insufficient — the script must exit non-zero
+    /// so the caller (install.sh / sdi clean orchestrator) detects the regression.
+    #[test]
+    fn test_cleanup_postclean_fails_with_exit3() {
+        let script = generate_node_cleanup_script();
+        // exit 3 must be present (reserved for post-clean regressions)
+        assert!(
+            script.contains("exit 3"),
+            "post-clean verification must use 'exit 3' to signal a post-cleanup network regression"
+        );
+        // The abort message must identify the phase
+        assert!(
+            script.contains("post-clean network verification failed"),
+            "post-clean abort path must log 'post-clean network verification failed'"
+        );
+        // exit 3 must appear after the POST-CLEAN CRITICAL log
+        let critical_pos = script
+            .find("POST-CLEAN CRITICAL")
+            .expect("post-clean CRITICAL message must be present");
+        let exit3_pos = script.find("exit 3").expect("exit 3 must be present");
+        assert!(
+            critical_pos < exit3_pos,
+            "POST-CLEAN CRITICAL log must precede exit 3 in the post-clean block"
+        );
+    }
+
+    /// Sub-AC 6c: Post-clean verification must check br0 still exists.
+    /// br0 carries SSH; losing it after cleanup means the script violated network safety.
+    #[test]
+    fn test_cleanup_postclean_checks_br0() {
+        let script = generate_node_cleanup_script();
+        // POST-CLEAN OK/CRITICAL messages must reference br0
+        assert!(
+            script.contains("POST-CLEAN OK: br0 interface present")
+                || script.contains("POST-CLEAN CRITICAL: br0 interface LOST"),
+            "post-clean block must log a br0 OK or CRITICAL result"
+        );
+    }
+
+    /// Sub-AC 6c: Post-clean verification must check the default route still exists.
+    #[test]
+    fn test_cleanup_postclean_checks_default_route() {
+        let script = generate_node_cleanup_script();
+        assert!(
+            script.contains("POST-CLEAN OK: default route present")
+                || script.contains("POST-CLEAN CRITICAL: default route LOST"),
+            "post-clean block must log a default route OK or CRITICAL result"
+        );
+    }
+
+    /// Sub-AC 6c: Post-clean verification must run AFTER Phase 3 (the last cleanup phase)
+    /// and BEFORE the final completion message.
+    #[test]
+    fn test_cleanup_postclean_ordering() {
+        let script = generate_node_cleanup_script();
+        let phase3_pos = script
+            .find("Phase 3: Cleaning up remaining packages")
+            .expect("Phase 3 must be present");
+        // "Verifying network connectivity" is used by the existing test contract too
+        let postclean_pos = script
+            .find("Verifying network connectivity after cleanup")
+            .expect("post-clean 'Verifying network connectivity after cleanup' must be present");
+        let complete_pos = script
+            .find("Node cleanup complete")
+            .expect("completion message must be present");
+        assert!(
+            phase3_pos < postclean_pos,
+            "post-clean verification must run AFTER Phase 3"
+        );
+        assert!(
+            postclean_pos < complete_pos,
+            "post-clean verification must run BEFORE the completion message"
+        );
+    }
+
+    /// Sub-AC 6c: Exit codes must be distinct — pre-clean uses 2, post-clean uses 3,
+    /// and pre-flight abort (protecting interfaces) uses 1.  Distinct codes allow the
+    /// caller to distinguish failure modes without parsing log output.
+    #[test]
+    fn test_cleanup_exit_codes_are_distinct() {
+        let script = generate_node_cleanup_script();
+        // exit 1 — protected-interface abort (_scalex_abort_if_protected)
+        assert!(script.contains("exit 1"), "exit 1 must be used for protected-interface abort");
+        // exit 2 — pre-clean network pre-condition failure
+        assert!(script.contains("exit 2"), "exit 2 must be used for pre-clean failure");
+        // exit 3 — post-clean network regression
+        assert!(script.contains("exit 3"), "exit 3 must be used for post-clean failure");
     }
 }

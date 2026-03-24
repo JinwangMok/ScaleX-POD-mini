@@ -698,6 +698,26 @@ fn run_init(
             println!("[dry-run] Would verify VM status via virsh list --all on each host");
         }
 
+        if !dry_run {
+            // Clean old known_hosts entries for freshly created VMs
+            println!("[sdi] Cleaning known_hosts entries for new VMs...");
+            for pool in &spec.spec.sdi_pools {
+                for node in &pool.node_specs {
+                    let _ = std::process::Command::new("ssh-keygen")
+                        .args([
+                            "-f",
+                            &format!(
+                                "{}/.ssh/known_hosts",
+                                std::env::var("HOME").unwrap_or_default()
+                            ),
+                            "-R",
+                            &node.ip,
+                        ])
+                        .output();
+                }
+            }
+        }
+
         println!("[sdi] SDI initialization complete.");
     } else {
         // No spec file: set up host-level libvirt infrastructure via OpenTofu
@@ -770,6 +790,42 @@ fn run_clean(
 ) -> anyhow::Result<()> {
     if let Some(err) = validate_clean_args(hard, confirm) {
         anyhow::bail!(err);
+    }
+
+    // Dry-run: compute the full operation plan from filesystem state (read-only probes)
+    // and print it, then exit without executing anything.
+    // Output parity: each CleanOperation description mirrors its live-mode log line.
+    if dry_run {
+        let output_dir_exists = output_dir.exists();
+        let host_infra_tf_exists = output_dir.join("host-infra").join("main.tf").exists();
+        let main_tf_exists = output_dir.join("main.tf").exists();
+
+        // Probe baremetal config to discover node count (read-only; no SSH)
+        let bm_node_count: Option<usize> = if config_path.exists() && env_path.exists() {
+            match load_baremetal_config(&config_path, &env_path) {
+                Ok(bm) => {
+                    let filtered_count = if let Some(ref name) = node_filter {
+                        bm.target_nodes.iter().filter(|n| n.name == *name).count()
+                    } else {
+                        bm.target_nodes.len()
+                    };
+                    Some(filtered_count)
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        let ops = plan_clean_operations(
+            hard,
+            output_dir_exists,
+            main_tf_exists,
+            host_infra_tf_exists,
+            bm_node_count,
+        );
+        print_dry_run_plan(&ops);
+        return Ok(());
     }
 
     // Soft mode: bail early when no SDI state directory exists.
@@ -1021,6 +1077,115 @@ fn run_clean(
                 );
             } else {
                 println!("[sdi] All {} node(s) cleaned successfully.", total);
+            }
+
+            // Phase D: Post-clean SSH connectivity verification.
+            // CRITICAL: Confirms br0 and default route survived all cleanup phases.
+            // SSH depends on br0/bond — if this fails, the network was broken by cleanup.
+            // Runs on every target node with up to 3 attempts (5 s backoff) each.
+            println!("\n[sdi] Phase D: Post-clean SSH connectivity verification...");
+            if dry_run {
+                println!(
+                    "[dry-run] Would verify SSH reachability to {} node(s): {}",
+                    total,
+                    node_names.join(", ")
+                );
+            } else {
+                let mut ssh_verify_failed = 0usize;
+                for (idx, node) in target_nodes.iter().enumerate() {
+                    println!(
+                        "[sdi]   [{}/{}] {} — verifying SSH + network...",
+                        idx + 1,
+                        total,
+                        node.name
+                    );
+                    // Probe: confirm SSH works AND default route is still present.
+                    // The default route is the minimum signal that br0/network survived.
+                    let probe_script = concat!(
+                        "echo ok && ",
+                        "(ip route show default | grep -q default ",
+                        "&& echo '[net] default-route:ok' ",
+                        "|| echo '[net] default-route:MISSING')"
+                    );
+                    let mut verified = false;
+                    // Up to 3 attempts with 5 s backoff — handles brief network disruption
+                    // that can occur as the cleanup script's last iptables flush settles.
+                    for attempt in 1u32..=3 {
+                        if attempt > 1 {
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                        }
+                        match build_ssh_command(node, probe_script, &bm_config.target_nodes) {
+                            Ok(ssh_cmd) => match execute_ssh(&ssh_cmd) {
+                                Ok(out) => {
+                                    let trimmed = out.trim();
+                                    if trimmed.contains("ok") {
+                                        if trimmed.contains("default-route:MISSING") {
+                                            eprintln!(
+                                                "[sdi]   WARNING: {} — SSH reachable but \
+                                                 default route MISSING (network degraded!)",
+                                                node.name
+                                            );
+                                            // Treat as failed: default route is mandatory
+                                            // for inter-node K8s traffic and node re-init.
+                                        } else {
+                                            println!(
+                                                "[sdi]   OK: {} — SSH reachable, \
+                                                 default route present",
+                                                node.name
+                                            );
+                                            verified = true;
+                                        }
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    if attempt < 3 {
+                                        eprintln!(
+                                            "[sdi]   WARNING: {} — SSH attempt {}/3 failed \
+                                             ({}), retrying in 5s...",
+                                            node.name, attempt, e
+                                        );
+                                    } else {
+                                        eprintln!(
+                                            "[sdi]   ERROR: {} — SSH unreachable after \
+                                             3 attempts: {}",
+                                            node.name, e
+                                        );
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!(
+                                    "[sdi]   ERROR: {} — SSH command build failed: {}",
+                                    node.name, e
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    if !verified {
+                        ssh_verify_failed += 1;
+                    }
+                }
+                if ssh_verify_failed == 0 {
+                    println!(
+                        "[sdi] Post-clean SSH verification PASSED: all {} node(s) reachable \
+                         with network intact.",
+                        total
+                    );
+                } else {
+                    eprintln!(
+                        "[sdi] Post-clean SSH verification FAILED: {}/{} node(s) unreachable \
+                         or missing default route.",
+                        ssh_verify_failed, total
+                    );
+                    eprintln!(
+                        "[sdi] CRITICAL: Verify br0 and default route manually on affected nodes \
+                         before re-running sdi init."
+                    );
+                    // Do not bail — cleanup already ran; report the failure and continue.
+                    // Caller must resolve network before next sdi init attempt.
+                }
             }
         }
 
@@ -1485,7 +1650,6 @@ pub fn validate_clean_args(hard: bool, confirm: bool) -> Option<String> {
 }
 
 /// Describes an operation that `sdi clean` would perform.
-#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum CleanOperation {
     /// No SDI state exists — nothing to do
@@ -1500,13 +1664,14 @@ pub enum CleanOperation {
     NodeCleanup { node_count: usize },
     /// Skip node cleanup (hard mode, but no baremetal config)
     SkipNodeCleanup,
+    /// Verify SSH connectivity to all nodes after cleanup (hard mode, baremetal config exists)
+    PostCleanSshVerification { node_count: usize },
     /// Remove local state directory (hard mode)
     RemoveStateDir,
 }
 
 /// Plan what operations `sdi clean` would execute. Pure function: no I/O.
 /// Used for dry-run reporting and testability.
-#[cfg(test)]
 pub fn plan_clean_operations(
     hard: bool,
     output_dir_exists: bool,
@@ -1516,17 +1681,25 @@ pub fn plan_clean_operations(
 ) -> Vec<CleanOperation> {
     let mut ops = Vec::new();
 
-    if !output_dir_exists {
+    if !output_dir_exists && !hard {
         ops.push(CleanOperation::NoState);
         return ops;
     }
 
-    if host_infra_main_tf_exists {
-        ops.push(CleanOperation::TofuDestroyHostInfra);
+    if !output_dir_exists && hard {
+        // No SDI state dir, but hard mode proceeds to node cleanup (clean reinstall scenario).
+        // Skip tofu steps since there is no state to destroy.
+        ops.push(CleanOperation::NoState);
     }
 
-    if main_tf_exists {
-        ops.push(CleanOperation::TofuDestroy);
+    if output_dir_exists {
+        if host_infra_main_tf_exists {
+            ops.push(CleanOperation::TofuDestroyHostInfra);
+        }
+
+        if main_tf_exists {
+            ops.push(CleanOperation::TofuDestroy);
+        }
     }
 
     if hard {
@@ -1535,6 +1708,8 @@ pub fn plan_clean_operations(
                 // KVM teardown runs first (destroy VMs/pools/domains), then full node cleanup
                 ops.push(CleanOperation::KvmTeardown { node_count: count });
                 ops.push(CleanOperation::NodeCleanup { node_count: count });
+                // Post-clean SSH verification confirms network survived (br0/default route intact)
+                ops.push(CleanOperation::PostCleanSshVerification { node_count: count });
             }
             None => ops.push(CleanOperation::SkipNodeCleanup),
         }
@@ -1542,6 +1717,56 @@ pub fn plan_clean_operations(
     }
 
     ops
+}
+
+/// Convert a `CleanOperation` to its human-readable dry-run description.
+/// Pure function: no I/O, no side effects.
+/// Each message is prefixed with `[dry-run]` and describes exactly what
+/// would happen in live mode — enabling output parity between dry and live runs.
+pub fn describe_clean_operation(op: &CleanOperation) -> String {
+    match op {
+        CleanOperation::NoState => {
+            "[dry-run] No SDI state found — nothing to clean".to_string()
+        }
+        CleanOperation::TofuDestroyHostInfra => {
+            "[dry-run] Step 1: Would run: tofu destroy -auto-approve (host-infra)".to_string()
+        }
+        CleanOperation::TofuDestroy => {
+            "[dry-run] Step 2: Would run: tofu destroy -auto-approve".to_string()
+        }
+        CleanOperation::KvmTeardown { node_count } => format!(
+            "[dry-run] Phase A: Would run KVM/libvirt teardown (destroy VMs + storage pools) on {} node(s)",
+            node_count
+        ),
+        CleanOperation::NodeCleanup { node_count } => format!(
+            "[dry-run] Phase B: Would run full node cleanup (K8s + KVM packages) on {} node(s)",
+            node_count
+        ),
+        CleanOperation::SkipNodeCleanup => {
+            "[dry-run] Step 3: No baremetal config found — would skip node cleanup (local state only)".to_string()
+        }
+        CleanOperation::PostCleanSshVerification { node_count } => format!(
+            "[dry-run] Phase D: Would verify SSH reachability + default route to {} node(s)",
+            node_count
+        ),
+        CleanOperation::RemoveStateDir => {
+            "[dry-run] Step 4: Would remove local SDI state directory".to_string()
+        }
+    }
+}
+
+/// Print a full dry-run plan to stdout.
+/// Called by `run_clean` when `--dry-run` is set.
+/// Pure output: no execution, no side effects beyond printing.
+pub fn print_dry_run_plan(ops: &[CleanOperation]) {
+    println!("[dry-run] sdi clean — planned operations:");
+    if ops.is_empty() {
+        println!("[dry-run]   (no operations)");
+    } else {
+        for (i, op) in ops.iter().enumerate() {
+            println!("[dry-run]   {}: {}", i + 1, describe_clean_operation(op));
+        }
+    }
 }
 
 /// Network defaults resolved from available config sources.
@@ -2026,6 +2251,7 @@ mod tests {
                 CleanOperation::TofuDestroy,
                 CleanOperation::KvmTeardown { node_count: 4 },
                 CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
                 CleanOperation::RemoveStateDir,
             ]
         );
@@ -2052,16 +2278,41 @@ mod tests {
             vec![
                 CleanOperation::KvmTeardown { node_count: 2 },
                 CleanOperation::NodeCleanup { node_count: 2 },
+                CleanOperation::PostCleanSshVerification { node_count: 2 },
                 CleanOperation::RemoveStateDir,
             ]
         );
     }
 
     #[test]
-    fn test_plan_clean_hard_no_state_dir_short_circuits() {
-        // Even with hard mode, no state dir means nothing to do
+    fn test_plan_clean_hard_no_state_dir_still_runs_node_cleanup() {
+        // Hard mode proceeds to node cleanup even without SDI state dir (clean reinstall).
+        // Tofu steps are skipped since there is no state to destroy.
         let ops = plan_clean_operations(true, false, false, false, Some(4));
-        assert_eq!(ops, vec![CleanOperation::NoState]);
+        assert_eq!(
+            ops,
+            vec![
+                CleanOperation::NoState,
+                CleanOperation::KvmTeardown { node_count: 4 },
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_plan_clean_hard_no_state_dir_no_bm_config() {
+        // Hard mode + no state + no baremetal config → NoState + SkipNodeCleanup + RemoveStateDir
+        let ops = plan_clean_operations(true, false, false, false, None);
+        assert_eq!(
+            ops,
+            vec![
+                CleanOperation::NoState,
+                CleanOperation::SkipNodeCleanup,
+                CleanOperation::RemoveStateDir,
+            ]
+        );
     }
 
     // --- Sprint 16a: host-infra tofu destroy (G-1) ---
@@ -2088,6 +2339,7 @@ mod tests {
                 CleanOperation::TofuDestroy,
                 CleanOperation::KvmTeardown { node_count: 4 },
                 CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
                 CleanOperation::RemoveStateDir,
             ],
             "hard clean must destroy host-infra BEFORE main tofu (dependency order)"
@@ -2104,6 +2356,7 @@ mod tests {
                 CleanOperation::TofuDestroyHostInfra,
                 CleanOperation::KvmTeardown { node_count: 2 },
                 CleanOperation::NodeCleanup { node_count: 2 },
+                CleanOperation::PostCleanSshVerification { node_count: 2 },
                 CleanOperation::RemoveStateDir,
             ]
         );
@@ -2179,6 +2432,192 @@ mod tests {
         assert!(
             ops.contains(&CleanOperation::NodeCleanup { node_count: 2 }),
             "NodeCleanup must follow KvmTeardown"
+        );
+    }
+
+    // --- AC 2: describe_clean_operation dry-run parity ---
+
+    /// AC 2: Each CleanOperation maps to a [dry-run] prefixed message.
+    #[test]
+    fn test_describe_clean_operation_no_state() {
+        let msg = describe_clean_operation(&CleanOperation::NoState);
+        assert!(
+            msg.starts_with("[dry-run]"),
+            "describe must always start with [dry-run]"
+        );
+        assert!(
+            msg.contains("nothing to clean"),
+            "NoState must mention 'nothing to clean'"
+        );
+    }
+
+    #[test]
+    fn test_describe_clean_operation_tofu_destroy_host_infra() {
+        let msg = describe_clean_operation(&CleanOperation::TofuDestroyHostInfra);
+        assert!(msg.starts_with("[dry-run]"));
+        assert!(
+            msg.contains("host-infra"),
+            "TofuDestroyHostInfra must mention 'host-infra'"
+        );
+        assert!(
+            msg.contains("tofu destroy"),
+            "TofuDestroyHostInfra must mention 'tofu destroy'"
+        );
+    }
+
+    #[test]
+    fn test_describe_clean_operation_tofu_destroy() {
+        let msg = describe_clean_operation(&CleanOperation::TofuDestroy);
+        assert!(msg.starts_with("[dry-run]"));
+        assert!(
+            msg.contains("tofu destroy"),
+            "TofuDestroy must mention 'tofu destroy'"
+        );
+    }
+
+    #[test]
+    fn test_describe_clean_operation_kvm_teardown_node_count() {
+        let msg = describe_clean_operation(&CleanOperation::KvmTeardown { node_count: 3 });
+        assert!(msg.starts_with("[dry-run]"));
+        assert!(
+            msg.contains("KVM") || msg.contains("kvm"),
+            "KvmTeardown must mention KVM"
+        );
+        assert!(
+            msg.contains("3"),
+            "KvmTeardown must include the node count (3)"
+        );
+    }
+
+    #[test]
+    fn test_describe_clean_operation_node_cleanup_node_count() {
+        let msg = describe_clean_operation(&CleanOperation::NodeCleanup { node_count: 5 });
+        assert!(msg.starts_with("[dry-run]"));
+        assert!(
+            msg.contains("K8s") || msg.contains("cleanup"),
+            "NodeCleanup must mention cleanup"
+        );
+        assert!(
+            msg.contains("5"),
+            "NodeCleanup must include the node count (5)"
+        );
+    }
+
+    #[test]
+    fn test_describe_clean_operation_skip_node_cleanup() {
+        let msg = describe_clean_operation(&CleanOperation::SkipNodeCleanup);
+        assert!(msg.starts_with("[dry-run]"));
+        assert!(
+            msg.contains("skip") || msg.contains("No baremetal"),
+            "SkipNodeCleanup must mention skipping"
+        );
+    }
+
+    #[test]
+    fn test_describe_clean_operation_post_clean_ssh_verification() {
+        let msg =
+            describe_clean_operation(&CleanOperation::PostCleanSshVerification { node_count: 2 });
+        assert!(msg.starts_with("[dry-run]"));
+        assert!(
+            msg.contains("SSH") || msg.contains("verify"),
+            "PostCleanSshVerification must mention SSH or verify"
+        );
+        assert!(
+            msg.contains("2"),
+            "PostCleanSshVerification must include the node count (2)"
+        );
+    }
+
+    #[test]
+    fn test_describe_clean_operation_remove_state_dir() {
+        let msg = describe_clean_operation(&CleanOperation::RemoveStateDir);
+        assert!(msg.starts_with("[dry-run]"));
+        assert!(
+            msg.contains("state") || msg.contains("remove"),
+            "RemoveStateDir must mention state or remove"
+        );
+    }
+
+    /// AC 2: All describe_clean_operation outputs use [dry-run] prefix — parity requirement.
+    /// The prefix clearly distinguishes dry-run from live execution in terminal output.
+    #[test]
+    fn test_all_operations_have_dry_run_prefix() {
+        let ops = vec![
+            CleanOperation::NoState,
+            CleanOperation::TofuDestroyHostInfra,
+            CleanOperation::TofuDestroy,
+            CleanOperation::KvmTeardown { node_count: 1 },
+            CleanOperation::NodeCleanup { node_count: 1 },
+            CleanOperation::SkipNodeCleanup,
+            CleanOperation::PostCleanSshVerification { node_count: 1 },
+            CleanOperation::RemoveStateDir,
+        ];
+        for op in &ops {
+            let msg = describe_clean_operation(op);
+            assert!(
+                msg.starts_with("[dry-run]"),
+                "Operation {:?} must produce a [dry-run] prefixed message, got: {}",
+                op,
+                msg
+            );
+        }
+    }
+
+    /// AC 2: plan_clean_operations + describe_clean_operation round-trip for a
+    /// typical hard-clean scenario (main.tf + bm config with 4 nodes).
+    /// Verifies the plan covers all expected steps.
+    #[test]
+    fn test_dry_run_plan_hard_clean_full_scenario() {
+        let ops = plan_clean_operations(true, true, true, false, Some(4));
+        assert!(
+            !ops.is_empty(),
+            "Full hard-clean scenario must produce at least one operation"
+        );
+        // All operations must be describable
+        for op in &ops {
+            let msg = describe_clean_operation(op);
+            assert!(
+                !msg.is_empty(),
+                "describe_clean_operation must not produce empty string for {:?}",
+                op
+            );
+            assert!(
+                msg.starts_with("[dry-run]"),
+                "All descriptions must have [dry-run] prefix"
+            );
+        }
+        // Must cover KVM teardown, node cleanup, SSH verification, and state removal
+        assert!(ops
+            .iter()
+            .any(|op| matches!(op, CleanOperation::KvmTeardown { .. })));
+        assert!(ops
+            .iter()
+            .any(|op| matches!(op, CleanOperation::NodeCleanup { .. })));
+        assert!(ops
+            .iter()
+            .any(|op| matches!(op, CleanOperation::PostCleanSshVerification { .. })));
+        assert!(ops.contains(&CleanOperation::RemoveStateDir));
+    }
+
+    /// AC 2: Dry-run with no state dir produces NoState (nothing to execute).
+    /// Verifies dry-run exits cleanly even when output_dir does not exist.
+    #[test]
+    fn test_dry_run_no_state_produces_no_state_op() {
+        let ops = plan_clean_operations(false, false, false, false, None);
+        assert_eq!(ops, vec![CleanOperation::NoState]);
+        let msg = describe_clean_operation(&CleanOperation::NoState);
+        assert!(msg.starts_with("[dry-run]"));
+        assert!(msg.contains("nothing to clean"));
+    }
+
+    /// AC 2: describe_clean_operation KvmTeardown with singular node mentions "node(s)".
+    #[test]
+    fn test_describe_kvm_teardown_single_node() {
+        let msg = describe_clean_operation(&CleanOperation::KvmTeardown { node_count: 1 });
+        assert!(
+            msg.contains("1"),
+            "Single-node teardown must show count 1, got: {}",
+            msg
         );
     }
 
@@ -2999,13 +3438,14 @@ mod tests {
                 CleanOperation::TofuDestroy,
                 CleanOperation::KvmTeardown { node_count: 4 },
                 CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
                 CleanOperation::RemoveStateDir,
             ],
-            "First run must: destroy OpenTofu, run KVM teardown, run node cleanup, remove state dir"
+            "First run must: destroy OpenTofu, run KVM teardown, run node cleanup, verify SSH, remove state dir"
         );
 
         // After first run: RemoveStateDir removes _generated/sdi → output_dir_exists = false
-        // Second run must be a no-op (clean exit, nothing left to do)
+        // Hard mode still attempts node cleanup (idempotent — safe to re-run on clean state)
         let second_run = plan_clean_operations(
             true,  // hard
             false, // output_dir_exists (removed by RemoveStateDir)
@@ -3015,8 +3455,14 @@ mod tests {
         );
         assert_eq!(
             second_run,
-            vec![CleanOperation::NoState],
-            "Second run after state removal must return NoState — idempotent clean exit"
+            vec![
+                CleanOperation::NoState,
+                CleanOperation::KvmTeardown { node_count: 4 },
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ],
+            "Second run after state removal: hard mode still attempts node cleanup (idempotent — safe to re-run)"
         );
     }
 
@@ -3037,17 +3483,24 @@ mod tests {
                 CleanOperation::TofuDestroyHostInfra,
                 CleanOperation::KvmTeardown { node_count: 4 },
                 CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
                 CleanOperation::RemoveStateDir,
             ],
-            "First run (no-flag path) must: destroy host-infra, KVM teardown, clean 4 nodes, remove state"
+            "First run (no-flag path) must: destroy host-infra, KVM teardown, clean 4 nodes, verify SSH, remove state"
         );
 
-        // Second run: output_dir removed → NoState
+        // Second run: output_dir removed → hard mode still attempts node cleanup (idempotent — safe to re-run)
         let second_run = plan_clean_operations(true, false, false, false, Some(4));
         assert_eq!(
             second_run,
-            vec![CleanOperation::NoState],
-            "Second run after no-flag path cleanup must return NoState"
+            vec![
+                CleanOperation::NoState,
+                CleanOperation::KvmTeardown { node_count: 4 },
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ],
+            "Second run after no-flag path cleanup: hard mode still attempts node cleanup (idempotent — safe to re-run)"
         );
     }
 
@@ -3070,24 +3523,32 @@ mod tests {
                 CleanOperation::TofuDestroy,
                 CleanOperation::KvmTeardown { node_count: 4 },
                 CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
                 CleanOperation::RemoveStateDir,
             ],
-            "Full first run must destroy host-infra THEN main tofu THEN KVM teardown THEN clean all 4 nodes"
+            "Full first run must destroy host-infra THEN main tofu THEN KVM teardown THEN clean all 4 nodes THEN verify SSH"
         );
 
-        // Second run is always a clean exit
+        // Second run: hard mode still attempts node cleanup (idempotent — safe to re-run)
         let second_run = plan_clean_operations(true, false, false, false, Some(4));
         assert_eq!(
             second_run,
-            vec![CleanOperation::NoState],
-            "Second run of full clean must return NoState"
+            vec![
+                CleanOperation::NoState,
+                CleanOperation::KvmTeardown { node_count: 4 },
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ],
+            "Second run of full clean: hard mode still attempts node cleanup (idempotent — safe to re-run)"
         );
     }
 
     /// Sub-AC 5: Repeated re-runs (3rd, 4th, 5th) are all safe — not just the second.
     #[test]
     fn test_clean_hard_idempotent_n_runs_always_safe() {
-        // After first run removes state dir, every subsequent run sees no state
+        // After first run removes state dir, every subsequent run still attempts node cleanup
+        // (idempotent — safe to re-run on clean state)
         for run_number in 2..=5 {
             let ops = plan_clean_operations(
                 true,  // hard
@@ -3098,8 +3559,14 @@ mod tests {
             );
             assert_eq!(
                 ops,
-                vec![CleanOperation::NoState],
-                "Run #{} must return NoState for idempotent clean exit",
+                vec![
+                    CleanOperation::NoState,
+                    CleanOperation::KvmTeardown { node_count: 4 },
+                    CleanOperation::NodeCleanup { node_count: 4 },
+                    CleanOperation::PostCleanSshVerification { node_count: 4 },
+                    CleanOperation::RemoveStateDir,
+                ],
+                "Run #{} must still perform node cleanup (idempotent — safe to re-run)",
                 run_number
             );
         }
@@ -3126,12 +3593,17 @@ mod tests {
             "First run without bm_config must SkipNodeCleanup but still remove state"
         );
 
-        // Second run: state removed → NoState regardless of bm_config presence
+        // Second run: state removed → hard mode still skips node cleanup (no bm_config) but removes state dir
+        // (idempotent — safe to re-run)
         let second_run = plan_clean_operations(true, false, false, false, None);
         assert_eq!(
             second_run,
-            vec![CleanOperation::NoState],
-            "Second run without bm_config must still return NoState"
+            vec![
+                CleanOperation::NoState,
+                CleanOperation::SkipNodeCleanup,
+                CleanOperation::RemoveStateDir,
+            ],
+            "Second run without bm_config: hard mode still attempts cleanup path (idempotent — safe to re-run)"
         );
     }
 
@@ -3165,12 +3637,24 @@ mod tests {
             "RemoveStateDir must be the final operation to prevent leftover partial state"
         );
 
-        // After RemoveStateDir, plan_clean_operations returns NoState — guaranteed clean
+        // After RemoveStateDir, hard mode still attempts node cleanup (idempotent — safe to re-run)
+        // RemoveStateDir remains last in the new ops list
         let post_clean = plan_clean_operations(true, false, false, false, Some(4));
         assert_eq!(
             post_clean,
-            vec![CleanOperation::NoState],
-            "After RemoveStateDir, no artifacts remain — clean exit guaranteed on re-run"
+            vec![
+                CleanOperation::NoState,
+                CleanOperation::KvmTeardown { node_count: 4 },
+                CleanOperation::NodeCleanup { node_count: 4 },
+                CleanOperation::PostCleanSshVerification { node_count: 4 },
+                CleanOperation::RemoveStateDir,
+            ],
+            "After RemoveStateDir, hard mode still performs node cleanup (idempotent) — RemoveStateDir remains last"
+        );
+        assert_eq!(
+            post_clean.last(),
+            Some(&CleanOperation::RemoveStateDir),
+            "RemoveStateDir must still be the final operation after no-state re-run"
         );
     }
 
@@ -3485,5 +3969,425 @@ mod tests {
             kvm_pos.unwrap() < clean_pos.unwrap(),
             "KvmTeardown must precede NodeCleanup even for per-node targeted clean"
         );
+    }
+
+    // --- Sub-AC 3: Post-clean SSH connectivity verification ---
+
+    /// Sub-AC 3: plan_clean_operations includes PostCleanSshVerification when nodes are present.
+    #[test]
+    fn test_plan_clean_includes_post_clean_ssh_verification() {
+        let ops = plan_clean_operations(true, true, false, false, Some(4));
+        let has_verify = ops
+            .iter()
+            .any(|op| matches!(op, CleanOperation::PostCleanSshVerification { .. }));
+        assert!(
+            has_verify,
+            "PostCleanSshVerification must be present in hard-clean plan with nodes"
+        );
+    }
+
+    /// Sub-AC 3: PostCleanSshVerification carries the correct node count.
+    #[test]
+    fn test_post_clean_ssh_verification_has_correct_node_count() {
+        let ops = plan_clean_operations(true, true, false, false, Some(4));
+        let verify_op = ops
+            .iter()
+            .find(|op| matches!(op, CleanOperation::PostCleanSshVerification { .. }));
+        assert!(verify_op.is_some(), "PostCleanSshVerification must be present");
+        match verify_op.unwrap() {
+            CleanOperation::PostCleanSshVerification { node_count } => {
+                assert_eq!(*node_count, 4, "node_count must match the target node count");
+            }
+            _ => panic!("unexpected operation type"),
+        }
+    }
+
+    /// Sub-AC 3: PostCleanSshVerification comes AFTER NodeCleanup in the plan.
+    /// Network can only be verified after the cleanup script has finished.
+    #[test]
+    fn test_post_clean_ssh_verification_after_node_cleanup() {
+        let ops = plan_clean_operations(true, true, false, false, Some(3));
+        let cleanup_pos = ops
+            .iter()
+            .position(|op| matches!(op, CleanOperation::NodeCleanup { .. }));
+        let verify_pos = ops
+            .iter()
+            .position(|op| matches!(op, CleanOperation::PostCleanSshVerification { .. }));
+        assert!(
+            cleanup_pos.is_some() && verify_pos.is_some(),
+            "Both NodeCleanup and PostCleanSshVerification must be present"
+        );
+        assert!(
+            verify_pos.unwrap() > cleanup_pos.unwrap(),
+            "PostCleanSshVerification must come AFTER NodeCleanup"
+        );
+    }
+
+    /// Sub-AC 3: PostCleanSshVerification comes BEFORE RemoveStateDir.
+    /// We verify connectivity while state still exists; state removal is the final step.
+    #[test]
+    fn test_post_clean_ssh_verification_before_remove_state_dir() {
+        let ops = plan_clean_operations(true, true, false, false, Some(2));
+        let verify_pos = ops
+            .iter()
+            .position(|op| matches!(op, CleanOperation::PostCleanSshVerification { .. }));
+        let remove_pos = ops
+            .iter()
+            .position(|op| matches!(op, CleanOperation::RemoveStateDir));
+        assert!(
+            verify_pos.is_some() && remove_pos.is_some(),
+            "Both PostCleanSshVerification and RemoveStateDir must be present"
+        );
+        assert!(
+            verify_pos.unwrap() < remove_pos.unwrap(),
+            "PostCleanSshVerification must come BEFORE RemoveStateDir"
+        );
+    }
+
+    /// Sub-AC 3: No PostCleanSshVerification when baremetal config is absent (SkipNodeCleanup).
+    /// If we can't run cleanup, there's nothing to verify.
+    #[test]
+    fn test_no_post_clean_ssh_verification_without_bm_config() {
+        let ops = plan_clean_operations(true, true, false, false, None);
+        let has_verify = ops
+            .iter()
+            .any(|op| matches!(op, CleanOperation::PostCleanSshVerification { .. }));
+        assert!(
+            !has_verify,
+            "PostCleanSshVerification must NOT be present when baremetal config is absent"
+        );
+        let has_skip = ops
+            .iter()
+            .any(|op| matches!(op, CleanOperation::SkipNodeCleanup));
+        assert!(
+            has_skip,
+            "SkipNodeCleanup must be present when baremetal config is absent"
+        );
+    }
+
+    /// Sub-AC 3: No PostCleanSshVerification in soft-clean mode (hard=false).
+    #[test]
+    fn test_no_post_clean_ssh_verification_in_soft_clean() {
+        let ops = plan_clean_operations(false, true, true, false, Some(4));
+        let has_verify = ops
+            .iter()
+            .any(|op| matches!(op, CleanOperation::PostCleanSshVerification { .. }));
+        assert!(
+            !has_verify,
+            "PostCleanSshVerification must NOT be present in soft-clean mode"
+        );
+    }
+
+    // --- AC 7: sdi init completes with VMs running (virsh list verification) ---
+
+    /// Build the full 9-VM topology matching sdi-specs.yaml exactly:
+    ///   Tower:   3 CP (playbox-0/1/2) + 2 Workers (playbox-2/3)
+    ///   Sandbox: 1 CP (playbox-0)     + 3 Workers (playbox-1/2/3)
+    fn make_full_sdi_spec_nine_vms() -> SdiSpec {
+        SdiSpec {
+            resource_pool: ResourcePoolConfig {
+                name: "playbox-pool".to_string(),
+                network: NetworkConfig {
+                    management_bridge: "br0".to_string(),
+                    management_cidr: "192.168.88.0/24".to_string(),
+                    gateway: "192.168.88.1".to_string(),
+                    nameservers: vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()],
+                },
+            },
+            os_image: OsImageConfig {
+                source: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img".to_string(),
+                format: "qcow2".to_string(),
+            },
+            cloud_init: CloudInitConfig {
+                ssh_authorized_keys_file: "~/.ssh/id_ed25519.pub".to_string(),
+                packages: vec![
+                    "curl".to_string(),
+                    "apt-transport-https".to_string(),
+                    "nfs-common".to_string(),
+                    "open-iscsi".to_string(),
+                ],
+            },
+            spec: SdiPoolsSpec {
+                sdi_pools: vec![
+                    // Tower: 3 CP + 2 Workers
+                    SdiPool {
+                        pool_name: "tower".to_string(),
+                        purpose: "management".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec![],
+                            spread: true,
+                        },
+                        node_specs: vec![
+                            NodeSpec {
+                                node_name: "tower-cp-0".to_string(),
+                                ip: "192.168.88.100".to_string(),
+                                cpu: 4,
+                                mem_gb: 6,
+                                disk_gb: 30,
+                                host: Some("playbox-0".to_string()),
+                                roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "tower-cp-1".to_string(),
+                                ip: "192.168.88.101".to_string(),
+                                cpu: 4,
+                                mem_gb: 6,
+                                disk_gb: 30,
+                                host: Some("playbox-1".to_string()),
+                                roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "tower-cp-2".to_string(),
+                                ip: "192.168.88.102".to_string(),
+                                cpu: 4,
+                                mem_gb: 6,
+                                disk_gb: 30,
+                                host: Some("playbox-2".to_string()),
+                                roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "tower-worker-0".to_string(),
+                                ip: "192.168.88.103".to_string(),
+                                cpu: 4,
+                                mem_gb: 8,
+                                disk_gb: 40,
+                                host: Some("playbox-2".to_string()),
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "tower-worker-1".to_string(),
+                                ip: "192.168.88.104".to_string(),
+                                cpu: 4,
+                                mem_gb: 8,
+                                disk_gb: 40,
+                                host: Some("playbox-3".to_string()),
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                        ],
+                    },
+                    // Sandbox: 1 CP + 3 Workers
+                    SdiPool {
+                        pool_name: "sandbox".to_string(),
+                        purpose: "workload".to_string(),
+                        placement: PlacementConfig {
+                            hosts: vec![],
+                            spread: true,
+                        },
+                        node_specs: vec![
+                            NodeSpec {
+                                node_name: "sandbox-cp-0".to_string(),
+                                ip: "192.168.88.110".to_string(),
+                                cpu: 4,
+                                mem_gb: 8,
+                                disk_gb: 60,
+                                host: Some("playbox-0".to_string()),
+                                roles: vec!["control-plane".to_string(), "etcd".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "sandbox-worker-0".to_string(),
+                                ip: "192.168.88.120".to_string(),
+                                cpu: 2,
+                                mem_gb: 4,
+                                disk_gb: 40,
+                                host: Some("playbox-1".to_string()),
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "sandbox-worker-1".to_string(),
+                                ip: "192.168.88.121".to_string(),
+                                cpu: 2,
+                                mem_gb: 4,
+                                disk_gb: 40,
+                                host: Some("playbox-2".to_string()),
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                            NodeSpec {
+                                node_name: "sandbox-worker-2".to_string(),
+                                ip: "192.168.88.122".to_string(),
+                                cpu: 4,
+                                mem_gb: 8,
+                                disk_gb: 60,
+                                host: Some("playbox-3".to_string()),
+                                roles: vec!["worker".to_string()],
+                                devices: None,
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+    }
+
+    /// AC 7: Full topology has exactly 9 VMs spread across 4 bare-metal hosts.
+    #[test]
+    fn test_collect_vms_per_host_full_topology_nine_vms() {
+        let spec = make_full_sdi_spec_nine_vms();
+        let map = collect_vms_per_host(&spec);
+
+        // All 4 physical hosts must appear
+        assert!(map.contains_key("playbox-0"), "playbox-0 must be present");
+        assert!(map.contains_key("playbox-1"), "playbox-1 must be present");
+        assert!(map.contains_key("playbox-2"), "playbox-2 must be present");
+        assert!(map.contains_key("playbox-3"), "playbox-3 must be present");
+
+        // Total VM count across all hosts must be exactly 9
+        let total: usize = map.values().map(|v| v.len()).sum();
+        assert_eq!(total, 9, "full topology must have exactly 9 VMs");
+    }
+
+    /// AC 7: playbox-0 hosts exactly tower-cp-0 and sandbox-cp-0.
+    #[test]
+    fn test_collect_vms_per_host_playbox0_has_two_vms() {
+        let spec = make_full_sdi_spec_nine_vms();
+        let map = collect_vms_per_host(&spec);
+
+        let vms = map.get("playbox-0").expect("playbox-0 must be present");
+        assert_eq!(vms.len(), 2, "playbox-0 must host 2 VMs (tower-cp-0 + sandbox-cp-0)");
+        assert!(
+            vms.contains(&"tower-cp-0".to_string()),
+            "playbox-0 must host tower-cp-0"
+        );
+        assert!(
+            vms.contains(&"sandbox-cp-0".to_string()),
+            "playbox-0 must host sandbox-cp-0"
+        );
+    }
+
+    /// AC 7: playbox-2 hosts exactly 3 VMs: tower-cp-2, tower-worker-0, sandbox-worker-1.
+    #[test]
+    fn test_collect_vms_per_host_playbox2_has_three_vms() {
+        let spec = make_full_sdi_spec_nine_vms();
+        let map = collect_vms_per_host(&spec);
+
+        let vms = map.get("playbox-2").expect("playbox-2 must be present");
+        assert_eq!(
+            vms.len(),
+            3,
+            "playbox-2 must host 3 VMs (tower-cp-2 + tower-worker-0 + sandbox-worker-1)"
+        );
+        assert!(
+            vms.contains(&"tower-cp-2".to_string()),
+            "playbox-2 must host tower-cp-2"
+        );
+        assert!(
+            vms.contains(&"tower-worker-0".to_string()),
+            "playbox-2 must host tower-worker-0"
+        );
+        assert!(
+            vms.contains(&"sandbox-worker-1".to_string()),
+            "playbox-2 must host sandbox-worker-1"
+        );
+    }
+
+    /// AC 7: vm_is_running correctly identifies all 9 VMs as running from virsh output.
+    #[test]
+    fn test_vm_is_running_all_nine_vms_full_topology() {
+        // Simulate `virsh list --all` output with all 9 VMs running
+        let virsh_output = "\
+ Id   Name               State
+-----------------------------------
+  1   tower-cp-0         running
+  2   tower-cp-1         running
+  3   tower-cp-2         running
+  4   tower-worker-0     running
+  5   tower-worker-1     running
+  6   sandbox-cp-0       running
+  7   sandbox-worker-0   running
+  8   sandbox-worker-1   running
+  9   sandbox-worker-2   running";
+
+        let all_vms = vec![
+            "tower-cp-0",
+            "tower-cp-1",
+            "tower-cp-2",
+            "tower-worker-0",
+            "tower-worker-1",
+            "sandbox-cp-0",
+            "sandbox-worker-0",
+            "sandbox-worker-1",
+            "sandbox-worker-2",
+        ];
+
+        for vm_name in &all_vms {
+            assert!(
+                vm_is_running(vm_name, virsh_output),
+                "VM {} must be detected as running",
+                vm_name
+            );
+        }
+    }
+
+    /// AC 7: vm_is_running treats "shut off" (two-word state) as NOT running.
+    #[test]
+    fn test_vm_is_running_shut_off_is_not_running() {
+        // "shut off" is a two-word state — parts[2] == "shut", parts[3] == "off"
+        // The parser only checks parts[2] == "running", so "shut" != "running" → false
+        let virsh_output = "\
+ Id   Name               State
+-----------------------------------
+  1   tower-cp-0         running
+  -   tower-cp-1         shut off
+  -   sandbox-worker-2   shut off";
+
+        assert!(
+            vm_is_running("tower-cp-0", virsh_output),
+            "tower-cp-0 is running"
+        );
+        assert!(
+            !vm_is_running("tower-cp-1", virsh_output),
+            "tower-cp-1 is shut off, must NOT be running"
+        );
+        assert!(
+            !vm_is_running("sandbox-worker-2", virsh_output),
+            "sandbox-worker-2 is shut off, must NOT be running"
+        );
+    }
+
+    /// AC 7: vm_is_running returns false for paused/crashed/idle VM states.
+    #[test]
+    fn test_vm_is_running_non_running_states() {
+        let virsh_output = "\
+ Id   Name              State
+-----------------------------------
+  1   tower-cp-0        paused
+  2   tower-cp-1        crashed
+  3   tower-cp-2        idle
+  -   tower-worker-0    shut off";
+
+        for vm_name in &["tower-cp-0", "tower-cp-1", "tower-cp-2", "tower-worker-0"] {
+            assert!(
+                !vm_is_running(vm_name, virsh_output),
+                "VM {} in non-running state must return false",
+                vm_name
+            );
+        }
+    }
+
+    /// AC 7: collect_vms_per_host produces correct per-host VM lists for virsh verification.
+    /// Each host's VM list is what sdi init passes to virsh for post-tofu-apply verification.
+    #[test]
+    fn test_collect_vms_per_host_matches_expected_virsh_verification_targets() {
+        let spec = make_full_sdi_spec_nine_vms();
+        let map = collect_vms_per_host(&spec);
+
+        // playbox-1: tower-cp-1 + sandbox-worker-0
+        let pb1 = map.get("playbox-1").expect("playbox-1 must be present");
+        assert_eq!(pb1.len(), 2, "playbox-1 must host 2 VMs");
+        assert!(pb1.contains(&"tower-cp-1".to_string()), "playbox-1 must host tower-cp-1");
+        assert!(pb1.contains(&"sandbox-worker-0".to_string()), "playbox-1 must host sandbox-worker-0");
+
+        // playbox-3: tower-worker-1 + sandbox-worker-2
+        let pb3 = map.get("playbox-3").expect("playbox-3 must be present");
+        assert_eq!(pb3.len(), 2, "playbox-3 must host 2 VMs");
+        assert!(pb3.contains(&"tower-worker-1".to_string()), "playbox-3 must host tower-worker-1");
+        assert!(pb3.contains(&"sandbox-worker-2".to_string()), "playbox-3 must host sandbox-worker-2");
     }
 }

@@ -16,9 +16,10 @@ cloud_init:
 
 spec:
   sdi_pools:
-    # Tower: HA management cluster — 3 control planes spread across hosts
+    # Tower: HA management cluster — 3 dedicated control planes + 2 dedicated workers
     # kube-vip (static pod, L2/ARP) provides VIP at 192.168.88.99
-    # Each CP also runs workloads (control-plane + worker role)
+    # CPs: playbox-0/1/2 (192.168.88.100-102); Workers: playbox-3 (192.168.88.103-104)
+    # Host capacity: playbox-0/1/2 = 8C/15G, playbox-3 = 16C/252G
     - pool_name: "tower"
       purpose: "management"
       placement:
@@ -30,25 +31,41 @@ spec:
           mem_gb: 6
           disk_gb: 30
           host: "playbox-0"
-          roles: [control-plane, etcd, worker]
+          roles: [control-plane, etcd]
         - node_name: "tower-cp-1"
           ip: "192.168.88.101"
           cpu: 4
           mem_gb: 6
           disk_gb: 30
           host: "playbox-1"
-          roles: [control-plane, etcd, worker]
+          roles: [control-plane, etcd]
         - node_name: "tower-cp-2"
           ip: "192.168.88.102"
           cpu: 4
           mem_gb: 6
           disk_gb: 30
           host: "playbox-2"
-          roles: [control-plane, etcd, worker]
+          roles: [control-plane, etcd]
+        - node_name: "tower-worker-0"
+          ip: "192.168.88.103"
+          cpu: 3
+          mem_gb: 8
+          disk_gb: 40
+          host: "playbox-3"
+          roles: [worker]
+        - node_name: "tower-worker-1"
+          ip: "192.168.88.104"
+          cpu: 3
+          mem_gb: 8
+          disk_gb: 40
+          host: "playbox-3"
+          roles: [worker]
 
-    # Sandbox: workload cluster — 1 CP + 3 workers
+    # Sandbox: workload cluster — 1 dedicated CP + 3 dedicated workers
     # kube-vip (static pod, L2/ARP) provides VIP at 192.168.88.109
-    # CP co-located on playbox-0, workers spread across playbox-1/2/3
+    # CP on playbox-3 (252GB RAM), workers spread across playbox-1/2/3
+    # NOTE: sandbox-cp-0 moved OFF playbox-0 to avoid OOM — playbox-0 is the
+    # bastion (ProxyJump target for all Kubespray SSH) and cannot afford 14GB VM load
     - pool_name: "sandbox"
       purpose: "workload"
       placement:
@@ -59,8 +76,8 @@ spec:
           cpu: 4
           mem_gb: 8
           disk_gb: 60
-          host: "playbox-0"
-          roles: [control-plane, etcd, worker]
+          host: "playbox-3"
+          roles: [control-plane, etcd]
         - node_name: "sandbox-worker-0"
           ip: "192.168.88.120"
           cpu: 2
@@ -77,7 +94,7 @@ spec:
           roles: [worker]
         - node_name: "sandbox-worker-2"
           ip: "192.168.88.122"
-          cpu: 4
+          cpu: 2
           mem_gb: 8
           disk_gb: 60
           host: "playbox-3"

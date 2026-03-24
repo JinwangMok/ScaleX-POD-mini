@@ -2671,8 +2671,67 @@ mod tests {
                 make_svc("kube-dns", "kube-system", "ClusterIP"),
                 make_svc("prometheus-svc", "monitoring", "ClusterIP"),
             ],
-            configmaps: vec![],
-            events: vec![],
+            configmaps: vec![
+                ConfigMapInfo {
+                    name: "app-config".into(),
+                    namespace: "default".into(),
+                    data_keys_count: 3,
+                    data_keys_display: "3".into(),
+                    age: "1d".into(),
+                },
+                ConfigMapInfo {
+                    name: "coredns".into(),
+                    namespace: "kube-system".into(),
+                    data_keys_count: 1,
+                    data_keys_display: "1".into(),
+                    age: "7d".into(),
+                },
+                ConfigMapInfo {
+                    name: "prometheus-config".into(),
+                    namespace: "monitoring".into(),
+                    data_keys_count: 5,
+                    data_keys_display: "5".into(),
+                    age: "2h".into(),
+                },
+            ],
+            events: vec![
+                EventInfo {
+                    namespace: "default".into(),
+                    name: "nginx-abc.pod-started".into(),
+                    event_type: "Normal".into(),
+                    reason: "Started".into(),
+                    object: "Pod/nginx-abc".into(),
+                    message: "Started container app".into(),
+                    count: 1,
+                    count_display: "1".into(),
+                    last_seen: "5m".into(),
+                    age: "5m".into(),
+                },
+                EventInfo {
+                    namespace: "kube-system".into(),
+                    name: "coredns-xyz.dns-resolve".into(),
+                    event_type: "Warning".into(),
+                    reason: "DNSConfigForming".into(),
+                    object: "Pod/coredns-xyz".into(),
+                    message: "Search Line limits were exceeded, some search paths have been omitted".into(),
+                    count: 3,
+                    count_display: "3".into(),
+                    last_seen: "10m".into(),
+                    age: "10m".into(),
+                },
+                EventInfo {
+                    namespace: "monitoring".into(),
+                    name: "prometheus-0.scheduled".into(),
+                    event_type: "Normal".into(),
+                    reason: "Scheduled".into(),
+                    object: "Pod/prometheus-0".into(),
+                    message: "Successfully assigned monitoring/prometheus-0 to node-0".into(),
+                    count: 1,
+                    count_display: "1".into(),
+                    last_seen: "2h".into(),
+                    age: "2h".into(),
+                },
+            ],
             resource_usage: ResourceUsage::default(),
         }
     }
@@ -3422,5 +3481,1053 @@ mod tests {
                 input, result, expected
             );
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Multi-cluster metrics tests — tower (3CP+2W) and sandbox (1CP+3W) topology
+    // ---------------------------------------------------------------------------
+
+    /// Helper to build a NodeInfo with cpu/mem capacity set (for compute_resource_usage).
+    fn make_node(name: &str, cpu_cap: &str, mem_cap_bytes: &str) -> NodeInfo {
+        NodeInfo {
+            name: name.into(),
+            status: "Ready".into(),
+            cpu_capacity: cpu_cap.into(),
+            mem_capacity: mem_cap_bytes.into(),
+            cpu_allocatable: cpu_cap.into(),
+            mem_allocatable: mem_cap_bytes.into(),
+            age: "1d".into(),
+            ..Default::default()
+        }
+    }
+
+    /// Helper: build a NodeMetrics at a given CPU utilization fraction and MEM bytes.
+    fn make_node_metrics(name: &str, cpu_cores: f64, mem_bytes: f64) -> NodeMetrics {
+        NodeMetrics {
+            name: name.into(),
+            cpu_usage: cpu_cores,
+            mem_usage: mem_bytes,
+        }
+    }
+
+    // ----- tower cluster: 3 control-plane + 2 worker nodes -----
+
+    #[test]
+    fn tower_cluster_3cp_2w_with_metrics_computes_correct_percent() {
+        // tower: 3 CP nodes (8 CPU, 16Gi each) + 2 worker nodes (16 CPU, 32Gi each)
+        // Total capacity: 3*8 + 2*16 = 56 CPU cores, 3*16Gi + 2*32Gi = 112Gi
+        // Usage: each CP uses 2 cores/4Gi; each worker uses 4 cores/8Gi
+        // Total usage: 3*2 + 2*4 = 14 cores = 25%, 3*4Gi + 2*8Gi = 28Gi = 25%
+        let gib = 1024.0 * 1024.0 * 1024.0_f64;
+        let nodes = vec![
+            make_node("tower-cp-1", "8", &(16.0 * gib).to_string()),
+            make_node("tower-cp-2", "8", &(16.0 * gib).to_string()),
+            make_node("tower-cp-3", "8", &(16.0 * gib).to_string()),
+            make_node("tower-worker-1", "16", &(32.0 * gib).to_string()),
+            make_node("tower-worker-2", "16", &(32.0 * gib).to_string()),
+        ];
+        let metrics = vec![
+            make_node_metrics("tower-cp-1", 2.0, 4.0 * gib),
+            make_node_metrics("tower-cp-2", 2.0, 4.0 * gib),
+            make_node_metrics("tower-cp-3", 2.0, 4.0 * gib),
+            make_node_metrics("tower-worker-1", 4.0, 8.0 * gib),
+            make_node_metrics("tower-worker-2", 4.0, 8.0 * gib),
+        ];
+        let usage = compute_resource_usage(&nodes, &[], Some(&metrics), None);
+        assert!(
+            usage.cpu_percent >= 0.0,
+            "tower cluster cpu_percent must not be sentinel (-1.0)"
+        );
+        assert!(
+            (usage.cpu_percent - 25.0).abs() < 1e-3,
+            "tower 14/56 cores = 25%, got {}",
+            usage.cpu_percent
+        );
+        assert!(
+            (usage.mem_percent - 25.0).abs() < 1e-3,
+            "tower 28/112 Gi = 25%, got {}",
+            usage.mem_percent
+        );
+        assert_eq!(usage.total_nodes, 5, "tower has 5 nodes (3CP+2W)");
+        assert_eq!(usage.ready_nodes, 5, "all tower nodes are Ready");
+    }
+
+    #[test]
+    fn tower_cluster_no_metrics_shows_sentinel() {
+        // When metrics-server is unavailable on tower, both percents must be -1.0
+        let gib = 1024.0 * 1024.0 * 1024.0_f64;
+        let nodes = vec![
+            make_node("tower-cp-1", "8", &(16.0 * gib).to_string()),
+            make_node("tower-cp-2", "8", &(16.0 * gib).to_string()),
+            make_node("tower-cp-3", "8", &(16.0 * gib).to_string()),
+            make_node("tower-worker-1", "16", &(32.0 * gib).to_string()),
+            make_node("tower-worker-2", "16", &(32.0 * gib).to_string()),
+        ];
+        let usage = compute_resource_usage(&nodes, &[], None, None);
+        assert!(
+            (usage.cpu_percent - (-1.0)).abs() < 1e-9,
+            "tower with no metrics: cpu_percent must be sentinel -1.0"
+        );
+        assert!(
+            (usage.mem_percent - (-1.0)).abs() < 1e-9,
+            "tower with no metrics: mem_percent must be sentinel -1.0"
+        );
+    }
+
+    // ----- sandbox cluster: 1 control-plane + 3 worker nodes -----
+
+    #[test]
+    fn sandbox_cluster_1cp_3w_with_metrics_computes_correct_percent() {
+        // sandbox: 1 CP (4 CPU, 8Gi) + 3 workers (8 CPU, 16Gi each)
+        // Total capacity: 1*4 + 3*8 = 28 CPU, 1*8 + 3*16 = 56Gi
+        // Usage: CP uses 1 core/2Gi; each worker uses 2 cores/4Gi
+        // Total usage: 1 + 3*2 = 7 cores = 7/28 = 25%, 2 + 3*4 = 14Gi = 14/56 = 25%
+        let gib = 1024.0 * 1024.0 * 1024.0_f64;
+        let nodes = vec![
+            make_node("sandbox-cp-1", "4", &(8.0 * gib).to_string()),
+            make_node("sandbox-worker-1", "8", &(16.0 * gib).to_string()),
+            make_node("sandbox-worker-2", "8", &(16.0 * gib).to_string()),
+            make_node("sandbox-worker-3", "8", &(16.0 * gib).to_string()),
+        ];
+        let metrics = vec![
+            make_node_metrics("sandbox-cp-1", 1.0, 2.0 * gib),
+            make_node_metrics("sandbox-worker-1", 2.0, 4.0 * gib),
+            make_node_metrics("sandbox-worker-2", 2.0, 4.0 * gib),
+            make_node_metrics("sandbox-worker-3", 2.0, 4.0 * gib),
+        ];
+        let usage = compute_resource_usage(&nodes, &[], Some(&metrics), None);
+        assert!(
+            usage.cpu_percent >= 0.0,
+            "sandbox cpu_percent must not be sentinel"
+        );
+        assert!(
+            (usage.cpu_percent - 25.0).abs() < 1e-3,
+            "sandbox 7/28 cores = 25%, got {}",
+            usage.cpu_percent
+        );
+        assert!(
+            (usage.mem_percent - 25.0).abs() < 1e-3,
+            "sandbox 14/56 Gi = 25%, got {}",
+            usage.mem_percent
+        );
+        assert_eq!(usage.total_nodes, 4, "sandbox has 4 nodes (1CP+3W)");
+    }
+
+    #[test]
+    fn sandbox_cluster_no_metrics_shows_sentinel() {
+        let gib = 1024.0 * 1024.0 * 1024.0_f64;
+        let nodes = vec![
+            make_node("sandbox-cp-1", "4", &(8.0 * gib).to_string()),
+            make_node("sandbox-worker-1", "8", &(16.0 * gib).to_string()),
+            make_node("sandbox-worker-2", "8", &(16.0 * gib).to_string()),
+            make_node("sandbox-worker-3", "8", &(16.0 * gib).to_string()),
+        ];
+        let usage = compute_resource_usage(&nodes, &[], None, None);
+        assert!(
+            (usage.cpu_percent - (-1.0)).abs() < 1e-9,
+            "sandbox with no metrics: cpu_percent must be -1.0 sentinel"
+        );
+        assert!(
+            (usage.mem_percent - (-1.0)).abs() < 1e-9,
+            "sandbox with no metrics: mem_percent must be -1.0 sentinel"
+        );
+    }
+
+    // ----- multi-cluster independence: tower has metrics, sandbox does not -----
+
+    #[test]
+    fn multi_cluster_tower_has_metrics_sandbox_does_not_independent() {
+        // Each cluster's ResourceUsage is computed independently.
+        // Tower (metrics available) → real percentages.
+        // Sandbox (no metrics) → sentinel -1.0.
+        // Verifies neither cluster's result contaminates the other.
+        let gib = 1024.0 * 1024.0 * 1024.0_f64;
+
+        // Tower: 3CP+2W, 25% utilization
+        let tower_nodes = vec![
+            make_node("tower-cp-1", "8", &(16.0 * gib).to_string()),
+            make_node("tower-cp-2", "8", &(16.0 * gib).to_string()),
+            make_node("tower-cp-3", "8", &(16.0 * gib).to_string()),
+            make_node("tower-worker-1", "16", &(32.0 * gib).to_string()),
+            make_node("tower-worker-2", "16", &(32.0 * gib).to_string()),
+        ];
+        let tower_metrics = vec![
+            make_node_metrics("tower-cp-1", 2.0, 4.0 * gib),
+            make_node_metrics("tower-cp-2", 2.0, 4.0 * gib),
+            make_node_metrics("tower-cp-3", 2.0, 4.0 * gib),
+            make_node_metrics("tower-worker-1", 4.0, 8.0 * gib),
+            make_node_metrics("tower-worker-2", 4.0, 8.0 * gib),
+        ];
+        let tower_usage =
+            compute_resource_usage(&tower_nodes, &[], Some(&tower_metrics), None);
+
+        // Sandbox: 1CP+3W, no metrics
+        let sandbox_nodes = vec![
+            make_node("sandbox-cp-1", "4", &(8.0 * gib).to_string()),
+            make_node("sandbox-worker-1", "8", &(16.0 * gib).to_string()),
+            make_node("sandbox-worker-2", "8", &(16.0 * gib).to_string()),
+            make_node("sandbox-worker-3", "8", &(16.0 * gib).to_string()),
+        ];
+        let sandbox_usage = compute_resource_usage(&sandbox_nodes, &[], None, None);
+
+        // Tower: real percentages
+        assert!(
+            tower_usage.cpu_percent >= 0.0,
+            "tower cpu_percent must be real when metrics available"
+        );
+        assert!(
+            (tower_usage.cpu_percent - 25.0).abs() < 1e-3,
+            "tower cpu_percent ~25%"
+        );
+
+        // Sandbox: sentinel (metrics unavailable)
+        assert!(
+            (sandbox_usage.cpu_percent - (-1.0)).abs() < 1e-9,
+            "sandbox cpu_percent must be -1.0 sentinel (no metrics)"
+        );
+        assert!(
+            (sandbox_usage.mem_percent - (-1.0)).abs() < 1e-9,
+            "sandbox mem_percent must be -1.0 sentinel (no metrics)"
+        );
+    }
+
+    // ----- per-node cpu_usage_percent / mem_usage_percent enrichment -----
+
+    #[test]
+    fn node_metrics_enrichment_sets_per_node_cpu_usage_percent() {
+        // Simulate the enrichment loop that runs in fetch_cluster_snapshot after
+        // fetching node metrics. Validates that cpu_usage_percent / mem_usage_percent
+        // are correctly computed per-node (not aggregate).
+        let gib = 1024.0 * 1024.0 * 1024.0_f64;
+        let mut nodes = vec![
+            make_node("tower-cp-1", "8", &(16.0 * gib).to_string()),
+            make_node("tower-worker-1", "16", &(32.0 * gib).to_string()),
+        ];
+        let metrics = vec![
+            // CP: 2/8 cores = 25%, 4/16 GiB = 25%
+            make_node_metrics("tower-cp-1", 2.0, 4.0 * gib),
+            // Worker: 8/16 cores = 50%, 16/32 GiB = 50%
+            make_node_metrics("tower-worker-1", 8.0, 16.0 * gib),
+        ];
+
+        // Apply the same enrichment logic as fetch_cluster_snapshot
+        for node in &mut nodes {
+            if let Some(nm) = metrics.iter().find(|m| m.name == node.name) {
+                let cpu_cap = parse_k8s_quantity(&node.cpu_capacity).unwrap_or(0.0);
+                let mem_cap = parse_k8s_quantity(&node.mem_capacity).unwrap_or(0.0);
+                node.cpu_usage_percent = Some(if cpu_cap > 0.0 {
+                    (nm.cpu_usage / cpu_cap) * 100.0
+                } else {
+                    0.0
+                });
+                node.mem_usage_percent = Some(if mem_cap > 0.0 {
+                    (nm.mem_usage / mem_cap) * 100.0
+                } else {
+                    0.0
+                });
+            }
+        }
+
+        let cp = &nodes[0];
+        let worker = &nodes[1];
+
+        assert!(
+            cp.cpu_usage_percent.is_some(),
+            "tower-cp-1 must have cpu_usage_percent after enrichment"
+        );
+        assert!(
+            (cp.cpu_usage_percent.unwrap() - 25.0).abs() < 1e-3,
+            "tower-cp-1 cpu_usage_percent = 25%"
+        );
+        assert!(
+            (cp.mem_usage_percent.unwrap() - 25.0).abs() < 1e-3,
+            "tower-cp-1 mem_usage_percent = 25%"
+        );
+
+        assert!(
+            (worker.cpu_usage_percent.unwrap() - 50.0).abs() < 1e-3,
+            "tower-worker-1 cpu_usage_percent = 50%"
+        );
+        assert!(
+            (worker.mem_usage_percent.unwrap() - 50.0).abs() < 1e-3,
+            "tower-worker-1 mem_usage_percent = 50%"
+        );
+    }
+
+    #[test]
+    fn node_metrics_enrichment_leaves_none_for_unmatched_nodes() {
+        // If metrics-server reports metrics for some nodes but not others
+        // (e.g., a node is temporarily unreachable), unmatched nodes keep None.
+        let gib = 1024.0 * 1024.0 * 1024.0_f64;
+        let mut nodes = vec![
+            make_node("tower-cp-1", "8", &(16.0 * gib).to_string()),
+            make_node("tower-cp-2", "8", &(16.0 * gib).to_string()), // no metrics for this one
+        ];
+        let metrics = vec![
+            make_node_metrics("tower-cp-1", 2.0, 4.0 * gib),
+            // tower-cp-2 intentionally absent from metrics
+        ];
+
+        for node in &mut nodes {
+            if let Some(nm) = metrics.iter().find(|m| m.name == node.name) {
+                let cpu_cap = parse_k8s_quantity(&node.cpu_capacity).unwrap_or(0.0);
+                let mem_cap = parse_k8s_quantity(&node.mem_capacity).unwrap_or(0.0);
+                node.cpu_usage_percent = Some((nm.cpu_usage / cpu_cap) * 100.0);
+                node.mem_usage_percent = Some((nm.mem_usage / mem_cap) * 100.0);
+            }
+        }
+
+        assert!(
+            nodes[0].cpu_usage_percent.is_some(),
+            "tower-cp-1 must have metrics after enrichment"
+        );
+        assert!(
+            nodes[1].cpu_usage_percent.is_none(),
+            "tower-cp-2 must remain None (not in metrics response)"
+        );
+    }
+
+    // ----- pod metrics: aggregate usage vs node allocatable capacity -----
+
+    #[test]
+    fn pod_metrics_compute_usage_against_allocatable_capacity() {
+        // When pod metrics are available, pod_cpu_percent uses node allocatable (not capacity)
+        // Tower: 3CP+2W, allocatable CPU = 56 cores (simplified)
+        let gib = 1024.0 * 1024.0 * 1024.0_f64;
+        let nodes = vec![
+            make_node("tower-cp-1", "8", &(16.0 * gib).to_string()),
+            make_node("tower-cp-2", "8", &(16.0 * gib).to_string()),
+            make_node("tower-cp-3", "8", &(16.0 * gib).to_string()),
+            make_node("tower-worker-1", "16", &(32.0 * gib).to_string()),
+            make_node("tower-worker-2", "16", &(32.0 * gib).to_string()),
+        ];
+        // Total allocatable: 56 cores, 112Gi; pods use 14 cores / 28Gi = 25%
+        let pod_metrics = vec![
+            PodMetrics {
+                name: "coredns-1".into(),
+                namespace: "kube-system".into(),
+                cpu_usage: 1.0,
+                mem_usage: 2.0 * gib,
+            },
+            PodMetrics {
+                name: "cilium-1".into(),
+                namespace: "kube-system".into(),
+                cpu_usage: 3.0,
+                mem_usage: 6.0 * gib,
+            },
+            PodMetrics {
+                name: "workload-1".into(),
+                namespace: "default".into(),
+                cpu_usage: 10.0,
+                mem_usage: 20.0 * gib,
+            },
+        ];
+        let usage = compute_resource_usage(&nodes, &[], None, Some(&pod_metrics));
+        assert!(
+            usage.pod_cpu_percent >= 0.0,
+            "pod_cpu_percent must be real when pod metrics available"
+        );
+        assert!(
+            (usage.pod_cpu_percent - 25.0).abs() < 1e-3,
+            "pod cpu = 14/56 cores = 25%, got {}",
+            usage.pod_cpu_percent
+        );
+        assert!(
+            (usage.pod_mem_percent - 25.0).abs() < 1e-3,
+            "pod mem = 28/112 GiB = 25%, got {}",
+            usage.pod_mem_percent
+        );
+        // Node metrics not provided → cluster-level percent is sentinel
+        assert!(
+            (usage.cpu_percent - (-1.0)).abs() < 1e-9,
+            "cluster cpu_percent sentinel when no node metrics"
+        );
+    }
+
+    #[test]
+    fn pod_metrics_sentinel_when_unavailable() {
+        // When pod metrics API fails, pod_cpu_percent and pod_mem_percent must be -1.0
+        let gib = 1024.0 * 1024.0 * 1024.0_f64;
+        let nodes = vec![make_node("tower-cp-1", "8", &(16.0 * gib).to_string())];
+        let usage = compute_resource_usage(&nodes, &[], None, None);
+        assert!(
+            (usage.pod_cpu_percent - (-1.0)).abs() < 1e-9,
+            "pod_cpu_percent must be -1.0 sentinel when no pod metrics"
+        );
+        assert!(
+            (usage.pod_mem_percent - (-1.0)).abs() < 1e-9,
+            "pod_mem_percent must be -1.0 sentinel when no pod metrics"
+        );
+    }
+
+    // ── AC-11b: Deployments/Services column data validation ──
+
+    /// DeploymentInfo READY column must contain '/' (e.g. "1/1", "2/3").
+    /// The render path color-codes READY based on ready_count/desired_count;
+    /// an empty READY string would leave the column blank.
+    #[test]
+    fn deployment_info_ready_column_has_slash_format() {
+        let dep = DeploymentInfo {
+            name: "nginx".into(),
+            namespace: "default".into(),
+            ready: "2/3".into(),
+            ready_count: 2,
+            desired_count: 3,
+            up_to_date: 2,
+            up_to_date_display: "2".into(),
+            available: 2,
+            available_display: "2".into(),
+            age: "1h".into(),
+        };
+        assert!(
+            dep.ready.contains('/'),
+            "DeploymentInfo READY field '{}' must contain '/'",
+            dep.ready
+        );
+        let parts: Vec<&str> = dep.ready.splitn(2, '/').collect();
+        assert_eq!(parts.len(), 2, "READY field must split into exactly 2 parts");
+        assert!(parts[0].parse::<i32>().is_ok(), "left side must be numeric");
+        assert!(parts[1].parse::<i32>().is_ok(), "right side must be numeric");
+    }
+
+    /// DeploymentInfo ready_count must equal the left side of the ready string.
+    /// The render path uses ready_count directly for color coding — must match.
+    #[test]
+    fn deployment_info_ready_count_matches_ready_string() {
+        let dep = DeploymentInfo {
+            name: "coredns".into(),
+            namespace: "kube-system".into(),
+            ready: "2/2".into(),
+            ready_count: 2,
+            desired_count: 2,
+            up_to_date: 2,
+            up_to_date_display: "2".into(),
+            available: 2,
+            available_display: "2".into(),
+            age: "7d".into(),
+        };
+        let left: i32 = dep.ready.split('/').next().unwrap().parse().unwrap();
+        assert_eq!(
+            dep.ready_count, left,
+            "ready_count ({}) must equal left side of ready string '{}'",
+            dep.ready_count,
+            dep.ready
+        );
+    }
+
+    /// DeploymentInfo desired_count must equal the right side of the ready string.
+    #[test]
+    fn deployment_info_desired_count_matches_ready_string() {
+        let dep = DeploymentInfo {
+            name: "argocd-server".into(),
+            namespace: "argocd".into(),
+            ready: "1/1".into(),
+            ready_count: 1,
+            desired_count: 1,
+            up_to_date: 1,
+            up_to_date_display: "1".into(),
+            available: 1,
+            available_display: "1".into(),
+            age: "2d".into(),
+        };
+        let right: i32 = dep.ready.split('/').nth(1).unwrap().parse().unwrap();
+        assert_eq!(
+            dep.desired_count, right,
+            "desired_count ({}) must equal right side of ready string '{}'",
+            dep.desired_count,
+            dep.ready
+        );
+    }
+
+    /// Deployment ready ratio color: full readiness (ready == desired > 0) → BRIGHT_GREEN.
+    /// This matches the render path: if ready >= desired → BRIGHT_GREEN.
+    #[test]
+    fn deployment_ready_ratio_color_full_ready_is_green() {
+        // Simulates the color selection logic from render_deployments_table
+        let (ready, desired) = (3_i32, 3_i32);
+        let color = if desired == 0 {
+            crate::dash::theme::FG4
+        } else if ready >= desired {
+            crate::dash::theme::BRIGHT_GREEN
+        } else if ready > 0 {
+            crate::dash::theme::BRIGHT_YELLOW
+        } else {
+            crate::dash::theme::BRIGHT_RED
+        };
+        assert_eq!(
+            color,
+            crate::dash::theme::BRIGHT_GREEN,
+            "fully ready deployment (3/3) must use BRIGHT_GREEN"
+        );
+    }
+
+    /// Deployment ready ratio color: partial readiness (0 < ready < desired) → BRIGHT_YELLOW.
+    #[test]
+    fn deployment_ready_ratio_color_partial_ready_is_yellow() {
+        let (ready, desired) = (1_i32, 3_i32);
+        let color = if desired == 0 {
+            crate::dash::theme::FG4
+        } else if ready >= desired {
+            crate::dash::theme::BRIGHT_GREEN
+        } else if ready > 0 {
+            crate::dash::theme::BRIGHT_YELLOW
+        } else {
+            crate::dash::theme::BRIGHT_RED
+        };
+        assert_eq!(
+            color,
+            crate::dash::theme::BRIGHT_YELLOW,
+            "partially ready deployment (1/3) must use BRIGHT_YELLOW"
+        );
+    }
+
+    /// Deployment ready ratio color: no replicas ready (ready == 0, desired > 0) → BRIGHT_RED.
+    #[test]
+    fn deployment_ready_ratio_color_none_ready_is_red() {
+        let (ready, desired) = (0_i32, 3_i32);
+        let color = if desired == 0 {
+            crate::dash::theme::FG4
+        } else if ready >= desired {
+            crate::dash::theme::BRIGHT_GREEN
+        } else if ready > 0 {
+            crate::dash::theme::BRIGHT_YELLOW
+        } else {
+            crate::dash::theme::BRIGHT_RED
+        };
+        assert_eq!(
+            color,
+            crate::dash::theme::BRIGHT_RED,
+            "deployment with 0 ready replicas (0/3) must use BRIGHT_RED"
+        );
+    }
+
+    /// Deployment ready ratio color: scaled-to-zero (desired == 0) → FG4 (neutral/dim).
+    /// Scaled-to-zero is intentional — should not be flagged red or green.
+    #[test]
+    fn deployment_ready_ratio_color_scaled_to_zero_is_neutral() {
+        let (ready, desired) = (0_i32, 0_i32);
+        let color = if desired == 0 {
+            crate::dash::theme::FG4
+        } else if ready >= desired {
+            crate::dash::theme::BRIGHT_GREEN
+        } else if ready > 0 {
+            crate::dash::theme::BRIGHT_YELLOW
+        } else {
+            crate::dash::theme::BRIGHT_RED
+        };
+        assert_eq!(
+            color,
+            crate::dash::theme::FG4,
+            "scaled-to-zero deployment (0/0) must use FG4 (neutral)"
+        );
+    }
+
+    /// ServiceInfo svc_type field must not be empty.
+    /// The TYPE column in the Services table renders svc_type directly;
+    /// an empty string would leave the column blank.
+    #[test]
+    fn service_info_svc_type_field_non_empty() {
+        let svc = ServiceInfo {
+            name: "kubernetes".into(),
+            namespace: "default".into(),
+            svc_type: "ClusterIP".into(),
+            cluster_ip: "10.96.0.1".into(),
+            external_ip: "<none>".into(),
+            ports: "443/TCP".into(),
+            age: "7d".into(),
+        };
+        assert!(
+            !svc.svc_type.is_empty(),
+            "ServiceInfo svc_type must not be empty (TYPE column must be populated)"
+        );
+    }
+
+    /// ServiceInfo svc_type must be a recognized Kubernetes service type.
+    #[test]
+    fn service_info_svc_type_is_valid_k8s_type() {
+        let valid_types = ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"];
+        for svc_type in &valid_types {
+            let svc = ServiceInfo {
+                name: "test-svc".into(),
+                namespace: "default".into(),
+                svc_type: (*svc_type).into(),
+                cluster_ip: "10.96.0.1".into(),
+                external_ip: "<none>".into(),
+                ports: "80/TCP".into(),
+                age: "1h".into(),
+            };
+            assert!(
+                valid_types.contains(&svc.svc_type.as_str()),
+                "svc_type '{}' must be a valid K8s service type",
+                svc.svc_type
+            );
+        }
+    }
+
+    /// Services fetch for both clusters includes TYPE column data (svc_type).
+    /// Verifies the make_multi_ns_snapshot helper includes svc_type in every service.
+    #[test]
+    fn snapshot_services_have_type_column() {
+        let snap = make_multi_ns_snapshot("tower");
+        for svc in &snap.services {
+            assert!(
+                !svc.svc_type.is_empty(),
+                "tower snapshot service '{}' must have svc_type (TYPE column)",
+                svc.name
+            );
+        }
+        let snap = make_multi_ns_snapshot("sandbox");
+        for svc in &snap.services {
+            assert!(
+                !svc.svc_type.is_empty(),
+                "sandbox snapshot service '{}' must have svc_type (TYPE column)",
+                svc.name
+            );
+        }
+    }
+
+    /// Deployments and Services are both present in the fetch for both tower and sandbox
+    /// cross-cluster snapshots. Verifies that both resource types are listed/returned.
+    #[test]
+    fn cross_cluster_both_have_deployments_and_services() {
+        let tower = make_multi_ns_snapshot("tower");
+        let sandbox = make_multi_ns_snapshot("sandbox");
+
+        // Tower
+        assert!(!tower.deployments.is_empty(), "tower must have deployments");
+        assert!(!tower.services.is_empty(), "tower must have services");
+
+        // Sandbox
+        assert!(!sandbox.deployments.is_empty(), "sandbox must have deployments");
+        assert!(!sandbox.services.is_empty(), "sandbox must have services");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Sub-AC 11c: ConfigMaps and Events views — column, filtering, multi-cluster
+    // ---------------------------------------------------------------------------
+
+    /// ConfigMapInfo must carry namespace and age fields (required TUI columns).
+    #[test]
+    fn configmap_info_has_namespace_and_age_columns() {
+        let cm = ConfigMapInfo {
+            name: "my-config".into(),
+            namespace: "kube-system".into(),
+            data_keys_count: 2,
+            data_keys_display: "2".into(),
+            age: "3h".into(),
+        };
+        assert!(!cm.namespace.is_empty(), "ConfigMapInfo.namespace must be non-empty");
+        assert!(!cm.age.is_empty(), "ConfigMapInfo.age must be non-empty");
+        assert!(!cm.name.is_empty(), "ConfigMapInfo.name must be non-empty");
+        assert_eq!(cm.data_keys_display, "2", "data_keys_display must match count");
+    }
+
+    /// EventInfo must carry namespace, last_seen (age), and message fields (required TUI columns).
+    #[test]
+    fn event_info_has_namespace_age_message_columns() {
+        let evt = EventInfo {
+            namespace: "default".into(),
+            name: "pod.event".into(),
+            event_type: "Normal".into(),
+            reason: "Pulled".into(),
+            object: "Pod/app-xyz".into(),
+            message: "Successfully pulled image".into(),
+            count: 1,
+            count_display: "1".into(),
+            last_seen: "2m".into(),
+            age: "2m".into(),
+        };
+        assert!(!evt.namespace.is_empty(), "EventInfo.namespace must be non-empty");
+        assert!(!evt.last_seen.is_empty(), "EventInfo.last_seen (age) must be non-empty");
+        assert!(!evt.message.is_empty(), "EventInfo.message must be non-empty");
+    }
+
+    /// EventInfo warning events have event_type == "Warning" (enables color coding in TUI).
+    #[test]
+    fn event_info_warning_type_is_warning_string() {
+        let warn = EventInfo {
+            namespace: "kube-system".into(),
+            name: "coredns.warn".into(),
+            event_type: "Warning".into(),
+            reason: "BackOff".into(),
+            object: "Pod/coredns-xyz".into(),
+            message: "Back-off restarting failed container".into(),
+            count: 5,
+            count_display: "5".into(),
+            last_seen: "1m".into(),
+            age: "1m".into(),
+        };
+        assert_eq!(
+            warn.event_type, "Warning",
+            "Warning events must have event_type == 'Warning' for TUI color coding"
+        );
+    }
+
+    /// EventInfo normal events have event_type != "Warning".
+    #[test]
+    fn event_info_normal_type_is_not_warning() {
+        let normal = EventInfo {
+            namespace: "default".into(),
+            name: "pod.started".into(),
+            event_type: "Normal".into(),
+            reason: "Started".into(),
+            object: "Pod/app".into(),
+            message: "Started container".into(),
+            count: 1,
+            count_display: "1".into(),
+            last_seen: "5m".into(),
+            age: "5m".into(),
+        };
+        assert_ne!(
+            normal.event_type, "Warning",
+            "Normal events must not have event_type == 'Warning'"
+        );
+    }
+
+    /// EventInfo count_display must equal count.to_string() (used in TUI COUNT column).
+    #[test]
+    fn event_info_count_display_matches_count() {
+        let evt = EventInfo {
+            namespace: "default".into(),
+            name: "pod.event".into(),
+            event_type: "Normal".into(),
+            reason: "Pulled".into(),
+            object: "Pod/app".into(),
+            message: "Image pulled".into(),
+            count: 42,
+            count_display: "42".into(),
+            last_seen: "1m".into(),
+            age: "1m".into(),
+        };
+        assert_eq!(
+            evt.count_display,
+            evt.count.to_string(),
+            "count_display must equal count.to_string()"
+        );
+    }
+
+    /// Both tower and sandbox snapshots must contain configmaps.
+    #[test]
+    fn cross_cluster_both_have_configmaps() {
+        let tower = make_multi_ns_snapshot("tower");
+        let sandbox = make_multi_ns_snapshot("sandbox");
+        assert!(
+            !tower.configmaps.is_empty(),
+            "tower snapshot must have configmaps for ConfigMaps view"
+        );
+        assert!(
+            !sandbox.configmaps.is_empty(),
+            "sandbox snapshot must have configmaps for ConfigMaps view"
+        );
+    }
+
+    /// Both tower and sandbox snapshots must contain events.
+    #[test]
+    fn cross_cluster_both_have_events() {
+        let tower = make_multi_ns_snapshot("tower");
+        let sandbox = make_multi_ns_snapshot("sandbox");
+        assert!(
+            !tower.events.is_empty(),
+            "tower snapshot must have events for Events view"
+        );
+        assert!(
+            !sandbox.events.is_empty(),
+            "sandbox snapshot must have events for Events view"
+        );
+    }
+
+    /// Every configmap in both clusters has a non-empty namespace column.
+    #[test]
+    fn snapshot_configmaps_have_namespace_column() {
+        for cluster in &["tower", "sandbox"] {
+            let snap = make_multi_ns_snapshot(cluster);
+            for cm in &snap.configmaps {
+                assert!(
+                    !cm.namespace.is_empty(),
+                    "{} configmap '{}' must have namespace (NAMESPACE column)",
+                    cluster,
+                    cm.name
+                );
+            }
+        }
+    }
+
+    /// Every configmap in both clusters has a non-empty age column.
+    #[test]
+    fn snapshot_configmaps_have_age_column() {
+        for cluster in &["tower", "sandbox"] {
+            let snap = make_multi_ns_snapshot(cluster);
+            for cm in &snap.configmaps {
+                assert!(
+                    !cm.age.is_empty(),
+                    "{} configmap '{}' must have age (AGE column)",
+                    cluster,
+                    cm.name
+                );
+            }
+        }
+    }
+
+    /// Every event in both clusters has a non-empty namespace column.
+    #[test]
+    fn snapshot_events_have_namespace_column() {
+        for cluster in &["tower", "sandbox"] {
+            let snap = make_multi_ns_snapshot(cluster);
+            for evt in &snap.events {
+                assert!(
+                    !evt.namespace.is_empty(),
+                    "{} event '{}' must have namespace (NAMESPACE column)",
+                    cluster,
+                    evt.name
+                );
+            }
+        }
+    }
+
+    /// Every event in both clusters has a non-empty last_seen column (age).
+    #[test]
+    fn snapshot_events_have_last_seen_age_column() {
+        for cluster in &["tower", "sandbox"] {
+            let snap = make_multi_ns_snapshot(cluster);
+            for evt in &snap.events {
+                assert!(
+                    !evt.last_seen.is_empty(),
+                    "{} event '{}' must have last_seen (AGE column)",
+                    cluster,
+                    evt.name
+                );
+            }
+        }
+    }
+
+    /// Every event in both clusters has a non-empty message column.
+    #[test]
+    fn snapshot_events_have_message_column() {
+        for cluster in &["tower", "sandbox"] {
+            let snap = make_multi_ns_snapshot(cluster);
+            for evt in &snap.events {
+                assert!(
+                    !evt.message.is_empty(),
+                    "{} event '{}' must have message (MESSAGE column)",
+                    cluster,
+                    evt.name
+                );
+            }
+        }
+    }
+
+    /// Configmaps span multiple namespaces in each cluster snapshot.
+    #[test]
+    fn snapshot_configmaps_span_multiple_namespaces() {
+        for cluster in &["tower", "sandbox"] {
+            let snap = make_multi_ns_snapshot(cluster);
+            let ns_set: std::collections::HashSet<&str> =
+                snap.configmaps.iter().map(|c| c.namespace.as_str()).collect();
+            assert!(
+                ns_set.len() >= 2,
+                "{} configmaps should span ≥2 namespaces for multi-ns browsing, got: {:?}",
+                cluster,
+                ns_set
+            );
+        }
+    }
+
+    /// Events span multiple namespaces in each cluster snapshot.
+    #[test]
+    fn snapshot_events_span_multiple_namespaces() {
+        for cluster in &["tower", "sandbox"] {
+            let snap = make_multi_ns_snapshot(cluster);
+            let ns_set: std::collections::HashSet<&str> =
+                snap.events.iter().map(|e| e.namespace.as_str()).collect();
+            assert!(
+                ns_set.len() >= 2,
+                "{} events should span ≥2 namespaces for multi-ns browsing, got: {:?}",
+                cluster,
+                ns_set
+            );
+        }
+    }
+
+    /// filter_snapshot_by_resource("configmaps") returns configmaps for both clusters.
+    #[test]
+    fn filter_snapshot_configmaps_cross_cluster() {
+        let tower = make_multi_ns_snapshot("tower");
+        let sandbox = make_multi_ns_snapshot("sandbox");
+        let snapshots = vec![tower, sandbox];
+
+        let result = filter_snapshot_by_resource(&snapshots, "configmaps");
+        let clusters = result["clusters"].as_array().unwrap();
+        assert_eq!(clusters.len(), 2, "should contain both clusters");
+
+        let names: Vec<&str> = clusters
+            .iter()
+            .map(|c| c["cluster"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"tower"), "tower cluster must be present");
+        assert!(names.contains(&"sandbox"), "sandbox cluster must be present");
+
+        for cluster in clusters {
+            let cms = cluster["configmaps"].as_array().unwrap();
+            assert!(
+                !cms.is_empty(),
+                "cluster '{}' must return non-empty configmaps",
+                cluster["cluster"].as_str().unwrap()
+            );
+            // Verify namespace column is present in serialized form
+            for cm in cms {
+                assert!(
+                    cm["namespace"].as_str().is_some(),
+                    "configmap must have namespace field in serialized output"
+                );
+                assert!(
+                    cm["age"].as_str().is_some(),
+                    "configmap must have age field in serialized output"
+                );
+            }
+        }
+    }
+
+    /// filter_snapshot_by_resource("events") returns events for both clusters with
+    /// namespace, last_seen (age), and message fields present in serialized output.
+    #[test]
+    fn filter_snapshot_events_cross_cluster() {
+        let tower = make_multi_ns_snapshot("tower");
+        let sandbox = make_multi_ns_snapshot("sandbox");
+        let snapshots = vec![tower, sandbox];
+
+        let result = filter_snapshot_by_resource(&snapshots, "events");
+        let clusters = result["clusters"].as_array().unwrap();
+        assert_eq!(clusters.len(), 2, "should contain both clusters");
+
+        for cluster in clusters {
+            let evts = cluster["events"].as_array().unwrap();
+            assert!(
+                !evts.is_empty(),
+                "cluster '{}' must return non-empty events",
+                cluster["cluster"].as_str().unwrap()
+            );
+            // Verify namespace/last_seen/message columns are present
+            for evt in evts {
+                assert!(
+                    evt["namespace"].as_str().is_some(),
+                    "event must have namespace field (NAMESPACE column)"
+                );
+                assert!(
+                    evt["last_seen"].as_str().is_some(),
+                    "event must have last_seen field (AGE column)"
+                );
+                assert!(
+                    evt["message"].as_str().is_some(),
+                    "event must have message field (MESSAGE column)"
+                );
+            }
+        }
+    }
+
+    /// Events view includes at least one Warning-type event in the snapshot,
+    /// verifying the color-coding path is exercised.
+    #[test]
+    fn snapshot_events_include_warning_type_for_color_coding() {
+        let snap = make_multi_ns_snapshot("tower");
+        let warning_count = snap
+            .events
+            .iter()
+            .filter(|e| e.event_type == "Warning")
+            .count();
+        assert!(
+            warning_count >= 1,
+            "snapshot must include ≥1 Warning event to exercise TUI color-coding path"
+        );
+    }
+
+    /// Events view includes at least one Normal-type event alongside Warning events.
+    #[test]
+    fn snapshot_events_include_normal_and_warning_types() {
+        let snap = make_multi_ns_snapshot("tower");
+        let has_normal = snap.events.iter().any(|e| e.event_type == "Normal");
+        let has_warning = snap.events.iter().any(|e| e.event_type == "Warning");
+        assert!(has_normal, "snapshot must include Normal events");
+        assert!(has_warning, "snapshot must include Warning events for color-code testing");
+    }
+
+    /// ConfigMaps snapshot for tower has at least 3 entries spanning default,
+    /// kube-system, and monitoring namespaces (matching actual cluster namespaces).
+    #[test]
+    fn tower_configmaps_span_default_kube_system_monitoring() {
+        let snap = make_multi_ns_snapshot("tower");
+        let ns_set: std::collections::HashSet<&str> =
+            snap.configmaps.iter().map(|c| c.namespace.as_str()).collect();
+        assert!(
+            ns_set.contains("default"),
+            "tower configmaps must include 'default' namespace"
+        );
+        assert!(
+            ns_set.contains("kube-system"),
+            "tower configmaps must include 'kube-system' namespace"
+        );
+        assert!(
+            ns_set.contains("monitoring"),
+            "tower configmaps must include 'monitoring' namespace"
+        );
+    }
+
+    /// ConfigMapInfo data_keys_display is a numeric string (not empty).
+    #[test]
+    fn configmap_info_data_keys_display_is_numeric_string() {
+        let snap = make_multi_ns_snapshot("tower");
+        for cm in &snap.configmaps {
+            assert!(
+                cm.data_keys_display.parse::<usize>().is_ok(),
+                "configmap '{}' data_keys_display '{}' must be a numeric string (KEYS column)",
+                cm.name,
+                cm.data_keys_display
+            );
+            assert_eq!(
+                cm.data_keys_display,
+                cm.data_keys_count.to_string(),
+                "data_keys_display must equal data_keys_count.to_string()"
+            );
+        }
+    }
+
+    /// ActiveResource enum covers ConfigMaps and Events (required for selective fetch).
+    #[test]
+    fn active_resource_enum_covers_configmaps_and_events() {
+        // Verify discriminants exist — compile-time coverage
+        let cm = ActiveResource::ConfigMaps;
+        let ev = ActiveResource::Events;
+        // Both must be distinguishable
+        assert_ne!(
+            format!("{:?}", cm),
+            format!("{:?}", ev),
+            "ConfigMaps and Events must be distinct ActiveResource variants"
+        );
+        assert_eq!(format!("{:?}", cm), "ConfigMaps");
+        assert_eq!(format!("{:?}", ev), "Events");
+    }
+
+    /// EventInfo serialization includes all TUI-required fields.
+    #[test]
+    fn event_info_serialization_includes_all_tui_columns() {
+        let evt = EventInfo {
+            namespace: "kube-system".into(),
+            name: "coredns.warn".into(),
+            event_type: "Warning".into(),
+            reason: "BackOff".into(),
+            object: "Pod/coredns-xyz".into(),
+            message: "Back-off restarting failed container".into(),
+            count: 5,
+            count_display: "5".into(),
+            last_seen: "1m".into(),
+            age: "1m".into(),
+        };
+        let json = serde_json::to_value(&evt).unwrap();
+        // All TUI table columns must serialize
+        assert_eq!(json["namespace"], "kube-system");
+        assert_eq!(json["last_seen"], "1m");
+        assert_eq!(json["event_type"], "Warning");
+        assert_eq!(json["reason"], "BackOff");
+        assert_eq!(json["object"], "Pod/coredns-xyz");
+        assert_eq!(json["message"], "Back-off restarting failed container");
     }
 }

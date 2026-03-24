@@ -2653,9 +2653,9 @@ spec:
         use crate::commands::sdi::{plan_clean_operations, CleanOperation};
 
         // Full hard clean with everything present (no host-infra):
-        // TofuDestroy → KvmTeardown → NodeCleanup → RemoveStateDir
+        // TofuDestroy → KvmTeardown → NodeCleanup → PostCleanSshVerification → RemoveStateDir
         let full = plan_clean_operations(true, true, true, false, Some(4));
-        assert_eq!(full.len(), 4, "hard clean must produce 4 operations: tofu destroy, kvm teardown, node cleanup, remove state");
+        assert_eq!(full.len(), 5, "hard clean must produce 5 operations: tofu destroy, kvm teardown, node cleanup, ssh verify, remove state");
         assert!(matches!(full[0], CleanOperation::TofuDestroy));
         assert!(matches!(
             full[1],
@@ -2665,25 +2665,33 @@ spec:
             full[2],
             CleanOperation::NodeCleanup { node_count: 4 }
         ));
-        assert!(matches!(full[3], CleanOperation::RemoveStateDir));
+        assert!(matches!(
+            full[3],
+            CleanOperation::PostCleanSshVerification { node_count: 4 }
+        ));
+        assert!(matches!(full[4], CleanOperation::RemoveStateDir));
 
         // Soft clean (no --hard) should only destroy tofu
         let soft = plan_clean_operations(false, true, true, false, Some(4));
         assert_eq!(soft.len(), 1);
         assert!(matches!(soft[0], CleanOperation::TofuDestroy));
 
-        // No state at all
+        // No state at all — hard mode still attempts node cleanup (idempotent — safe to re-run)
         let empty = plan_clean_operations(true, false, false, false, Some(4));
-        assert_eq!(empty.len(), 1);
+        assert_eq!(empty.len(), 5, "hard clean with no state must produce 5 operations: no-state marker, kvm teardown, node cleanup, ssh verify, remove state dir");
         assert!(matches!(empty[0], CleanOperation::NoState));
+        assert!(matches!(empty[1], CleanOperation::KvmTeardown { node_count: 4 }));
+        assert!(matches!(empty[2], CleanOperation::NodeCleanup { node_count: 4 }));
+        assert!(matches!(empty[3], CleanOperation::PostCleanSshVerification { node_count: 4 }));
+        assert!(matches!(empty[4], CleanOperation::RemoveStateDir));
 
         // Hard clean with host-infra — should destroy host-infra first, then main:
-        // TofuDestroyHostInfra → TofuDestroy → KvmTeardown → NodeCleanup → RemoveStateDir
+        // TofuDestroyHostInfra → TofuDestroy → KvmTeardown → NodeCleanup → PostCleanSshVerification → RemoveStateDir
         let with_hi = plan_clean_operations(true, true, true, true, Some(4));
         assert_eq!(
             with_hi.len(),
-            5,
-            "hard clean with host-infra must produce 5 operations"
+            6,
+            "hard clean with host-infra must produce 6 operations"
         );
         assert!(matches!(with_hi[0], CleanOperation::TofuDestroyHostInfra));
         assert!(matches!(with_hi[1], CleanOperation::TofuDestroy));
@@ -2695,7 +2703,11 @@ spec:
             with_hi[3],
             CleanOperation::NodeCleanup { node_count: 4 }
         ));
-        assert!(matches!(with_hi[4], CleanOperation::RemoveStateDir));
+        assert!(matches!(
+            with_hi[4],
+            CleanOperation::PostCleanSshVerification { node_count: 4 }
+        ));
+        assert!(matches!(with_hi[5], CleanOperation::RemoveStateDir));
     }
 
     // ========================================================================

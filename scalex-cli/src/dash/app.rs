@@ -6317,6 +6317,133 @@ mod tests {
         assert_eq!(sandbox_argocd_pods.len(), 0);
     }
 
+    // -------------------------------------------------------------------------
+    // AC-10a: Kubeconfig context loading and cluster switching in TUI
+    // Verifies that tower and sandbox clusters are initialised without
+    // connection errors and can be switched without corrupting state.
+    // -------------------------------------------------------------------------
+
+    /// Both tower and sandbox start with ConnectionStatus::Discovering — never Failed.
+    /// Ensures no premature connection-error state is set during TUI initialisation.
+    #[test]
+    fn tower_and_sandbox_initialise_with_discovering_not_error() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let app = App::new_with_names(&names, 1);
+
+        for cluster in &["tower", "sandbox"] {
+            let status = app.cluster_connection_status.get(*cluster);
+            assert!(
+                matches!(status, Some(ConnectionStatus::Discovering)),
+                "cluster '{}' should start as Discovering, not Failed or Connected, got: {:?}",
+                cluster,
+                status
+            );
+        }
+    }
+
+    /// Switching from tower to sandbox does not mutate tower's connection status.
+    /// Each cluster's connection state is independent and must survive a context switch.
+    #[test]
+    fn switching_clusters_preserves_other_cluster_connection_status() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let mut app = App::new_with_names(&names, 1);
+
+        // Mark both as Connected (simulating post-discovery state)
+        app.cluster_connection_status
+            .insert("tower".to_string(), ConnectionStatus::Connected);
+        app.cluster_connection_status
+            .insert("sandbox".to_string(), ConnectionStatus::Connected);
+
+        // Start on tower
+        app.selected_cluster = Some("tower".to_string());
+
+        // Switch to sandbox via tree enter (tree_cursor=2 → sandbox in new_with_names layout)
+        app.tree_cursor = 2;
+        app.handle_event(AppEvent::Enter);
+
+        // sandbox is now selected
+        assert_eq!(app.selected_cluster, Some("sandbox".to_string()));
+
+        // Tower's connection status must be untouched
+        assert!(
+            matches!(
+                app.cluster_connection_status.get("tower"),
+                Some(ConnectionStatus::Connected)
+            ),
+            "tower ConnectionStatus must remain Connected after switching to sandbox"
+        );
+    }
+
+    /// After selecting a cluster via Enter, needs_refresh is set true.
+    /// This triggers data fetch for the newly selected cluster on next tick.
+    #[test]
+    fn cluster_switch_sets_needs_refresh_flag() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let mut app = App::new_with_names(&names, 1);
+        app.needs_refresh = false;
+
+        // Switch to sandbox
+        app.tree_cursor = 2; // sandbox
+        app.handle_event(AppEvent::Enter);
+
+        assert!(
+            app.needs_refresh,
+            "needs_refresh must be set to true after cluster switch \
+             so a data fetch is triggered for the new cluster"
+        );
+    }
+
+    /// Switching clusters clears the active namespace selection.
+    /// Prevents a namespace from one cluster being applied as a stale filter
+    /// to a different cluster that may not have that namespace.
+    #[test]
+    fn cluster_switch_resets_namespace_selection() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let mut app = App::new_with_names(&names, 1);
+
+        // Set a tower-specific namespace (argocd only exists in tower)
+        app.selected_namespace = Some("argocd".to_string());
+        app.selected_cluster = Some("tower".to_string());
+
+        // Switch to sandbox
+        app.tree_cursor = 2; // sandbox
+        app.handle_event(AppEvent::Enter);
+
+        assert_eq!(app.selected_cluster, Some("sandbox".to_string()));
+        assert!(
+            app.selected_namespace.is_none(),
+            "namespace must be cleared on cluster switch — \
+             'argocd' is tower-only and must not leak into sandbox view"
+        );
+    }
+
+    /// Tower and sandbox are independently selectable in any order.
+    /// Tests bidirectional switching: tower→sandbox and sandbox→tower.
+    #[test]
+    fn tower_and_sandbox_are_independently_switchable() {
+        let names = vec!["tower".to_string(), "sandbox".to_string()];
+        let mut app = App::new_with_names(&names, 1);
+
+        // Select tower first (tree_cursor=1)
+        app.tree_cursor = 1;
+        app.handle_event(AppEvent::Enter);
+        assert_eq!(
+            app.selected_cluster,
+            Some("tower".to_string()),
+            "selecting tree cursor 1 must select tower"
+        );
+
+        // Switch to sandbox (cursor=2; Enter on expanded tower collapses it,
+        // so navigate then Enter on sandbox)
+        app.tree_cursor = 2;
+        app.handle_event(AppEvent::Enter);
+        assert_eq!(
+            app.selected_cluster,
+            Some("sandbox".to_string()),
+            "selecting tree cursor 2 must select sandbox"
+        );
+    }
+
     #[test]
     fn headless_filter_pods_preserves_namespace_field() {
         use crate::dash::data::*;
@@ -6367,6 +6494,2050 @@ mod tests {
             .collect();
         assert!(ns_values.contains(&"default"));
         assert!(ns_values.contains(&"kube-system"));
+    }
+
+    // -------------------------------------------------------------------------
+    // AC-10b: All data-fetching tabs (Nodes, Pods, Deployments) render
+    // populated content without panics for both clusters.
+    //
+    // Topology matches sdi-specs.yaml:
+    //   tower:   3 control-plane (tower-cp-0/1/2) + 2 workers (tower-worker-0/1) = 5 nodes
+    //   sandbox: 1 control-plane (sandbox-cp-0)   + 3 workers (sandbox-worker-0/1/2) = 4 nodes
+    // -------------------------------------------------------------------------
+
+    /// Build a ClusterSnapshot that mirrors the actual tower topology:
+    /// 3CP + 2W nodes, pods and deployments in default + kube-system + argocd.
+    fn make_tower_topology_snapshot() -> ClusterSnapshot {
+        use crate::dash::data::*;
+        ClusterSnapshot {
+            name: "tower".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into(), "kube-system".into(), "argocd".into()],
+            nodes: vec![
+                NodeInfo {
+                    name: "tower-cp-0".into(),
+                    status: "Ready".into(),
+                    roles: vec!["control-plane".into()],
+                    roles_display: "control-plane".into(),
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "6Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "6Gi".into(),
+                    cpu_display: "4/4".into(),
+                    mem_display: "5.0Gi/6.0Gi".into(),
+                    mem_capacity_display: "6.0Gi".into(),
+                    kubelet_version: "v1.33.1".into(),
+                    age: "7d".into(),
+                    ..Default::default()
+                },
+                NodeInfo {
+                    name: "tower-cp-1".into(),
+                    status: "Ready".into(),
+                    roles: vec!["control-plane".into()],
+                    roles_display: "control-plane".into(),
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "6Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "6Gi".into(),
+                    cpu_display: "4/4".into(),
+                    mem_display: "5.0Gi/6.0Gi".into(),
+                    mem_capacity_display: "6.0Gi".into(),
+                    kubelet_version: "v1.33.1".into(),
+                    age: "7d".into(),
+                    ..Default::default()
+                },
+                NodeInfo {
+                    name: "tower-cp-2".into(),
+                    status: "Ready".into(),
+                    roles: vec!["control-plane".into()],
+                    roles_display: "control-plane".into(),
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "6Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "6Gi".into(),
+                    cpu_display: "4/4".into(),
+                    mem_display: "5.0Gi/6.0Gi".into(),
+                    mem_capacity_display: "6.0Gi".into(),
+                    kubelet_version: "v1.33.1".into(),
+                    age: "7d".into(),
+                    ..Default::default()
+                },
+                NodeInfo {
+                    name: "tower-worker-0".into(),
+                    status: "Ready".into(),
+                    roles: vec!["worker".into()],
+                    roles_display: "worker".into(),
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "8Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "8Gi".into(),
+                    cpu_display: "4/4".into(),
+                    mem_display: "6.0Gi/8.0Gi".into(),
+                    mem_capacity_display: "8.0Gi".into(),
+                    kubelet_version: "v1.33.1".into(),
+                    age: "7d".into(),
+                    ..Default::default()
+                },
+                NodeInfo {
+                    name: "tower-worker-1".into(),
+                    status: "Ready".into(),
+                    roles: vec!["worker".into()],
+                    roles_display: "worker".into(),
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "8Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "8Gi".into(),
+                    cpu_display: "4/4".into(),
+                    mem_display: "6.0Gi/8.0Gi".into(),
+                    mem_capacity_display: "8.0Gi".into(),
+                    kubelet_version: "v1.33.1".into(),
+                    age: "7d".into(),
+                    ..Default::default()
+                },
+            ],
+            pods: vec![
+                PodInfo {
+                    name: "nginx-tower".into(),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "1h".into(),
+                    node: "tower-worker-0".into(),
+                    containers: vec!["nginx".into()],
+                },
+                PodInfo {
+                    name: "coredns-tower-a".into(),
+                    namespace: "kube-system".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "7d".into(),
+                    node: "tower-cp-0".into(),
+                    containers: vec!["coredns".into()],
+                },
+                PodInfo {
+                    name: "coredns-tower-b".into(),
+                    namespace: "kube-system".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "7d".into(),
+                    node: "tower-cp-1".into(),
+                    containers: vec!["coredns".into()],
+                },
+                PodInfo {
+                    name: "argocd-server-0".into(),
+                    namespace: "argocd".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "2d".into(),
+                    node: "tower-worker-1".into(),
+                    containers: vec!["argocd-server".into()],
+                },
+            ],
+            deployments: vec![
+                DeploymentInfo {
+                    name: "nginx".into(),
+                    namespace: "default".into(),
+                    ready: "1/1".into(),
+                    ready_count: 1,
+                    desired_count: 1,
+                    up_to_date: 1,
+                    up_to_date_display: "1".into(),
+                    available: 1,
+                    available_display: "1".into(),
+                    age: "1h".into(),
+                },
+                DeploymentInfo {
+                    name: "coredns".into(),
+                    namespace: "kube-system".into(),
+                    ready: "2/2".into(),
+                    ready_count: 2,
+                    desired_count: 2,
+                    up_to_date: 2,
+                    up_to_date_display: "2".into(),
+                    available: 2,
+                    available_display: "2".into(),
+                    age: "7d".into(),
+                },
+                DeploymentInfo {
+                    name: "argocd-server".into(),
+                    namespace: "argocd".into(),
+                    ready: "1/1".into(),
+                    ready_count: 1,
+                    desired_count: 1,
+                    up_to_date: 1,
+                    up_to_date_display: "1".into(),
+                    available: 1,
+                    available_display: "1".into(),
+                    age: "2d".into(),
+                },
+            ],
+            services: vec![
+                ServiceInfo {
+                    name: "kubernetes".into(),
+                    namespace: "default".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.1".into(),
+                    external_ip: "<none>".into(),
+                    ports: "443/TCP".into(),
+                    age: "7d".into(),
+                },
+                ServiceInfo {
+                    name: "kube-dns".into(),
+                    namespace: "kube-system".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.10".into(),
+                    external_ip: "<none>".into(),
+                    ports: "53/UDP,53/TCP".into(),
+                    age: "7d".into(),
+                },
+                ServiceInfo {
+                    name: "argocd-server".into(),
+                    namespace: "argocd".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.50".into(),
+                    external_ip: "<none>".into(),
+                    ports: "443/TCP".into(),
+                    age: "2d".into(),
+                },
+            ],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: ResourceUsage::default(),
+        }
+    }
+
+    /// Build a ClusterSnapshot that mirrors the actual sandbox topology:
+    /// 1CP + 3W nodes, pods and deployments in default + kube-system.
+    fn make_sandbox_topology_snapshot() -> ClusterSnapshot {
+        use crate::dash::data::*;
+        ClusterSnapshot {
+            name: "sandbox".into(),
+            health: HealthStatus::Green,
+            namespaces: vec!["default".into(), "kube-system".into()],
+            nodes: vec![
+                NodeInfo {
+                    name: "sandbox-cp-0".into(),
+                    status: "Ready".into(),
+                    roles: vec!["control-plane".into()],
+                    roles_display: "control-plane".into(),
+                    cpu_capacity: "4".into(),
+                    mem_capacity: "8Gi".into(),
+                    cpu_allocatable: "4".into(),
+                    mem_allocatable: "8Gi".into(),
+                    cpu_display: "4/4".into(),
+                    mem_display: "6.0Gi/8.0Gi".into(),
+                    mem_capacity_display: "8.0Gi".into(),
+                    kubelet_version: "v1.33.1".into(),
+                    age: "5d".into(),
+                    ..Default::default()
+                },
+                NodeInfo {
+                    name: "sandbox-worker-0".into(),
+                    status: "Ready".into(),
+                    roles: vec!["worker".into()],
+                    roles_display: "worker".into(),
+                    cpu_capacity: "2".into(),
+                    mem_capacity: "4Gi".into(),
+                    cpu_allocatable: "2".into(),
+                    mem_allocatable: "4Gi".into(),
+                    cpu_display: "2/2".into(),
+                    mem_display: "3.0Gi/4.0Gi".into(),
+                    mem_capacity_display: "4.0Gi".into(),
+                    kubelet_version: "v1.33.1".into(),
+                    age: "5d".into(),
+                    ..Default::default()
+                },
+                NodeInfo {
+                    name: "sandbox-worker-1".into(),
+                    status: "Ready".into(),
+                    roles: vec!["worker".into()],
+                    roles_display: "worker".into(),
+                    cpu_capacity: "2".into(),
+                    mem_capacity: "4Gi".into(),
+                    cpu_allocatable: "2".into(),
+                    mem_allocatable: "4Gi".into(),
+                    cpu_display: "2/2".into(),
+                    mem_display: "3.0Gi/4.0Gi".into(),
+                    mem_capacity_display: "4.0Gi".into(),
+                    kubelet_version: "v1.33.1".into(),
+                    age: "5d".into(),
+                    ..Default::default()
+                },
+                NodeInfo {
+                    name: "sandbox-worker-2".into(),
+                    status: "Ready".into(),
+                    roles: vec!["worker".into()],
+                    roles_display: "worker".into(),
+                    cpu_capacity: "2".into(),
+                    mem_capacity: "4Gi".into(),
+                    cpu_allocatable: "2".into(),
+                    mem_allocatable: "4Gi".into(),
+                    cpu_display: "2/2".into(),
+                    mem_display: "3.0Gi/4.0Gi".into(),
+                    mem_capacity_display: "4.0Gi".into(),
+                    kubelet_version: "v1.33.1".into(),
+                    age: "5d".into(),
+                    ..Default::default()
+                },
+            ],
+            pods: vec![
+                PodInfo {
+                    name: "nginx-sandbox".into(),
+                    namespace: "default".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "4h".into(),
+                    node: "sandbox-worker-0".into(),
+                    containers: vec!["nginx".into()],
+                },
+                PodInfo {
+                    name: "coredns-sandbox-a".into(),
+                    namespace: "kube-system".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "5d".into(),
+                    node: "sandbox-cp-0".into(),
+                    containers: vec!["coredns".into()],
+                },
+                PodInfo {
+                    name: "coredns-sandbox-b".into(),
+                    namespace: "kube-system".into(),
+                    status: "Running".into(),
+                    ready: "1/1".into(),
+                    restarts: 0,
+                    restarts_display: "0".into(),
+                    age: "5d".into(),
+                    node: "sandbox-cp-0".into(),
+                    containers: vec!["coredns".into()],
+                },
+            ],
+            deployments: vec![
+                DeploymentInfo {
+                    name: "nginx".into(),
+                    namespace: "default".into(),
+                    ready: "1/1".into(),
+                    ready_count: 1,
+                    desired_count: 1,
+                    up_to_date: 1,
+                    up_to_date_display: "1".into(),
+                    available: 1,
+                    available_display: "1".into(),
+                    age: "4h".into(),
+                },
+                DeploymentInfo {
+                    name: "coredns".into(),
+                    namespace: "kube-system".into(),
+                    ready: "1/1".into(),
+                    ready_count: 1,
+                    desired_count: 1,
+                    up_to_date: 1,
+                    up_to_date_display: "1".into(),
+                    available: 1,
+                    available_display: "1".into(),
+                    age: "5d".into(),
+                },
+            ],
+            services: vec![
+                ServiceInfo {
+                    name: "kubernetes".into(),
+                    namespace: "default".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.1".into(),
+                    external_ip: "<none>".into(),
+                    ports: "443/TCP".into(),
+                    age: "5d".into(),
+                },
+                ServiceInfo {
+                    name: "kube-dns".into(),
+                    namespace: "kube-system".into(),
+                    svc_type: "ClusterIP".into(),
+                    cluster_ip: "10.96.0.10".into(),
+                    external_ip: "<none>".into(),
+                    ports: "53/UDP,53/TCP".into(),
+                    age: "5d".into(),
+                },
+            ],
+            configmaps: vec![],
+            events: vec![],
+            resource_usage: ResourceUsage::default(),
+        }
+    }
+
+    /// Build test App pre-loaded with the actual sdi-specs.yaml topology snapshots
+    /// for both clusters. Both snapshot_index entries are populated for O(1) lookup.
+    fn test_app_with_topology() -> App {
+        let mut app = test_app();
+        let tower_snap = make_tower_topology_snapshot();
+        let sandbox_snap = make_sandbox_topology_snapshot();
+        app.snapshots = vec![tower_snap, sandbox_snap];
+        app.rebuild_snapshot_index();
+        app
+    }
+
+    // --- Nodes tab ---
+
+    /// Tower Nodes tab must show exactly 5 nodes (3CP + 2W topology from sdi-specs.yaml).
+    /// current_row_count_readonly() must return 5 — not 0 — when tower is selected and
+    /// resource_view is Nodes.  A return of 0 would mean the render loop displays an empty
+    /// table, which is the "panic-free but empty" failure mode this test guards against.
+    #[test]
+    fn nodes_tab_tower_shows_five_nodes() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Nodes;
+        app.active_tab = 0;
+
+        let count = app.current_row_count_readonly();
+        assert_eq!(
+            count, 5,
+            "tower Nodes tab must show 5 nodes (3CP+2W), got {}",
+            count
+        );
+    }
+
+    /// Sandbox Nodes tab must show exactly 4 nodes (1CP + 3W topology from sdi-specs.yaml).
+    #[test]
+    fn nodes_tab_sandbox_shows_four_nodes() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.resource_view = ResourceView::Nodes;
+        app.active_tab = 0;
+
+        let count = app.current_row_count_readonly();
+        assert_eq!(
+            count, 4,
+            "sandbox Nodes tab must show 4 nodes (1CP+3W), got {}",
+            count
+        );
+    }
+
+    /// Tower Nodes tab: node names match sdi-specs.yaml exactly (tower-cp-0/1/2, tower-worker-0/1).
+    #[test]
+    fn nodes_tab_tower_node_names_match_topology() {
+        let app = test_app_with_topology();
+        let snap = app
+            .snapshots
+            .iter()
+            .find(|s| s.name == "tower")
+            .expect("tower snapshot missing");
+
+        let names: Vec<&str> = snap.nodes.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"tower-cp-0"), "missing tower-cp-0");
+        assert!(names.contains(&"tower-cp-1"), "missing tower-cp-1");
+        assert!(names.contains(&"tower-cp-2"), "missing tower-cp-2");
+        assert!(names.contains(&"tower-worker-0"), "missing tower-worker-0");
+        assert!(names.contains(&"tower-worker-1"), "missing tower-worker-1");
+    }
+
+    /// Sandbox Nodes tab: node names match sdi-specs.yaml exactly
+    /// (sandbox-cp-0, sandbox-worker-0/1/2).
+    #[test]
+    fn nodes_tab_sandbox_node_names_match_topology() {
+        let app = test_app_with_topology();
+        let snap = app
+            .snapshots
+            .iter()
+            .find(|s| s.name == "sandbox")
+            .expect("sandbox snapshot missing");
+
+        let names: Vec<&str> = snap.nodes.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"sandbox-cp-0"), "missing sandbox-cp-0");
+        assert!(names.contains(&"sandbox-worker-0"), "missing sandbox-worker-0");
+        assert!(names.contains(&"sandbox-worker-1"), "missing sandbox-worker-1");
+        assert!(names.contains(&"sandbox-worker-2"), "missing sandbox-worker-2");
+    }
+
+    /// All nodes in both clusters must have status "Ready".
+    /// A NotReady node would cause the health indicator to turn red.
+    #[test]
+    fn nodes_tab_all_nodes_ready_in_both_clusters() {
+        let app = test_app_with_topology();
+        for snap in &app.snapshots {
+            for node in &snap.nodes {
+                assert_eq!(
+                    node.status, "Ready",
+                    "cluster '{}' node '{}' is not Ready",
+                    snap.name, node.name
+                );
+            }
+        }
+    }
+
+    /// Pressing Down on the Nodes tab moves the cursor from 0 to 1 without panic.
+    /// This is the most basic guard against an index-out-of-bounds in the table
+    /// cursor advancement path when the snapshot is populated.
+    #[test]
+    fn nodes_tab_cursor_down_does_not_panic_tower() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Nodes;
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.table_cursor = 0;
+
+        // Down five times — cursor should advance, never exceed node count - 1
+        for _ in 0..5 {
+            app.handle_event(AppEvent::Down);
+        }
+        let node_count = app
+            .current_snapshot()
+            .map(|s| s.nodes.len())
+            .unwrap_or(0);
+        assert!(
+            app.table_cursor < node_count,
+            "cursor {} must be < node_count {}",
+            app.table_cursor,
+            node_count
+        );
+    }
+
+    /// Pressing Down on sandbox Nodes tab navigates without panic.
+    #[test]
+    fn nodes_tab_cursor_down_does_not_panic_sandbox() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.resource_view = ResourceView::Nodes;
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.table_cursor = 0;
+
+        for _ in 0..4 {
+            app.handle_event(AppEvent::Down);
+        }
+        let node_count = app
+            .current_snapshot()
+            .map(|s| s.nodes.len())
+            .unwrap_or(0);
+        assert!(
+            app.table_cursor < node_count,
+            "sandbox cursor {} must be < node_count {}",
+            app.table_cursor,
+            node_count
+        );
+    }
+
+    /// YAML/describe modal opens for the selected node without panic.
+    /// The modal must be visible and its resource_kind must be "Node".
+    #[test]
+    fn nodes_tab_describe_opens_yaml_modal_without_panic() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Nodes;
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.table_cursor = 0; // tower-cp-0
+
+        app.handle_event(AppEvent::Describe);
+
+        assert!(
+            app.yaml_modal.visible,
+            "Describe on Nodes tab must open YAML modal"
+        );
+        assert_eq!(app.yaml_modal.resource_kind, "Node");
+        assert_eq!(app.yaml_modal.resource_name, "tower-cp-0");
+        assert!(
+            app.yaml_modal.content.contains("tower-cp-0"),
+            "modal content must contain node name"
+        );
+    }
+
+    /// Search filter on Nodes tab reduces row count to matching nodes only.
+    #[test]
+    fn nodes_tab_search_filter_by_name_reduces_count() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Nodes;
+
+        // No filter: 5 nodes
+        assert_eq!(app.current_row_count_readonly(), 5);
+
+        // Filter "cp": matches tower-cp-0, tower-cp-1, tower-cp-2 (3 nodes)
+        app.search_query = Some("cp".into());
+        app.sync_search_lower();
+        app.cached_row_count = None;
+        assert_eq!(
+            app.current_row_count_readonly(),
+            3,
+            "search 'cp' must match 3 control-plane nodes"
+        );
+
+        // Filter "worker": matches tower-worker-0, tower-worker-1 (2 nodes)
+        app.search_query = Some("worker".into());
+        app.sync_search_lower();
+        app.cached_row_count = None;
+        assert_eq!(
+            app.current_row_count_readonly(),
+            2,
+            "search 'worker' must match 2 worker nodes"
+        );
+    }
+
+    // --- Pods tab ---
+
+    /// Tower Pods tab must show 4 pods (populated, non-zero).
+    #[test]
+    fn pods_tab_tower_shows_populated_content() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Pods;
+        app.active_tab = 0;
+
+        let count = app.current_row_count_readonly();
+        assert!(
+            count > 0,
+            "tower Pods tab must show populated content (>0 pods), got {}",
+            count
+        );
+        assert_eq!(count, 4, "tower must have 4 pods total");
+    }
+
+    /// Sandbox Pods tab must show 3 pods (populated, non-zero).
+    #[test]
+    fn pods_tab_sandbox_shows_populated_content() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.resource_view = ResourceView::Pods;
+        app.active_tab = 0;
+
+        let count = app.current_row_count_readonly();
+        assert!(
+            count > 0,
+            "sandbox Pods tab must show populated content (>0 pods), got {}",
+            count
+        );
+        assert_eq!(count, 3, "sandbox must have 3 pods total");
+    }
+
+    /// Pressing Down on Pods tab cycles through tower pods without panic.
+    #[test]
+    fn pods_tab_cursor_down_does_not_panic_tower() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Pods;
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.table_cursor = 0;
+
+        for _ in 0..4 {
+            app.handle_event(AppEvent::Down);
+        }
+        let pod_count = app
+            .current_snapshot()
+            .map(|s| s.pods.len())
+            .unwrap_or(0);
+        assert!(
+            app.table_cursor < pod_count,
+            "pods cursor {} must be < pod_count {}",
+            app.table_cursor,
+            pod_count
+        );
+    }
+
+    /// Namespace filter applied to Pods tab: only pods in the selected namespace are shown.
+    #[test]
+    fn pods_tab_namespace_filter_kube_system_tower() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.selected_namespace = Some("kube-system".into());
+        app.resource_view = ResourceView::Pods;
+
+        // tower has 2 kube-system pods (coredns-tower-a, coredns-tower-b)
+        let snap = app.current_snapshot().expect("snapshot missing");
+        let ns_pods: Vec<_> = snap
+            .pods
+            .iter()
+            .filter(|p| p.namespace == "kube-system")
+            .collect();
+        assert_eq!(
+            ns_pods.len(),
+            2,
+            "tower kube-system must have 2 pods, got {}",
+            ns_pods.len()
+        );
+        assert!(ns_pods.iter().any(|p| p.name == "coredns-tower-a"));
+        assert!(ns_pods.iter().any(|p| p.name == "coredns-tower-b"));
+    }
+
+    /// Pods tab search filter by namespace reduces row count.
+    #[test]
+    fn pods_tab_search_filter_by_namespace() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Pods;
+
+        // No filter: 4 pods
+        assert_eq!(app.current_row_count_readonly(), 4);
+
+        // Search "kube-system": matches 2 coredns pods whose namespace contains "kube-system"
+        app.search_query = Some("kube-system".into());
+        app.sync_search_lower();
+        app.cached_row_count = None;
+        assert_eq!(
+            app.current_row_count_readonly(),
+            2,
+            "search 'kube-system' must match 2 pods in kube-system namespace"
+        );
+    }
+
+    // --- Deployments tab ---
+
+    /// Tower Deployments tab must show 3 deployments (nginx, coredns, argocd-server).
+    #[test]
+    fn deployments_tab_tower_shows_populated_content() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Deployments;
+        app.active_tab = 0;
+
+        let count = app.current_row_count_readonly();
+        assert!(
+            count > 0,
+            "tower Deployments tab must show populated content (>0), got {}",
+            count
+        );
+        assert_eq!(count, 3, "tower must have 3 deployments");
+    }
+
+    /// Sandbox Deployments tab must show 2 deployments (nginx, coredns).
+    #[test]
+    fn deployments_tab_sandbox_shows_populated_content() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.resource_view = ResourceView::Deployments;
+        app.active_tab = 0;
+
+        let count = app.current_row_count_readonly();
+        assert!(
+            count > 0,
+            "sandbox Deployments tab must show populated content (>0), got {}",
+            count
+        );
+        assert_eq!(count, 2, "sandbox must have 2 deployments");
+    }
+
+    /// All deployments in both clusters have non-negative ready_count and desired_count.
+    /// Negative counts would indicate a parsing error and could cause render-path panics.
+    #[test]
+    fn deployments_tab_all_ready_counts_non_negative() {
+        let app = test_app_with_topology();
+        for snap in &app.snapshots {
+            for dep in &snap.deployments {
+                assert!(
+                    dep.ready_count >= 0,
+                    "cluster '{}' deployment '{}' has negative ready_count: {}",
+                    snap.name,
+                    dep.name,
+                    dep.ready_count
+                );
+                assert!(
+                    dep.desired_count >= 0,
+                    "cluster '{}' deployment '{}' has negative desired_count: {}",
+                    snap.name,
+                    dep.name,
+                    dep.desired_count
+                );
+            }
+        }
+    }
+
+    /// YAML/describe modal opens for the selected deployment without panic.
+    #[test]
+    fn deployments_tab_describe_opens_yaml_modal_without_panic() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Deployments;
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.table_cursor = 0; // nginx
+
+        app.handle_event(AppEvent::Describe);
+
+        assert!(
+            app.yaml_modal.visible,
+            "Describe on Deployments tab must open YAML modal"
+        );
+        assert_eq!(app.yaml_modal.resource_kind, "Deployment");
+        assert_eq!(app.yaml_modal.resource_name, "nginx");
+        assert!(
+            app.yaml_modal.content.contains("nginx"),
+            "modal content must contain deployment name"
+        );
+    }
+
+    /// Pressing Down on Deployments tab navigates without panic for both clusters.
+    #[test]
+    fn deployments_tab_cursor_down_does_not_panic() {
+        for cluster in &["tower", "sandbox"] {
+            let mut app = test_app_with_topology();
+            app.selected_cluster = Some((*cluster).into());
+            app.resource_view = ResourceView::Deployments;
+            app.active_panel = ActivePanel::Center;
+            app.active_tab = 0;
+            app.table_cursor = 0;
+
+            let dep_count = app
+                .current_snapshot()
+                .map(|s| s.deployments.len())
+                .unwrap_or(0);
+
+            // Navigate down past all deployments — cursor must clamp, not panic
+            for _ in 0..(dep_count + 2) {
+                app.handle_event(AppEvent::Down);
+            }
+            assert!(
+                app.table_cursor < dep_count,
+                "cluster '{}' deployments cursor {} must be < dep_count {}",
+                cluster,
+                app.table_cursor,
+                dep_count
+            );
+        }
+    }
+
+    /// Deployments tab search filter reduces rows to matching deployments.
+    #[test]
+    fn deployments_tab_search_filter_reduces_count() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Deployments;
+
+        // No filter: 3 deployments
+        assert_eq!(app.current_row_count_readonly(), 3);
+
+        // Filter "coredns": matches 1 deployment
+        app.search_query = Some("coredns".into());
+        app.sync_search_lower();
+        app.cached_row_count = None;
+        assert_eq!(
+            app.current_row_count_readonly(),
+            1,
+            "search 'coredns' must match 1 deployment"
+        );
+    }
+
+    // --- Cross-tab cursor reset ---
+
+    /// Switching resource_view resets table_cursor to 0.
+    /// Prevents stale cursor from causing out-of-bounds access in the new tab.
+    #[test]
+    fn switching_views_resets_cursor_to_zero() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Nodes;
+        app.table_cursor = 4; // simulate cursor at last tower node
+
+        // Switch from Nodes → Pods
+        app.handle_event(AppEvent::ResourceType('p'));
+        assert_eq!(
+            app.resource_view,
+            ResourceView::Pods,
+            "ResourceType('p') must switch to Pods view"
+        );
+        assert_eq!(
+            app.table_cursor, 0,
+            "table_cursor must reset to 0 when switching from Nodes to Pods"
+        );
+
+        // Advance cursor in Pods then switch to Deployments
+        app.handle_event(AppEvent::Down);
+        app.handle_event(AppEvent::Down);
+        let cursor_before = app.table_cursor;
+        assert!(cursor_before > 0, "cursor should have advanced in Pods view");
+
+        app.handle_event(AppEvent::ResourceType('d'));
+        assert_eq!(
+            app.resource_view,
+            ResourceView::Deployments,
+            "ResourceType('d') must switch to Deployments view"
+        );
+        assert_eq!(
+            app.table_cursor, 0,
+            "table_cursor must reset to 0 when switching from Pods to Deployments"
+        );
+
+        // Switch Deployments → Nodes
+        app.handle_event(AppEvent::Down);
+        app.handle_event(AppEvent::ResourceType('n'));
+        assert_eq!(
+            app.resource_view,
+            ResourceView::Nodes,
+            "ResourceType('n') must switch to Nodes view"
+        );
+        assert_eq!(
+            app.table_cursor, 0,
+            "table_cursor must reset to 0 when switching to Nodes view"
+        );
+    }
+
+    // --- Snapshot access correctness ---
+
+    /// current_snapshot() returns the correct snapshot for the selected cluster.
+    /// Verifies that the snapshot_index fast path works for both tower and sandbox.
+    #[test]
+    fn current_snapshot_returns_correct_cluster_data() {
+        let mut app = test_app_with_topology();
+
+        // Tower: 5 nodes, 4 pods, 3 deployments
+        app.selected_cluster = Some("tower".into());
+        let snap = app.current_snapshot().expect("tower snapshot must be Some");
+        assert_eq!(snap.name, "tower");
+        assert_eq!(snap.nodes.len(), 5, "tower must have 5 nodes");
+        assert_eq!(snap.pods.len(), 4, "tower must have 4 pods");
+        assert_eq!(snap.deployments.len(), 3, "tower must have 3 deployments");
+
+        // Sandbox: 4 nodes, 3 pods, 2 deployments
+        app.selected_cluster = Some("sandbox".into());
+        let snap = app
+            .current_snapshot()
+            .expect("sandbox snapshot must be Some");
+        assert_eq!(snap.name, "sandbox");
+        assert_eq!(snap.nodes.len(), 4, "sandbox must have 4 nodes");
+        assert_eq!(snap.pods.len(), 3, "sandbox must have 3 pods");
+        assert_eq!(snap.deployments.len(), 2, "sandbox must have 2 deployments");
+    }
+
+    /// No panic when switching between tower and sandbox and reading each Nodes/Pods/Deployments
+    /// row count in rapid succession.  Validates the snapshot_index is consistent after rebuild.
+    #[test]
+    fn rapid_cluster_view_switching_no_panic() {
+        let mut app = test_app_with_topology();
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+
+        let cluster_views = [
+            ("tower", ResourceView::Nodes),
+            ("sandbox", ResourceView::Pods),
+            ("tower", ResourceView::Deployments),
+            ("sandbox", ResourceView::Nodes),
+            ("tower", ResourceView::Pods),
+            ("sandbox", ResourceView::Deployments),
+        ];
+
+        for (cluster, view) in &cluster_views {
+            app.selected_cluster = Some((*cluster).into());
+            app.resource_view = *view;
+            app.cached_row_count = None;
+            let count = app.current_row_count_readonly();
+            // All combinations must return > 0 (populated) and < 100 (sanity upper bound)
+            assert!(
+                count > 0 && count < 100,
+                "cluster='{}' view={:?} must have 0<count<100, got {}",
+                cluster,
+                view,
+                count
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // AC-10d: E2E smoke — scalex dash, tower + sandbox, all tabs, zero panic/error
+    // ---------------------------------------------------------------------------
+    //
+    // These tests instantiate App with the actual tower (3CP+2W) and sandbox
+    // (1CP+3W) topology from sdi-specs.yaml (via make_tower/sandbox_topology_snapshot)
+    // and exercise every ResourceView tab and every app-level tab through the full
+    // render path using ratatui's TestBackend (no real terminal, no live clusters).
+    //
+    // A test passing ≡ zero panics on that tab/view combination.
+    // A test failing to compile ≡ API contract broken (render signature changed, etc.).
+
+    /// Build a ratatui Terminal backed by TestBackend.
+    /// 100×40 is large enough for all layout sections (header + sidebar + center + status).
+    fn make_test_terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        let backend = ratatui::backend::TestBackend::new(100, 40);
+        ratatui::Terminal::new(backend).expect("TestBackend Terminal must initialize")
+    }
+
+    /// Every ResourceView variant, matching the keyboard shortcuts p/d/s/c/n/e.
+    fn all_resource_views() -> Vec<(char, ResourceView)> {
+        vec![
+            ('p', ResourceView::Pods),
+            ('d', ResourceView::Deployments),
+            ('s', ResourceView::Services),
+            ('c', ResourceView::ConfigMaps),
+            ('n', ResourceView::Nodes),
+            ('e', ResourceView::Events),
+        ]
+    }
+
+    /// Smoke — tower: cycling every ResourceView via TestBackend render produces no panic.
+    /// Covers all 6 resource tabs (Pods, Deployments, Services, ConfigMaps, Nodes, Events)
+    /// against the tower cluster (3CP + 2W topology).
+    #[test]
+    fn smoke_render_all_resource_tabs_tower_no_panic() {
+        let mut terminal = make_test_terminal();
+        for (_ch, view) in all_resource_views() {
+            let mut a = test_app_with_topology();
+            a.selected_cluster = Some("tower".into());
+            a.resource_view = view;
+            a.active_panel = ActivePanel::Center;
+            a.active_tab = 0;
+            terminal
+                .draw(|f| ui::render(f, &a))
+                .unwrap_or_else(|e| panic!("render panicked for tower/{:?}: {}", view, e));
+        }
+    }
+
+    /// Smoke — sandbox: cycling every ResourceView via TestBackend render produces no panic.
+    /// Covers all 6 resource tabs against the sandbox cluster (1CP + 3W topology).
+    #[test]
+    fn smoke_render_all_resource_tabs_sandbox_no_panic() {
+        let mut terminal = make_test_terminal();
+        for (_ch, view) in all_resource_views() {
+            let mut a = test_app_with_topology();
+            a.selected_cluster = Some("sandbox".into());
+            a.resource_view = view;
+            a.active_panel = ActivePanel::Center;
+            a.active_tab = 0;
+            terminal
+                .draw(|f| ui::render(f, &a))
+                .unwrap_or_else(|e| panic!("render panicked for sandbox/{:?}: {}", view, e));
+        }
+    }
+
+    /// Smoke — Top tab (active_tab = 1): renders without panic for tower and sandbox.
+    /// The Top tab shows per-node CPU/MEM utilisation bars — exercised here with
+    /// no real metrics (sentinel -1.0) which must fall back to "N/A" display.
+    #[test]
+    fn smoke_render_top_tab_both_clusters_no_panic() {
+        let mut terminal = make_test_terminal();
+        for cluster in &["tower", "sandbox"] {
+            let mut a = test_app_with_topology();
+            a.selected_cluster = Some((*cluster).into());
+            a.active_tab = 1; // Top tab
+            a.active_panel = ActivePanel::Center;
+            terminal
+                .draw(|f| ui::render(f, &a))
+                .unwrap_or_else(|e| {
+                    panic!("render panicked for Top tab / cluster {}: {}", cluster, e)
+                });
+        }
+    }
+
+    /// Smoke — event-driven tab cycle for tower: ResourceType events must transition
+    /// resource_view correctly for all 6 views without panic.
+    #[test]
+    fn smoke_tab_cycle_events_tower_correct_transitions_no_panic() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.active_panel = ActivePanel::Center;
+        for (ch, expected_view) in all_resource_views() {
+            app.handle_event(AppEvent::ResourceType(ch));
+            assert_eq!(
+                app.resource_view, expected_view,
+                "tower: ResourceType('{}') must switch to {:?}",
+                ch, expected_view
+            );
+        }
+    }
+
+    /// Smoke — event-driven tab cycle for sandbox: ResourceType events must transition
+    /// resource_view correctly for all 6 views without panic.
+    #[test]
+    fn smoke_tab_cycle_events_sandbox_correct_transitions_no_panic() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.active_panel = ActivePanel::Center;
+        for (ch, expected_view) in all_resource_views() {
+            app.handle_event(AppEvent::ResourceType(ch));
+            assert_eq!(
+                app.resource_view, expected_view,
+                "sandbox: ResourceType('{}') must switch to {:?}",
+                ch, expected_view
+            );
+        }
+    }
+
+    /// Smoke — app-level tab switching (Resources ↔ Top) via Tab events for both clusters.
+    /// Tab(1) = Resources (index 0), Tab(2) = Top (index 1).
+    #[test]
+    fn smoke_app_tab_switching_both_clusters_no_panic() {
+        for cluster in &["tower", "sandbox"] {
+            let mut app = test_app_with_topology();
+            app.selected_cluster = Some((*cluster).into());
+            app.active_panel = ActivePanel::Center;
+
+            // Start on Resources (tab 0)
+            assert_eq!(app.active_tab, 0, "{}: initial tab must be 0 (Resources)", cluster);
+
+            // Switch to Top (Tab(2) → index 1)
+            app.handle_event(AppEvent::Tab(2));
+            assert_eq!(
+                app.active_tab, 1,
+                "{}: Tab(2) must select Top (index 1)",
+                cluster
+            );
+
+            // Switch back to Resources (Tab(1) → index 0)
+            app.handle_event(AppEvent::Tab(1));
+            assert_eq!(
+                app.active_tab, 0,
+                "{}: Tab(1) must select Resources (index 0)",
+                cluster
+            );
+        }
+    }
+
+    /// Smoke — full render × tab matrix: Resources and Top tabs rendered for both clusters.
+    /// Exercises the complete render path for every (cluster, tab) combination.
+    #[test]
+    fn smoke_render_resources_and_top_both_clusters_no_panic() {
+        let mut terminal = make_test_terminal();
+        for cluster in &["tower", "sandbox"] {
+            // Resources tab
+            let mut a = test_app_with_topology();
+            a.selected_cluster = Some((*cluster).into());
+            a.active_tab = 0;
+            a.active_panel = ActivePanel::Center;
+            terminal
+                .draw(|f| ui::render(f, &a))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "render panicked for Resources tab / cluster {}: {}",
+                        cluster, e
+                    )
+                });
+
+            // Top tab
+            let mut a = test_app_with_topology();
+            a.selected_cluster = Some((*cluster).into());
+            a.active_tab = 1;
+            a.active_panel = ActivePanel::Center;
+            terminal
+                .draw(|f| ui::render(f, &a))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "render panicked for Top tab / cluster {}: {}",
+                        cluster, e
+                    )
+                });
+        }
+    }
+
+    /// Smoke — all (cluster, resource_view, tab) triples: no panic on any combination.
+    /// This is the broadest guard: 2 clusters × 6 resource views × 2 tabs = 24 renders.
+    #[test]
+    fn smoke_render_full_matrix_no_panic() {
+        let mut terminal = make_test_terminal();
+        for cluster in &["tower", "sandbox"] {
+            for app_tab in 0..2usize {
+                for (_ch, view) in all_resource_views() {
+                    let mut a = test_app_with_topology();
+                    a.selected_cluster = Some((*cluster).into());
+                    a.active_tab = app_tab;
+                    a.resource_view = view;
+                    a.active_panel = ActivePanel::Center;
+                    terminal
+                        .draw(|f| ui::render(f, &a))
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "render panicked: cluster={} tab={} view={:?}: {}",
+                                cluster, app_tab, view, e
+                            )
+                        });
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // AC-11a: Pods and Nodes views — STATUS/READY columns, watch/refresh cycle,
+    // visibility for every cluster (tower 3CP+2W, sandbox 1CP+3W).
+    // -------------------------------------------------------------------------
+
+    /// Every PodInfo in both clusters must have a non-empty STATUS column value.
+    /// An empty status would render as a blank cell — the render path treats blank
+    /// STATUS as "Unknown" for display purposes but data must never be empty.
+    #[test]
+    fn pods_view_status_column_non_empty_both_clusters() {
+        let app = test_app_with_topology();
+        for snap in &app.snapshots {
+            for pod in &snap.pods {
+                assert!(
+                    !pod.status.is_empty(),
+                    "cluster '{}' pod '{}' has empty STATUS column",
+                    snap.name,
+                    pod.name
+                );
+            }
+        }
+    }
+
+    /// Every PodInfo in both clusters must have a READY column value matching "X/Y" format.
+    /// "0/1", "1/1", "2/3" are all valid.  An empty or non-slash ready string would render
+    /// as a blank READY cell and fail the acceptance criterion.
+    #[test]
+    fn pods_view_ready_column_has_slash_format_both_clusters() {
+        let app = test_app_with_topology();
+        for snap in &app.snapshots {
+            for pod in &snap.pods {
+                assert!(
+                    pod.ready.contains('/'),
+                    "cluster '{}' pod '{}' READY column '{}' must contain '/' (e.g. '1/1')",
+                    snap.name,
+                    pod.name,
+                    pod.ready
+                );
+                // Both sides of the slash must be numeric
+                let parts: Vec<&str> = pod.ready.splitn(2, '/').collect();
+                assert_eq!(
+                    parts.len(),
+                    2,
+                    "cluster '{}' pod '{}' READY '{}' must have exactly one '/'",
+                    snap.name,
+                    pod.name,
+                    pod.ready
+                );
+                assert!(
+                    parts[0].parse::<u32>().is_ok(),
+                    "cluster '{}' pod '{}' READY left side '{}' must be numeric",
+                    snap.name,
+                    pod.name,
+                    parts[0]
+                );
+                assert!(
+                    parts[1].parse::<u32>().is_ok(),
+                    "cluster '{}' pod '{}' READY right side '{}' must be numeric",
+                    snap.name,
+                    pod.name,
+                    parts[1]
+                );
+            }
+        }
+    }
+
+    /// Every NodeInfo in both clusters must have a non-empty STATUS column value.
+    /// The Nodes table renders STATUS with color-coded "Ready" / "NotReady" states;
+    /// an empty status string would leave the column blank.
+    #[test]
+    fn nodes_view_status_column_non_empty_both_clusters() {
+        let app = test_app_with_topology();
+        for snap in &app.snapshots {
+            for node in &snap.nodes {
+                assert!(
+                    !node.status.is_empty(),
+                    "cluster '{}' node '{}' has empty STATUS column",
+                    snap.name,
+                    node.name
+                );
+            }
+        }
+    }
+
+    /// Switching to the Pods view from a different view sets needs_refresh=true
+    /// when pods have not yet been fetched for the current cluster.
+    /// This is the "watch" trigger: the TUI polls (fetches) on needs_refresh=true.
+    #[test]
+    fn pods_view_switch_triggers_refresh_when_unfetched() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.active_panel = ActivePanel::Center;
+        // Start on Deployments view, pods not yet fetched
+        app.resource_view = ResourceView::Deployments;
+        app.fetched_resources.clear(); // nothing fetched yet
+        app.needs_refresh = false;
+
+        // Switch to Pods
+        app.handle_event(AppEvent::ResourceType('p'));
+
+        assert_eq!(app.resource_view, ResourceView::Pods);
+        assert!(
+            app.needs_refresh,
+            "switching to Pods view when Pods not yet fetched must set needs_refresh=true"
+        );
+    }
+
+    /// Switching to the Nodes view from a different view sets needs_refresh=true
+    /// when nodes have not yet been fetched for the current cluster.
+    #[test]
+    fn nodes_view_switch_triggers_refresh_when_unfetched() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.active_panel = ActivePanel::Center;
+        // Start on Pods view, nodes not yet fetched
+        app.resource_view = ResourceView::Pods;
+        app.fetched_resources.clear(); // nothing fetched yet
+        app.needs_refresh = false;
+
+        // Switch to Nodes
+        app.handle_event(AppEvent::ResourceType('n'));
+
+        assert_eq!(app.resource_view, ResourceView::Nodes);
+        assert!(
+            app.needs_refresh,
+            "switching to Nodes view when Nodes not yet fetched must set needs_refresh=true"
+        );
+    }
+
+    /// Once Pods have been fetched (fetched_resources contains ActiveResource::Pods),
+    /// switching back to the Pods view does NOT trigger an extra refresh.
+    /// Avoids redundant API calls when the user cycles between views.
+    #[test]
+    fn pods_view_no_refresh_when_already_fetched() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.active_panel = ActivePanel::Center;
+        // Mark Pods as already fetched
+        app.fetched_resources.insert(ActiveResource::Pods);
+        app.resource_view = ResourceView::Deployments;
+        app.needs_refresh = false;
+
+        // Switch to Pods (already fetched)
+        app.handle_event(AppEvent::ResourceType('p'));
+
+        assert_eq!(app.resource_view, ResourceView::Pods);
+        assert!(
+            !app.needs_refresh,
+            "switching to Pods view when already fetched must NOT set needs_refresh"
+        );
+    }
+
+    /// Once Nodes have been fetched (fetched_resources contains ActiveResource::Nodes),
+    /// switching back to the Nodes view does NOT trigger an extra refresh.
+    #[test]
+    fn nodes_view_no_refresh_when_already_fetched() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.active_panel = ActivePanel::Center;
+        // Mark Nodes as already fetched
+        app.fetched_resources.insert(ActiveResource::Nodes);
+        app.resource_view = ResourceView::Pods;
+        app.needs_refresh = false;
+
+        // Switch to Nodes (already fetched)
+        app.handle_event(AppEvent::ResourceType('n'));
+
+        assert_eq!(app.resource_view, ResourceView::Nodes);
+        assert!(
+            !app.needs_refresh,
+            "switching to Nodes view when already fetched must NOT set needs_refresh"
+        );
+    }
+
+    /// Both clusters expose pods via current_snapshot() when selected.
+    /// Verifies that the Pods view is backed by data for every cluster in the topology.
+    #[test]
+    fn pods_view_visible_for_every_cluster() {
+        let mut app = test_app_with_topology();
+        app.resource_view = ResourceView::Pods;
+        app.active_tab = 0;
+
+        for cluster in &["tower", "sandbox"] {
+            app.selected_cluster = Some((*cluster).into());
+            app.cached_row_count = None;
+            let count = app.current_row_count_readonly();
+            assert!(
+                count > 0,
+                "Pods view must show >0 rows for cluster '{}' (got {})",
+                cluster,
+                count
+            );
+        }
+    }
+
+    /// Both clusters expose nodes via current_snapshot() when selected.
+    /// Verifies that the Nodes view is backed by data for every cluster in the topology.
+    #[test]
+    fn nodes_view_visible_for_every_cluster() {
+        let mut app = test_app_with_topology();
+        app.resource_view = ResourceView::Nodes;
+        app.active_tab = 0;
+
+        for cluster in &["tower", "sandbox"] {
+            app.selected_cluster = Some((*cluster).into());
+            app.cached_row_count = None;
+            let count = app.current_row_count_readonly();
+            assert!(
+                count > 0,
+                "Nodes view must show >0 rows for cluster '{}' (got {})",
+                cluster,
+                count
+            );
+        }
+    }
+
+    /// Pods view renders without panic using TestBackend for both clusters,
+    /// specifically verifying STATUS and READY columns render correctly.
+    #[test]
+    fn pods_view_render_status_ready_columns_no_panic_both_clusters() {
+        let mut terminal = make_test_terminal();
+        for cluster in &["tower", "sandbox"] {
+            let mut a = test_app_with_topology();
+            a.selected_cluster = Some((*cluster).into());
+            a.resource_view = ResourceView::Pods;
+            a.active_panel = ActivePanel::Center;
+            a.active_tab = 0;
+            terminal
+                .draw(|f| ui::render(f, &a))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Pods view render panicked for cluster '{}' (STATUS/READY columns): {}",
+                        cluster, e
+                    )
+                });
+        }
+    }
+
+    /// Nodes view renders without panic using TestBackend for both clusters,
+    /// specifically verifying STATUS column renders correctly.
+    #[test]
+    fn nodes_view_render_status_column_no_panic_both_clusters() {
+        let mut terminal = make_test_terminal();
+        for cluster in &["tower", "sandbox"] {
+            let mut a = test_app_with_topology();
+            a.selected_cluster = Some((*cluster).into());
+            a.resource_view = ResourceView::Nodes;
+            a.active_panel = ActivePanel::Center;
+            a.active_tab = 0;
+            terminal
+                .draw(|f| ui::render(f, &a))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Nodes view render panicked for cluster '{}' (STATUS column): {}",
+                        cluster, e
+                    )
+                });
+        }
+    }
+
+    /// Tower topology: Pods table row count equals the total pod count in the snapshot.
+    /// Verifies the table list accurately reflects all pods (no hidden or dropped rows).
+    #[test]
+    fn pods_view_list_count_equals_snapshot_pods_tower() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Pods;
+        app.cached_row_count = None;
+
+        let snap_pod_count = app
+            .current_snapshot()
+            .map(|s| s.pods.len())
+            .unwrap_or(0);
+        let row_count = app.current_row_count_readonly();
+
+        assert_eq!(
+            row_count, snap_pod_count,
+            "tower: Pods table row count ({}) must equal snapshot pod count ({})",
+            row_count, snap_pod_count
+        );
+    }
+
+    /// Sandbox topology: Pods table row count equals the total pod count in the snapshot.
+    #[test]
+    fn pods_view_list_count_equals_snapshot_pods_sandbox() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.resource_view = ResourceView::Pods;
+        app.cached_row_count = None;
+
+        let snap_pod_count = app
+            .current_snapshot()
+            .map(|s| s.pods.len())
+            .unwrap_or(0);
+        let row_count = app.current_row_count_readonly();
+
+        assert_eq!(
+            row_count, snap_pod_count,
+            "sandbox: Pods table row count ({}) must equal snapshot pod count ({})",
+            row_count, snap_pod_count
+        );
+    }
+
+    /// Tower topology: Nodes table row count equals the total node count in the snapshot.
+    /// Verifies the Nodes list accurately reflects all 5 nodes (3CP+2W).
+    #[test]
+    fn nodes_view_list_count_equals_snapshot_nodes_tower() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Nodes;
+        app.cached_row_count = None;
+
+        let snap_node_count = app
+            .current_snapshot()
+            .map(|s| s.nodes.len())
+            .unwrap_or(0);
+        let row_count = app.current_row_count_readonly();
+
+        assert_eq!(
+            row_count, snap_node_count,
+            "tower: Nodes table row count ({}) must equal snapshot node count ({} = 3CP+2W)",
+            row_count, snap_node_count
+        );
+        assert_eq!(row_count, 5, "tower must have exactly 5 nodes (3CP+2W)");
+    }
+
+    /// Sandbox topology: Nodes table row count equals the total node count in the snapshot.
+    /// Verifies the Nodes list accurately reflects all 4 nodes (1CP+3W).
+    #[test]
+    fn nodes_view_list_count_equals_snapshot_nodes_sandbox() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.resource_view = ResourceView::Nodes;
+        app.cached_row_count = None;
+
+        let snap_node_count = app
+            .current_snapshot()
+            .map(|s| s.nodes.len())
+            .unwrap_or(0);
+        let row_count = app.current_row_count_readonly();
+
+        assert_eq!(
+            row_count, snap_node_count,
+            "sandbox: Nodes table row count ({}) must equal snapshot node count ({} = 1CP+3W)",
+            row_count, snap_node_count
+        );
+        assert_eq!(row_count, 4, "sandbox must have exactly 4 nodes (1CP+3W)");
+    }
+
+    /// Keyboard shortcut 'p' correctly maps to ResourceView::Pods (list view).
+    /// Ensures the primary entry point to the Pods list view works end-to-end.
+    #[test]
+    fn keyboard_shortcut_p_switches_to_pods_list() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Nodes; // start elsewhere
+
+        app.handle_event(AppEvent::ResourceType('p'));
+
+        assert_eq!(
+            app.resource_view,
+            ResourceView::Pods,
+            "'p' key must activate Pods list view"
+        );
+    }
+
+    /// Keyboard shortcut 'n' correctly maps to ResourceView::Nodes (list view).
+    /// Ensures the primary entry point to the Nodes list view works end-to-end.
+    #[test]
+    fn keyboard_shortcut_n_switches_to_nodes_list() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Pods; // start elsewhere
+
+        app.handle_event(AppEvent::ResourceType('n'));
+
+        assert_eq!(
+            app.resource_view,
+            ResourceView::Nodes,
+            "'n' key must activate Nodes list view"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // AC-11b: Services and Deployments views — TYPE/replicas columns, watch/
+    // refresh cycle, visibility for every cluster (tower 3CP+2W, sandbox 1CP+3W).
+    // -------------------------------------------------------------------------
+
+    // --- Deployments view: list count ---
+
+    /// Tower topology: Deployments table row count equals the total deployment count.
+    /// Verifies the list accurately reflects all deployments (no hidden or dropped rows).
+    #[test]
+    fn deployments_view_list_count_equals_snapshot_deployments_tower() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Deployments;
+        app.cached_row_count = None;
+
+        let snap_count = app
+            .current_snapshot()
+            .map(|s| s.deployments.len())
+            .unwrap_or(0);
+        let row_count = app.current_row_count_readonly();
+
+        assert_eq!(
+            row_count, snap_count,
+            "tower: Deployments table row count ({}) must equal snapshot deployment count ({})",
+            row_count, snap_count
+        );
+        assert_eq!(row_count, 3, "tower must have exactly 3 deployments");
+    }
+
+    /// Sandbox topology: Deployments table row count equals the total deployment count.
+    /// Verifies the list accurately reflects all 2 sandbox deployments.
+    #[test]
+    fn deployments_view_list_count_equals_snapshot_deployments_sandbox() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.resource_view = ResourceView::Deployments;
+        app.cached_row_count = None;
+
+        let snap_count = app
+            .current_snapshot()
+            .map(|s| s.deployments.len())
+            .unwrap_or(0);
+        let row_count = app.current_row_count_readonly();
+
+        assert_eq!(
+            row_count, snap_count,
+            "sandbox: Deployments table row count ({}) must equal snapshot deployment count ({})",
+            row_count, snap_count
+        );
+        assert_eq!(row_count, 2, "sandbox must have exactly 2 deployments");
+    }
+
+    // --- Services view: list count ---
+
+    /// Tower topology: Services table row count equals the total service count.
+    /// Verifies the Services list accurately reflects all tower services.
+    #[test]
+    fn services_view_list_count_equals_snapshot_services_tower() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Services;
+        app.cached_row_count = None;
+
+        let snap_count = app
+            .current_snapshot()
+            .map(|s| s.services.len())
+            .unwrap_or(0);
+        let row_count = app.current_row_count_readonly();
+
+        assert_eq!(
+            row_count, snap_count,
+            "tower: Services table row count ({}) must equal snapshot service count ({})",
+            row_count, snap_count
+        );
+        assert_eq!(row_count, 3, "tower must have exactly 3 services");
+    }
+
+    /// Sandbox topology: Services table row count equals the total service count.
+    #[test]
+    fn services_view_list_count_equals_snapshot_services_sandbox() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.resource_view = ResourceView::Services;
+        app.cached_row_count = None;
+
+        let snap_count = app
+            .current_snapshot()
+            .map(|s| s.services.len())
+            .unwrap_or(0);
+        let row_count = app.current_row_count_readonly();
+
+        assert_eq!(
+            row_count, snap_count,
+            "sandbox: Services table row count ({}) must equal snapshot service count ({})",
+            row_count, snap_count
+        );
+        assert_eq!(row_count, 2, "sandbox must have exactly 2 services");
+    }
+
+    // --- Visibility: both clusters expose both resource types ---
+
+    /// Both clusters expose deployments via current_snapshot() when selected.
+    /// Verifies that the Deployments view is backed by data for every cluster.
+    #[test]
+    fn deployments_view_visible_for_every_cluster() {
+        let mut app = test_app_with_topology();
+        app.resource_view = ResourceView::Deployments;
+        app.active_tab = 0;
+
+        for cluster in &["tower", "sandbox"] {
+            app.selected_cluster = Some((*cluster).into());
+            app.cached_row_count = None;
+            let count = app.current_row_count_readonly();
+            assert!(
+                count > 0,
+                "Deployments view must show >0 rows for cluster '{}' (got {})",
+                cluster,
+                count
+            );
+        }
+    }
+
+    /// Both clusters expose services via current_snapshot() when selected.
+    /// Verifies that the Services view is backed by data for every cluster.
+    #[test]
+    fn services_view_visible_for_every_cluster() {
+        let mut app = test_app_with_topology();
+        app.resource_view = ResourceView::Services;
+        app.active_tab = 0;
+
+        for cluster in &["tower", "sandbox"] {
+            app.selected_cluster = Some((*cluster).into());
+            app.cached_row_count = None;
+            let count = app.current_row_count_readonly();
+            assert!(
+                count > 0,
+                "Services view must show >0 rows for cluster '{}' (got {})",
+                cluster,
+                count
+            );
+        }
+    }
+
+    // --- Watch/refresh cycle: switching to unfetched resource triggers refresh ---
+
+    /// Switching to the Deployments view from a different view sets needs_refresh=true
+    /// when deployments have not yet been fetched for the current cluster.
+    /// This is the watch trigger: the TUI polls (fetches) on needs_refresh=true.
+    #[test]
+    fn deployments_view_switch_triggers_refresh_when_unfetched() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Pods;
+        app.fetched_resources.clear(); // nothing fetched yet
+        app.needs_refresh = false;
+
+        app.handle_event(AppEvent::ResourceType('d'));
+
+        assert_eq!(app.resource_view, ResourceView::Deployments);
+        assert!(
+            app.needs_refresh,
+            "switching to Deployments view when Deployments not yet fetched must set needs_refresh=true"
+        );
+    }
+
+    /// Switching to the Services view from a different view sets needs_refresh=true
+    /// when services have not yet been fetched for the current cluster.
+    #[test]
+    fn services_view_switch_triggers_refresh_when_unfetched() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Pods;
+        app.fetched_resources.clear(); // nothing fetched yet
+        app.needs_refresh = false;
+
+        app.handle_event(AppEvent::ResourceType('s'));
+
+        assert_eq!(app.resource_view, ResourceView::Services);
+        assert!(
+            app.needs_refresh,
+            "switching to Services view when Services not yet fetched must set needs_refresh=true"
+        );
+    }
+
+    /// Once Deployments have been fetched (fetched_resources contains Deployments),
+    /// switching back to the Deployments view does NOT trigger an extra refresh.
+    /// Avoids redundant API calls when the user cycles between views.
+    #[test]
+    fn deployments_view_no_refresh_when_already_fetched() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.active_panel = ActivePanel::Center;
+        app.fetched_resources.insert(ActiveResource::Deployments);
+        app.resource_view = ResourceView::Pods;
+        app.needs_refresh = false;
+
+        app.handle_event(AppEvent::ResourceType('d'));
+
+        assert_eq!(app.resource_view, ResourceView::Deployments);
+        assert!(
+            !app.needs_refresh,
+            "switching to Deployments view when already fetched must NOT set needs_refresh"
+        );
+    }
+
+    /// Once Services have been fetched (fetched_resources contains Services),
+    /// switching back to the Services view does NOT trigger an extra refresh.
+    #[test]
+    fn services_view_no_refresh_when_already_fetched() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.active_panel = ActivePanel::Center;
+        app.fetched_resources.insert(ActiveResource::Services);
+        app.resource_view = ResourceView::Pods;
+        app.needs_refresh = false;
+
+        app.handle_event(AppEvent::ResourceType('s'));
+
+        assert_eq!(app.resource_view, ResourceView::Services);
+        assert!(
+            !app.needs_refresh,
+            "switching to Services view when already fetched must NOT set needs_refresh"
+        );
+    }
+
+    // --- Column data validation ---
+
+    /// Every DeploymentInfo in both clusters must have a READY column value
+    /// matching "X/Y" format (replicas column). "0/1", "1/1", "2/2" are valid.
+    /// An empty or non-slash ready string would leave the READY cell blank.
+    #[test]
+    fn deployments_view_ready_column_has_slash_format_both_clusters() {
+        let app = test_app_with_topology();
+        for snap in &app.snapshots {
+            for dep in &snap.deployments {
+                assert!(
+                    dep.ready.contains('/'),
+                    "cluster '{}' deployment '{}' READY column '{}' must contain '/' (e.g. '1/1')",
+                    snap.name,
+                    dep.name,
+                    dep.ready
+                );
+                let parts: Vec<&str> = dep.ready.splitn(2, '/').collect();
+                assert_eq!(
+                    parts.len(),
+                    2,
+                    "cluster '{}' deployment '{}' READY '{}' must have exactly one '/'",
+                    snap.name,
+                    dep.name,
+                    dep.ready
+                );
+                assert!(
+                    parts[0].parse::<i32>().is_ok(),
+                    "cluster '{}' deployment '{}' READY left '{}' must be numeric",
+                    snap.name,
+                    dep.name,
+                    parts[0]
+                );
+                assert!(
+                    parts[1].parse::<i32>().is_ok(),
+                    "cluster '{}' deployment '{}' READY right '{}' must be numeric",
+                    snap.name,
+                    dep.name,
+                    parts[1]
+                );
+            }
+        }
+    }
+
+    /// Every ServiceInfo in both clusters must have a non-empty svc_type field
+    /// (the TYPE column). "ClusterIP", "NodePort", "LoadBalancer" are valid.
+    /// An empty type would leave the TYPE cell blank.
+    #[test]
+    fn services_view_type_column_non_empty_both_clusters() {
+        let app = test_app_with_topology();
+        for snap in &app.snapshots {
+            for svc in &snap.services {
+                assert!(
+                    !svc.svc_type.is_empty(),
+                    "cluster '{}' service '{}' has empty TYPE column",
+                    snap.name,
+                    svc.name
+                );
+            }
+        }
+    }
+
+    /// Services table TYPE column must be a recognized Kubernetes service type.
+    /// Values must be one of ClusterIP, NodePort, LoadBalancer, ExternalName.
+    #[test]
+    fn services_view_type_column_is_valid_k8s_type_both_clusters() {
+        let valid_types = ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"];
+        let app = test_app_with_topology();
+        for snap in &app.snapshots {
+            for svc in &snap.services {
+                assert!(
+                    valid_types.contains(&svc.svc_type.as_str()),
+                    "cluster '{}' service '{}' TYPE '{}' must be a valid K8s service type",
+                    snap.name,
+                    svc.name,
+                    svc.svc_type
+                );
+            }
+        }
+    }
+
+    // --- Render no panic: specific column verification ---
+
+    /// Deployments view renders without panic using TestBackend for both clusters,
+    /// specifically exercising READY/UP-TO-DATE/AVAILABLE replicas columns.
+    #[test]
+    fn deployments_view_render_ready_replicas_columns_no_panic_both_clusters() {
+        let mut terminal = make_test_terminal();
+        for cluster in &["tower", "sandbox"] {
+            let mut a = test_app_with_topology();
+            a.selected_cluster = Some((*cluster).into());
+            a.resource_view = ResourceView::Deployments;
+            a.active_panel = ActivePanel::Center;
+            a.active_tab = 0;
+            terminal
+                .draw(|f| ui::render(f, &a))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Deployments view render panicked for cluster '{}' (READY/replicas columns): {}",
+                        cluster, e
+                    )
+                });
+        }
+    }
+
+    /// Services view renders without panic using TestBackend for both clusters,
+    /// specifically exercising the TYPE column rendering.
+    #[test]
+    fn services_view_render_type_column_no_panic_both_clusters() {
+        let mut terminal = make_test_terminal();
+        for cluster in &["tower", "sandbox"] {
+            let mut a = test_app_with_topology();
+            a.selected_cluster = Some((*cluster).into());
+            a.resource_view = ResourceView::Services;
+            a.active_panel = ActivePanel::Center;
+            a.active_tab = 0;
+            terminal
+                .draw(|f| ui::render(f, &a))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Services view render panicked for cluster '{}' (TYPE column): {}",
+                        cluster, e
+                    )
+                });
+        }
+    }
+
+    // --- Keyboard shortcuts ---
+
+    /// Keyboard shortcut 'd' correctly maps to ResourceView::Deployments (list view).
+    /// Ensures the primary entry point to the Deployments list view works end-to-end.
+    #[test]
+    fn keyboard_shortcut_d_switches_to_deployments_list() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Pods; // start elsewhere
+
+        app.handle_event(AppEvent::ResourceType('d'));
+
+        assert_eq!(
+            app.resource_view,
+            ResourceView::Deployments,
+            "'d' key must activate Deployments list view"
+        );
+    }
+
+    /// Keyboard shortcut 's' correctly maps to ResourceView::Services (list view).
+    /// Ensures the primary entry point to the Services list view works end-to-end.
+    #[test]
+    fn keyboard_shortcut_s_switches_to_services_list() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("sandbox".into());
+        app.active_panel = ActivePanel::Center;
+        app.resource_view = ResourceView::Pods; // start elsewhere
+
+        app.handle_event(AppEvent::ResourceType('s'));
+
+        assert_eq!(
+            app.resource_view,
+            ResourceView::Services,
+            "'s' key must activate Services list view"
+        );
+    }
+
+    // --- Search filter ---
+
+    /// Services tab search filter reduces rows to matching services only.
+    #[test]
+    fn services_tab_search_filter_reduces_count() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Services;
+
+        // No filter: 3 services
+        assert_eq!(app.current_row_count_readonly(), 3);
+
+        // Filter "kube-dns": matches 1 service
+        app.search_query = Some("kube-dns".into());
+        app.sync_search_lower();
+        app.cached_row_count = None;
+        assert_eq!(
+            app.current_row_count_readonly(),
+            1,
+            "search 'kube-dns' must match 1 service"
+        );
+    }
+
+    // --- Cursor navigation ---
+
+    /// Pressing Down on the Deployments tab navigates for both clusters without panic.
+    #[test]
+    fn deployments_view_cursor_down_does_not_panic_both_clusters() {
+        for cluster in &["tower", "sandbox"] {
+            let mut app = test_app_with_topology();
+            app.selected_cluster = Some((*cluster).into());
+            app.resource_view = ResourceView::Deployments;
+            app.active_panel = ActivePanel::Center;
+            app.active_tab = 0;
+            app.table_cursor = 0;
+
+            let dep_count = app
+                .current_snapshot()
+                .map(|s| s.deployments.len())
+                .unwrap_or(0);
+
+            for _ in 0..(dep_count + 2) {
+                app.handle_event(AppEvent::Down);
+            }
+            assert!(
+                app.table_cursor < dep_count,
+                "cluster '{}': cursor {} must be < dep_count {}",
+                cluster,
+                app.table_cursor,
+                dep_count
+            );
+        }
+    }
+
+    /// Pressing Down on the Services tab navigates for both clusters without panic.
+    #[test]
+    fn services_view_cursor_down_does_not_panic_both_clusters() {
+        for cluster in &["tower", "sandbox"] {
+            let mut app = test_app_with_topology();
+            app.selected_cluster = Some((*cluster).into());
+            app.resource_view = ResourceView::Services;
+            app.active_panel = ActivePanel::Center;
+            app.active_tab = 0;
+            app.table_cursor = 0;
+
+            let svc_count = app
+                .current_snapshot()
+                .map(|s| s.services.len())
+                .unwrap_or(0);
+
+            for _ in 0..(svc_count + 2) {
+                app.handle_event(AppEvent::Down);
+            }
+            assert!(
+                app.table_cursor < svc_count,
+                "cluster '{}': cursor {} must be < svc_count {}",
+                cluster,
+                app.table_cursor,
+                svc_count
+            );
+        }
+    }
+
+    // --- YAML/describe modal ---
+
+    /// YAML/describe modal opens for the selected service without panic.
+    /// The modal must be visible and its resource_kind must be "Service".
+    #[test]
+    fn services_view_describe_opens_yaml_modal_without_panic() {
+        let mut app = test_app_with_topology();
+        app.selected_cluster = Some("tower".into());
+        app.resource_view = ResourceView::Services;
+        app.active_panel = ActivePanel::Center;
+        app.active_tab = 0;
+        app.table_cursor = 0; // kubernetes service
+
+        app.handle_event(AppEvent::Describe);
+
+        assert!(
+            app.yaml_modal.visible,
+            "Describe on Services tab must open YAML modal"
+        );
+        assert_eq!(app.yaml_modal.resource_kind, "Service");
+        assert!(
+            app.yaml_modal.content.contains("kubernetes"),
+            "modal content must contain service name"
+        );
     }
 }
 
@@ -6621,11 +8792,11 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         existing.namespaces = new_snap.namespaces;
                     }
                     existing.nodes = new_snap.nodes;
-                    // Update resource fields only if they were fetched (non-empty or full fetch)
-                    // Full fetch for selected cluster populates all; nodes-only for others leaves empty
+                    // Pods are always fetched (all clusters) for accurate health + status bar.
+                    // Other resources only fetched for selected cluster (full fetch).
+                    existing.pods = new_snap.pods;
                     let is_selected = app.selected_cluster.as_ref() == Some(&new_snap.name);
                     if is_selected {
-                        existing.pods = new_snap.pods;
                         existing.deployments = new_snap.deployments;
                         existing.services = new_snap.services;
                         existing.configmaps = new_snap.configmaps;
@@ -6975,11 +9146,11 @@ pub async fn run_tui(args: DashArgs, kubeconfig_dir: PathBuf) -> Result<()> {
                         return None; // Skip non-selected clusters on view/namespace switch
                     }
                     // Selected cluster: full fetch (None = all resources)
-                    // Non-selected: nodes-only fetch (for health dots + status bar)
+                    // Non-selected: pods+nodes fetch (for health dots + status bar pod counts)
                     let active_res = if is_selected {
                         None // full fetch
                     } else {
-                        Some(ActiveResource::Nodes) // nodes-only
+                        Some(ActiveResource::Pods) // pods+nodes for accurate status bar
                     };
                     Some((c.name.clone(), c.client.clone(), active_res))
                 })

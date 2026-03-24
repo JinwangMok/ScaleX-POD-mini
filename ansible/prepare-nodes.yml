@@ -120,6 +120,20 @@
         - { key: "net.bridge.bridge-nf-call-iptables", value: "1" }
         - { key: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
 
+    # --- NIC Offload Fix (e1000e Hardware Unit Hang) ---
+    # Intel e1000e NICs hang under heavy traffic with TSO/GSO/GRO enabled.
+    # This causes complete network loss during Kubespray provisioning.
+    # See: kernel "Detected Hardware Unit Hang" on eno1.
+    - name: Disable TSO/GSO/GRO on physical NIC (e1000e hang workaround)
+      command: "ethtool -K eno1 tso off gso off gro off"
+      changed_when: true
+
+    - name: Persist NIC offload fix via udev rule
+      copy:
+        dest: /etc/udev/rules.d/99-disable-offload.rules
+        content: 'ACTION=="add", SUBSYSTEM=="net", KERNEL=="eno1", RUN+="/sbin/ethtool -K eno1 tso off gso off gro off"'
+        mode: "0644"
+
     # --- KVM/libvirt for tower host ---
     - name: Install KVM/libvirt on tower host
       apt:

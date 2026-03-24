@@ -1968,6 +1968,47 @@ check_ssh_health() {
   check_nodes_ssh_health "$label" "$@"
 }
 
+# disable_nic_offload — Disable TSO/GSO/GRO on all bare-metal nodes' eno1 NIC.
+#
+# Prevents Intel e1000e Hardware Unit Hang under heavy traffic.
+# Reads node names from .baremetal-init.yaml; persists via udev rule.
+# Non-fatal: logs warn and continues if a node is unreachable.
+#
+# Usage: disable_nic_offload [REPO_DIR]
+disable_nic_offload() {
+  local repo_dir="${1:-${REPO_DIR:-$(pwd)}}"
+  local bm_yaml=""
+  if [[ -f "$repo_dir/credentials/.baremetal-init.yaml" ]]; then
+    bm_yaml="$repo_dir/credentials/.baremetal-init.yaml"
+  elif [[ -f "$GEN_DIR/credentials/.baremetal-init.yaml" ]]; then
+    bm_yaml="$GEN_DIR/credentials/.baremetal-init.yaml"
+  fi
+
+  if [[ -z "$bm_yaml" ]]; then
+    log_warn "$(i18n "disable_nic_offload: no .baremetal-init.yaml found — skipping" \
+      "disable_nic_offload: .baremetal-init.yaml 없음 — 건너뜀")"
+    return 0
+  fi
+
+  log_info "$(i18n "Disabling NIC offload (TSO/GSO/GRO) on all nodes (e1000e hang workaround)..." \
+    "모든 노드에서 NIC offload(TSO/GSO/GRO) 비활성화 중 (e1000e 하드웨어 행 방지)...")"
+
+  local _node_name=""
+  while IFS= read -r _line; do
+    if [[ "$_line" =~ ^[[:space:]]*-[[:space:]]*name:[[:space:]]*\"?([^\"[:space:]]+)\"? ]]; then
+      _node_name="${BASH_REMATCH[1]}"
+      if [[ -n "$_node_name" ]]; then
+        ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no "$_node_name" \
+          "sudo ethtool -K eno1 tso off gso off gro off 2>/dev/null; \
+           echo 'ACTION==\"add\", SUBSYSTEM==\"net\", KERNEL==\"eno1\", RUN+=\"/sbin/ethtool -K eno1 tso off gso off gro off\"' \
+           | sudo tee /etc/udev/rules.d/99-disable-offload.rules >/dev/null" \
+          && log_info "  $_node_name: offload disabled" \
+          || log_warn "  $_node_name: failed to disable offload (continuing)"
+      fi
+    fi
+  done < "$bm_yaml"
+}
+
 # phase_ssh_check — Inter-phase SSH health-check wrapper.
 #
 # Reads bare-metal nodes from .baremetal-init.yaml, ensures ~/.ssh/config has
@@ -2869,6 +2910,9 @@ phase_provision() {
 
       # SSH health check: pre-sdi-init — verify nodes still reachable before SDI/VM deployment
       phase_ssh_check "$(i18n "pre-sdi-init" "SDI 초기화 전")" "$REPO_DIR" || return 1
+
+      # Disable NIC offload on bare-metal nodes (e1000e hang prevention)
+      disable_nic_offload "$REPO_DIR"
 
       if phase4_step_is_done 2; then
         echo -e "  ${CYAN}[2/${ps_total}]${NC} scalex sdi init — $(i18n "already done, skipping" "이미 완료됨, 건너뜀")"

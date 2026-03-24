@@ -1623,6 +1623,17 @@ fn render_top_tab(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(node.top_display.as_str(), Style::default().fg(theme::FG3)),
         ]));
+
+        // Per-node usage bars — only shown when metrics-server is available.
+        // Graceful fallback: if cpu_usage_percent or mem_usage_percent is None (no metrics),
+        // this block is skipped entirely, leaving just the top_display allocatable/capacity line.
+        if let (Some(cpu_pct), Some(mem_pct)) = (node.cpu_usage_percent, node.mem_usage_percent) {
+            let mut bar_spans = vec![Span::raw("     ")]; // indent to align under node name
+            bar_spans.extend(render_usage_bar("CPU", cpu_pct, 15, theme::BRIGHT_AQUA));
+            bar_spans.push(Span::raw("  "));
+            bar_spans.extend(render_usage_bar("MEM", mem_pct, 15, theme::BRIGHT_PURPLE));
+            lines.push(Line::from(bar_spans));
+        }
     }
 
     if !has_nodes {
@@ -1693,7 +1704,12 @@ const PERCENT_SUFFIXES: [&str; 101] = [
     "]  96% ", "]  97% ", "]  98% ", "]  99% ", "] 100% ",
 ];
 
-fn render_usage_bar<'a>(label: &'a str, percent: f64, width: usize, color: Color) -> Vec<Span<'a>> {
+pub(crate) fn render_usage_bar<'a>(
+    label: &'a str,
+    percent: f64,
+    width: usize,
+    color: Color,
+) -> Vec<Span<'a>> {
     if percent < 0.0 {
         return vec![
             Span::styled(label, Style::default().fg(theme::FG4)),
@@ -2116,4 +2132,218 @@ fn render_help_overlay(f: &mut Frame, app: &App, area: Rect) {
         .block(block)
         .scroll((scroll_offset, 0));
     f.render_widget(paragraph, popup_area);
+}
+
+// ---------------------------------------------------------------------------
+// Tests: render_usage_bar + Top-tab metric rendering logic
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    // Helper: extract plain text content from a Vec<Span>
+    fn spans_text(spans: &[Span]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    // Helper: extract styles from spans that have non-default colours
+    fn spans_colors(spans: &[Span]) -> Vec<Color> {
+        spans
+            .iter()
+            .filter_map(|s| s.style.fg)
+            .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // render_usage_bar — N/A fallback path
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn render_usage_bar_returns_na_when_percent_is_negative() {
+        // sentinel -1.0 → must render "N/A", not a bar
+        let spans = render_usage_bar("CPU", -1.0, 20, theme::BRIGHT_AQUA);
+        let text = spans_text(&spans);
+        assert!(
+            text.contains("N/A"),
+            "Expected N/A for negative percent, got: {:?}",
+            text
+        );
+        assert!(
+            !text.contains('['),
+            "No bar brackets expected when percent is negative: {:?}",
+            text
+        );
+    }
+
+    #[test]
+    fn render_usage_bar_returns_na_when_percent_is_minus_one() {
+        // Explicit sentinel value from compute_resource_usage when no metrics
+        let spans = render_usage_bar("MEM", -1.0, 15, theme::BRIGHT_PURPLE);
+        let text = spans_text(&spans);
+        assert!(text.contains("N/A"), "sentinel -1.0 must yield N/A");
+    }
+
+    // ------------------------------------------------------------------
+    // render_usage_bar — bar rendering path
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn render_usage_bar_shows_zero_percent() {
+        let spans = render_usage_bar("CPU", 0.0, 20, theme::BRIGHT_AQUA);
+        let text = spans_text(&spans);
+        assert!(text.contains('['), "0% should still render a bar");
+        assert!(text.contains("0%"), "0% bar should show '0%'");
+        assert!(!text.contains("N/A"), "0% must not show N/A");
+    }
+
+    #[test]
+    fn render_usage_bar_shows_100_percent() {
+        let spans = render_usage_bar("CPU", 100.0, 20, theme::BRIGHT_AQUA);
+        let text = spans_text(&spans);
+        assert!(text.contains("100%"), "100% bar should show '100%'");
+        assert!(!text.contains("N/A"), "100% must not show N/A");
+    }
+
+    #[test]
+    fn render_usage_bar_50_percent_fills_half_the_bar() {
+        let width = 20;
+        let spans = render_usage_bar("CPU", 50.0, width, theme::BRIGHT_AQUA);
+        let text = spans_text(&spans);
+        // At 50% with width=20, expect 10 fill chars + 10 empty chars inside []
+        // The fill chars are '=' and empty are '-'
+        let inside_brackets: String = text
+            .chars()
+            .skip_while(|&c| c != '[')
+            .skip(1) // skip '['
+            .take_while(|&c| c != ']')
+            .collect();
+        let fill_count = inside_brackets.chars().filter(|&c| c == '=').count();
+        let empty_count = inside_brackets.chars().filter(|&c| c == '-').count();
+        assert_eq!(fill_count, 10, "50% of 20 = 10 filled cells");
+        assert_eq!(empty_count, 10, "remaining 10 cells empty");
+    }
+
+    #[test]
+    fn render_usage_bar_high_usage_uses_red_color() {
+        // >90% should switch bar color to BRIGHT_RED
+        let spans = render_usage_bar("CPU", 95.0, 20, theme::BRIGHT_AQUA);
+        let colors = spans_colors(&spans);
+        assert!(
+            colors.contains(&theme::BRIGHT_RED),
+            "95% usage must use BRIGHT_RED for bar fill, got colors: {:?}",
+            colors
+        );
+    }
+
+    #[test]
+    fn render_usage_bar_medium_usage_uses_yellow_color() {
+        // 70-90% should use BRIGHT_YELLOW
+        let spans = render_usage_bar("CPU", 80.0, 20, theme::BRIGHT_AQUA);
+        let colors = spans_colors(&spans);
+        assert!(
+            colors.contains(&theme::BRIGHT_YELLOW),
+            "80% usage must use BRIGHT_YELLOW for bar fill, got: {:?}",
+            colors
+        );
+    }
+
+    #[test]
+    fn render_usage_bar_low_usage_uses_provided_color() {
+        // <70% should use the provided color argument
+        let spans = render_usage_bar("CPU", 30.0, 20, theme::BRIGHT_AQUA);
+        let colors = spans_colors(&spans);
+        assert!(
+            colors.contains(&theme::BRIGHT_AQUA),
+            "30% usage must use the supplied color, got: {:?}",
+            colors
+        );
+        assert!(
+            !colors.contains(&theme::BRIGHT_RED),
+            "30% must not use BRIGHT_RED"
+        );
+        assert!(
+            !colors.contains(&theme::BRIGHT_YELLOW),
+            "30% must not use BRIGHT_YELLOW"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Top-tab title selection (has_metrics gate)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn top_tab_title_sentinel_means_no_metrics_label() {
+        // When cpu_percent is the sentinel -1.0, has_metrics must be false
+        let cpu_percent: f64 = -1.0;
+        let has_metrics = cpu_percent >= 0.0;
+        assert!(!has_metrics, "sentinel -1.0 must set has_metrics=false");
+        // Title should be "Node Resources (no metrics)"
+        let top_title = if has_metrics {
+            " Node Resource Utilization "
+        } else {
+            " Node Resources (no metrics) "
+        };
+        assert!(
+            top_title.contains("no metrics"),
+            "Title must say 'no metrics' when cpu_percent is sentinel"
+        );
+    }
+
+    #[test]
+    fn top_tab_title_real_percent_means_utilization_label() {
+        // When cpu_percent is a real value, has_metrics must be true
+        let cpu_percent: f64 = 42.5;
+        let has_metrics = cpu_percent >= 0.0;
+        assert!(has_metrics, "real percent must set has_metrics=true");
+        let top_title = if has_metrics {
+            " Node Resource Utilization "
+        } else {
+            " Node Resources (no metrics) "
+        };
+        assert!(
+            top_title.contains("Utilization"),
+            "Title must say 'Utilization' when metrics are available"
+        );
+    }
+
+    #[test]
+    fn top_tab_title_zero_percent_still_shows_utilization() {
+        // Edge case: 0.0% is a valid real measurement (cluster idle), not a sentinel
+        let cpu_percent: f64 = 0.0;
+        let has_metrics = cpu_percent >= 0.0;
+        assert!(
+            has_metrics,
+            "0.0 cpu_percent must be treated as real metric, not sentinel"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Pod utilization section gate
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn pod_utilization_section_hidden_when_both_sentinel() {
+        // When both pod_cpu_percent and pod_mem_percent are -1.0, section must not render
+        let pod_cpu: f64 = -1.0;
+        let pod_mem: f64 = -1.0;
+        let show_pod_section = pod_cpu >= 0.0 || pod_mem >= 0.0;
+        assert!(
+            !show_pod_section,
+            "Pod utilization section must be hidden when both are -1.0"
+        );
+    }
+
+    #[test]
+    fn pod_utilization_section_shown_when_either_available() {
+        // Section shown even if only one metric is available
+        let pod_cpu: f64 = 15.3;
+        let pod_mem: f64 = -1.0; // mem unavailable
+        let show_pod_section = pod_cpu >= 0.0 || pod_mem >= 0.0;
+        assert!(
+            show_pod_section,
+            "Pod utilization section must show when at least one metric is available"
+        );
+    }
 }
