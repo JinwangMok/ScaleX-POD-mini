@@ -19,6 +19,32 @@ Physical (4 bare-metal) → SDI (OpenTofu virtualization) → Node Pools → Clu
 - **External access**: Cloudflare Tunnel + Tailscale. LAN access via switch.
 - **External DNS pattern**: API endpoints follow `{cluster}-api.jinwang.dev` (e.g., `tower-api.jinwang.dev`). Single-level subdomain required — CF free tier wildcard certs only cover `*.jinwang.dev`, not `*.*.jinwang.dev`.
 
+## Provisioning Operations & Known Issues
+
+### Intel e1000e NIC — Hardware Unit Hang
+All playbox nodes use Intel e1000e NICs that experience "Hardware Unit Hang" under heavy traffic (Kubespray parallel image pulls). Symptom: SSH becomes unreachable mid-provisioning, `dmesg` shows `e1000e ... Detected Hardware Unit Hang`. Fix: disable TSO/GSO/GRO offloads. Applied automatically by `ansible/prepare-nodes.yml` and `install.sh` (`disable_nic_offload`). Persisted via udev rule `/etc/udev/rules.d/99-disable-offload.rules`. **First diagnostic command when SSH drops**: `dmesg | grep -i "hardware unit hang"`.
+
+### VM Topology Constraints
+- **Bastion (playbox-0) must not be overloaded**: All Kubespray SSH connections ProxyJump through playbox-0. VM allocation must leave ≥3GB free RAM for bastion duties. Currently: tower-cp-0 only (6GB on 15GB host).
+- **playbox-3 (16C/252GB) hosts workers + sandbox-cp-0**: Large capacity absorbs 4 VMs comfortably.
+- Overcommit validation: sum VM allocations per host must not exceed 80% of physical RAM.
+
+### Cilium `/opt/cni/bin` Ownership
+Kubespray creates `/opt/cni/bin` as `kube:root`. Cilium's `mount-cgroup` init container needs `root:root`. Automated fix in `cluster.rs` post-kubespray step (ansible `file` module + Cilium pod restart). Manual recovery: `ansible all -i <inventory> -m file -a "path=/opt/cni/bin owner=root group=root mode=0755" --become`.
+
+### `sdi clean` Safety
+- `apt-get autoremove` completely removed — explicit package lists only (prevents `bridge-utils` removal)
+- `--dry-run` mode shows planned actions without executing
+- Per-step logging to `/var/log/scalex-clean.log` on each node
+- br0/bond/default route verified pre and post cleanup
+
+### install.sh Provisioning Notes
+- **Resume-safe**: uses `phase_completed` file + `phases/*.done` markers. To force clean re-run: `rm -f ~/.scalex/installer/phase_completed ~/.scalex/installer/phases/*.done`
+- **Ansible forks=3**: capped to reduce bastion SSH load during Kubespray
+- **Gitops apply non-fatal**: failure doesn't block subsequent clusters
+- **Kubeconfig collection**: SCP → SSH+cat fallback → kubespray artifacts fallback
+- **known_hosts auto-cleanup**: stale VM host keys removed after `sdi init`
+
 ## CLI (`scalex`)
 
 ```bash
