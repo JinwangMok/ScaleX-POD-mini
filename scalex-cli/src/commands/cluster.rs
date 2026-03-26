@@ -219,7 +219,7 @@ fn run_init(
                 cluster.cluster_name
             );
             // Gitops apply is best-effort during cluster init — the full bootstrap
-            // (ArgoCD + ApplicationSets) is handled by `scalex bootstrap`. Failure here
+            // (ArgoCD + ApplicationSets) is handled by `scalex-pod bootstrap`. Failure here
             // must NOT block subsequent clusters from being provisioned.
             if let Err(e) = apply_gitops_manifests(
                 &cluster_dir,
@@ -227,7 +227,7 @@ fn run_init(
                 std::path::Path::new("gitops"),
             ) {
                 eprintln!(
-                    "[cluster] WARNING: gitops apply failed for {} ({}). Continuing — run `scalex bootstrap` later.",
+                    "[cluster] WARNING: gitops apply failed for {} ({}). Continuing — run `scalex-pod bootstrap` later.",
                     cluster.cluster_name, e
                 );
             }
@@ -303,7 +303,7 @@ fn load_sdi_spec_from_options(
     }
 
     anyhow::bail!(
-        "SDI spec required. Provide --sdi-spec <path> or run `scalex sdi init <spec>` first."
+        "SDI spec required. Provide --sdi-spec <path> or run `scalex-pod sdi init <spec>` first."
     );
 }
 
@@ -2335,7 +2335,7 @@ kubespray_version: "v2.30.0"
     // ── Sprint 37: Dry-run E2E pipeline tests (CL-7) ──
 
     /// Full pipeline: load both example configs → validate → generate inventory+vars
-    /// for every cluster. This simulates what `scalex cluster init` does minus I/O.
+    /// for every cluster. This simulates what `scalex-pod cluster init` does minus I/O.
     #[test]
     fn test_full_dryrun_pipeline_both_configs() {
         let sdi_content = include_str!("../../../config/sdi-specs.yaml.example");
@@ -2697,7 +2697,7 @@ net.ipv4.ip_forward = 1
 
         let facts = crate::commands::facts::parse_facts_output_public("playbox-0", raw).unwrap();
 
-        // Serialize to JSON (what `scalex facts` writes to _generated/facts/)
+        // Serialize to JSON (what `scalex-pod facts` writes to _generated/facts/)
         let json = serde_json::to_string_pretty(&facts).unwrap();
 
         // Deserialize back (what `sdi init` reads from _generated/facts/)

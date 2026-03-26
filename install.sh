@@ -674,12 +674,12 @@ verify_api_tunnels_ready() {
 # established tunnels are reachable BEFORE cleanup_api_tunnels kills SSH processes.
 # Designed to be called after bootstrap completes, while SSH tunnels are still alive.
 #
-# Strategy 1 (preferred): `scalex tunnel status --state-file TUNNEL_STATE_FILE`
+# Strategy 1 (preferred): `scalex-pod tunnel status --state-file TUNNEL_STATE_FILE`
 #   Reads TUNNEL_STATE_FILE, probes each cluster's endpoint, reports state=connected.
 #   Retries up to max_wait seconds (default 30s) with 5s intervals.
 #
 # Strategy 2 (fallback): Direct port probe via nc/ss against TUNNEL_CONF_DIR entries.
-#   Used when scalex binary is not available or lacks the `tunnel status` subcommand.
+#   Used when scalex-pod binary is not available or lacks the `tunnel status` subcommand.
 #
 # Non-fatal: logs a warning if connectivity cannot be confirmed, but never aborts the
 # install.  By the time this runs, bootstrap has already succeeded — the install is
@@ -689,18 +689,18 @@ verify_api_tunnels_ready() {
 verify_exit_tunnel_connectivity() {
   local max_wait="${1:-30}"
 
-  # Locate scalex binary (prefer release build, fall back to installed copies)
+  # Locate scalex-pod binary (prefer release build, fall back to installed copies)
   local scalex_bin=""
   local _candidates=(
-    "${REPO_DIR}/scalex-cli/target/release/scalex"
-    "${HOME}/.local/bin/scalex"
-    "${HOME}/.cargo/bin/scalex"
+    "${REPO_DIR}/scalex-cli/target/release/scalex-pod"
+    "${HOME}/.local/bin/scalex-pod"
+    "${HOME}/.cargo/bin/scalex-pod"
   )
   for _c in "${_candidates[@]}"; do
     if [[ -x "$_c" ]]; then scalex_bin="$_c"; break; fi
   done
-  if [[ -z "$scalex_bin" ]] && command -v scalex &>/dev/null; then
-    scalex_bin="$(command -v scalex)"
+  if [[ -z "$scalex_bin" ]] && command -v scalex-pod &>/dev/null; then
+    scalex_bin="$(command -v scalex-pod)"
   fi
 
   # Nothing to verify if TUNNEL_STATE_FILE does not exist
@@ -710,7 +710,7 @@ verify_exit_tunnel_connectivity() {
     return 0
   fi
 
-  # ── Strategy 1: scalex tunnel status ────────────────────────────────────────
+  # ── Strategy 1: scalex-pod tunnel status ────────────────────────────────────
   local _has_tunnel_status=false
   if [[ -n "$scalex_bin" ]] && \
      "$scalex_bin" tunnel status --help &>/dev/null 2>&1; then
@@ -718,8 +718,8 @@ verify_exit_tunnel_connectivity() {
   fi
 
   if $_has_tunnel_status; then
-    log_info "$(i18n "Final tunnel connectivity check (scalex tunnel status, up to ${max_wait}s)..." \
-      "최종 터널 연결 확인 (scalex tunnel status, 최대 ${max_wait}초)...")"
+    log_info "$(i18n "Final tunnel connectivity check (scalex-pod tunnel status, up to ${max_wait}s)..." \
+      "최종 터널 연결 확인 (scalex-pod tunnel status, 최대 ${max_wait}초)...")"
     local elapsed=0 interval=5 _out=""
     while [[ $elapsed -lt $max_wait ]]; do
       _out=$("$scalex_bin" tunnel status \
@@ -735,16 +735,16 @@ verify_exit_tunnel_connectivity() {
       log_info "$(i18n "  Tunnel status: ${_out:-pending} — retrying (${elapsed}s/${max_wait}s)..." \
         "  터널 상태: ${_out:-대기 중} — 재시도 (${elapsed}초/${max_wait}초)...")"
     done
-    log_warn "$(i18n "Exit tunnel connectivity: tunnels not yet connected after ${max_wait}s (last: ${_out:-no output}) — scalex CLI will auto-tunnel on next use" \
-      "종료 터널 연결: ${max_wait}초 후에도 미연결 (마지막: ${_out:-출력 없음}) — scalex CLI 다음 사용 시 자동 터널")"
+    log_warn "$(i18n "Exit tunnel connectivity: tunnels not yet connected after ${max_wait}s (last: ${_out:-no output}) — scalex-pod CLI will auto-tunnel on next use" \
+      "종료 터널 연결: ${max_wait}초 후에도 미연결 (마지막: ${_out:-출력 없음}) — scalex-pod CLI 다음 사용 시 자동 터널")"
     return 0  # Non-fatal
   fi
 
   # ── Strategy 2: direct port probe ───────────────────────────────────────────
   if [[ -n "$TUNNEL_CONF_DIR" && -d "$TUNNEL_CONF_DIR" ]] && \
      compgen -G "$TUNNEL_CONF_DIR/*.conf" &>/dev/null; then
-    log_info "$(i18n "Final tunnel connectivity check (port probe, scalex not available)..." \
-      "최종 터널 연결 확인 (포트 프로브, scalex 없음)...")"
+    log_info "$(i18n "Final tunnel connectivity check (port probe, scalex-pod not available)..." \
+      "최종 터널 연결 확인 (포트 프로브, scalex-pod 없음)...")"
     local _all_ok=true
     for _conf in "$TUNNEL_CONF_DIR"/*.conf; do
       [[ -f "$_conf" ]] || continue
@@ -782,14 +782,14 @@ verify_exit_tunnel_connectivity() {
       log_info "$(i18n "Exit tunnel connectivity: PASSED (all ports responding)" \
         "종료 터널 연결: 통과 (모든 포트 응답)")"
     else
-      log_warn "$(i18n "Exit tunnel connectivity: some ports not responding — scalex CLI will auto-tunnel on next use" \
-        "종료 터널 연결: 일부 포트 무응답 — scalex CLI 다음 사용 시 자동 터널")"
+      log_warn "$(i18n "Exit tunnel connectivity: some ports not responding — scalex-pod CLI will auto-tunnel on next use" \
+        "종료 터널 연결: 일부 포트 무응답 — scalex-pod CLI 다음 사용 시 자동 터널")"
     fi
     return 0  # Non-fatal
   fi
 
-  log_info "$(i18n "verify_exit_tunnel_connectivity: no conf files or scalex binary — skip" \
-    "verify_exit_tunnel_connectivity: 설정 파일 또는 scalex 바이너리 없음 — 건너뜀")"
+  log_info "$(i18n "verify_exit_tunnel_connectivity: no conf files or scalex-pod binary — skip" \
+    "verify_exit_tunnel_connectivity: 설정 파일 또는 scalex-pod 바이너리 없음 — 건너뜀")"
   return 0
 }
 
@@ -1304,7 +1304,7 @@ except: pass
     fi
 
     # Record established SSH bastion tunnel to persistent state file.
-    # scalex dash --headless reads this file to discover active tunnels.
+    # scalex-pod dash --headless reads this file to discover active tunnels.
     # Called after port is bound (not on direct-access skip above) so the
     # entry is only written when a tunnel was actually established.
     write_tunnel_config \
@@ -1327,7 +1327,7 @@ cleanup_api_tunnels() {
   # Stop watchdog first (before killing tunnel PIDs it monitors)
   stop_tunnel_watchdog
 
-  # Kill tunnel processes (bootstrap is done, scalex CLI will auto-tunnel when needed)
+  # Kill tunnel processes (bootstrap is done, scalex-pod CLI will auto-tunnel when needed)
   for pid in "${API_TUNNEL_PIDS[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
@@ -1337,7 +1337,7 @@ cleanup_api_tunnels() {
   API_TUNNEL_PIDS=()
 
   # Permanently rewrite kubeconfigs with actual CP IPs (NOT restore 127.0.0.1 backups).
-  # This ensures kubeconfigs are usable from the bastion via scalex CLI auto-tunneling.
+  # This ensures kubeconfigs are usable from the bastion via scalex-pod CLI auto-tunneling.
   for kc in "${API_TUNNEL_BACKUPS[@]}"; do
     if [[ -f "${kc}.bak" ]]; then
       # Extract the original CP IP from the backup (which has the real server URL)
@@ -1367,7 +1367,7 @@ except: pass
         fi
       fi
 
-      # Write kubeconfig with the actual CP IP (reachable via SSH tunnel by scalex CLI)
+      # Write kubeconfig with the actual CP IP (reachable via SSH tunnel by scalex-pod CLI)
       if [[ "$cp_ip" != "127.0.0.1" ]]; then
         # Get the current (tunnel) URL from the modified kubeconfig
         local tunnel_url; tunnel_url=$(grep 'server:' "$kc" | head -1 | awk '{print $2}' | tr -d '"')
@@ -1425,7 +1425,7 @@ except Exception as e:
           error_msg \
             "$(i18n "CF Tunnel credentials not found for ${current_cluster}" "CF 터널 자격증명 없음: ${current_cluster}")" \
             "$(i18n "credentials/cloudflare-tunnel.json is required for CF Tunnel auth" "CF 터널 인증에 credentials/cloudflare-tunnel.json이 필요합니다")" \
-            "$(i18n "Run: scalex secrets apply or copy credentials/cloudflare-tunnel.json from your CF dashboard" "실행: scalex secrets apply 또는 CF 대시보드에서 credentials/cloudflare-tunnel.json 복사")"
+            "$(i18n "Run: scalex-pod secrets apply or copy credentials/cloudflare-tunnel.json from your CF dashboard" "실행: scalex-pod secrets apply 또는 CF 대시보드에서 credentials/cloudflare-tunnel.json 복사")"
         fi
 
         if [[ "$(curl -sk --connect-timeout 5 --retry "$_cf_retries" --retry-delay 5 \
@@ -1437,7 +1437,7 @@ except Exception as e:
           log_info "$(i18n "kubeconfig ${current_cluster}: server → ${current_endpoint}" \
             "kubeconfig ${current_cluster}: server → ${current_endpoint}")"
 
-          # Record CF Tunnel state for scalex CLI (overrides any prior ssh_bastion entry
+          # Record CF Tunnel state for scalex-pod CLI (overrides any prior ssh_bastion entry
           # for this cluster — CF Tunnel is the preferred persistent transport).
           write_tunnel_config \
             "$current_cluster" \
@@ -1649,8 +1649,8 @@ phase_skip_if_done() {
 # checked at the start of the step on subsequent runs.
 #
 # Sub-step IDs:
-#   2 — scalex sdi init     (VM/libvirt provisioning, NOT idempotent)
-#   3 — scalex cluster init (k8s bootstrap via Kubespray, slow + risky to redo)
+#   2 — scalex-pod sdi init     (VM/libvirt provisioning, NOT idempotent)
+#   3 — scalex-pod cluster init (k8s bootstrap via Kubespray, slow + risky to redo)
 #
 # Marker files: $PHASE_DONE_DIR/4s{N}.done
 # Cleared by: resume_check reset (phase<=4), resume_check fresh (all *.done)
@@ -2877,19 +2877,19 @@ phase_provision() {
       if ! tui_yesno "$(i18n "Continue" "계속")" "$(i18n "Build failed. Continue anyway?" "빌드 실패. 그래도 계속하시겠습니까?")"; then return 1; fi
     }
     mkdir -p "$HOME/.local/bin"
-    cp "$REPO_DIR/scalex-cli/target/release/scalex" "$HOME/.local/bin/scalex" 2>/dev/null || true
-    chmod +x "$HOME/.local/bin/scalex" 2>/dev/null || true
-    echo -e "  ${GREEN}OK${NC} — ~/.local/bin/scalex"
+    cp "$REPO_DIR/scalex-cli/target/release/scalex-pod" "$HOME/.local/bin/scalex-pod" 2>/dev/null || true
+    chmod +x "$HOME/.local/bin/scalex-pod" 2>/dev/null || true
+    echo -e "  ${GREEN}OK${NC} — ~/.local/bin/scalex-pod"
   else
     log_warn "$(i18n "scalex-cli directory not found. Skipping." "scalex-cli 디렉토리를 찾을 수 없습니다. 건너뜁니다.")"
   fi
 
   # Step 4: Validate configs
   echo -e "${CYAN}[Phase 4/4] [Step 4/${total_steps}]${NC} $(i18n "Validating config..." "구성 검증...")"
-  if command -v scalex &>/dev/null; then
-    (cd "$REPO_DIR" && scalex get config-files 2>&1) || log_warn "$(i18n "Config validation warnings detected" "구성 검증 경고 발생")"
+  if command -v scalex-pod &>/dev/null; then
+    (cd "$REPO_DIR" && scalex-pod get config-files 2>&1) || log_warn "$(i18n "Config validation warnings detected" "구성 검증 경고 발생")"
   else
-    log_warn "$(i18n "scalex CLI not in PATH. Skipping validation." "scalex CLI가 PATH에 없습니다. 검증을 건너뜁니다.")"
+    log_warn "$(i18n "scalex-pod CLI not in PATH. Skipping validation." "scalex-pod CLI가 PATH에 없습니다. 검증을 건너뜁니다.")"
   fi
   echo -e "  ${GREEN}OK${NC}"
 
@@ -2901,8 +2901,8 @@ phase_provision() {
       # --- Auto mode: explicit step ordering with API tunnel lifecycle ---
       local ps_total=9
 
-      echo -e "  ${CYAN}[1/${ps_total}]${NC} scalex facts --all..."
-      if ! (cd "$REPO_DIR" && scalex facts --all 2>&1 | tee -a "$LOG_FILE" | tail -5); then
+      echo -e "  ${CYAN}[1/${ps_total}]${NC} scalex-pod facts --all..."
+      if ! (cd "$REPO_DIR" && scalex-pod facts --all 2>&1 | tee -a "$LOG_FILE" | tail -5); then
         log_error "$(i18n "Auto mode: facts failed — aborting provisioning" "자동 모드: facts 실패 — 프로비저닝 중단")"
         return 1
       fi
@@ -2915,10 +2915,10 @@ phase_provision() {
       disable_nic_offload "$REPO_DIR"
 
       if phase4_step_is_done 2; then
-        echo -e "  ${CYAN}[2/${ps_total}]${NC} scalex sdi init — $(i18n "already done, skipping" "이미 완료됨, 건너뜀")"
+        echo -e "  ${CYAN}[2/${ps_total}]${NC} scalex-pod sdi init — $(i18n "already done, skipping" "이미 완료됨, 건너뜀")"
       else
-        echo -e "  ${CYAN}[2/${ps_total}]${NC} scalex sdi init..."
-        if ! (cd "$REPO_DIR" && scalex sdi init config/sdi-specs.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
+        echo -e "  ${CYAN}[2/${ps_total}]${NC} scalex-pod sdi init..."
+        if ! (cd "$REPO_DIR" && scalex-pod sdi init config/sdi-specs.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
           log_error "$(i18n "Auto mode: SDI init failed — aborting provisioning" "자동 모드: SDI 초기화 실패 — 프로비저닝 중단")"
           return 1
         fi
@@ -2930,9 +2930,9 @@ phase_provision() {
       phase_ssh_check "$(i18n "pre-cluster-init" "클러스터 초기화 전")" "$REPO_DIR" || return 1
 
       if phase4_step_is_done 3; then
-        echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex cluster init — $(i18n "already done, skipping" "이미 완료됨, 건너뜀")"
+        echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex-pod cluster init — $(i18n "already done, skipping" "이미 완료됨, 건너뜀")"
       else
-        echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex cluster init..."
+        echo -e "  ${CYAN}[3/${ps_total}]${NC} scalex-pod cluster init..."
         # Pre-fix /opt/cni/bin permissions on all VMs BEFORE Kubespray (Kubespray sets kube:root 755
         # during CNI plugin install, but Cilium init container needs write access immediately after)
         local _sdi_state_pre="${REPO_DIR}/_generated/sdi/sdi-state.json"
@@ -2953,7 +2953,7 @@ for pool in pools:
               -J playbox-0 "ubuntu@${_pre_ip}" 'sudo mkdir -p /opt/cni/bin && sudo chmod 777 /opt/cni/bin' 2>/dev/null || true
           done <<< "$_pre_ips"
         fi
-        if ! (cd "$REPO_DIR" && scalex cluster init config/k8s-clusters.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
+        if ! (cd "$REPO_DIR" && scalex-pod cluster init config/k8s-clusters.yaml 2>&1 | tee -a "$LOG_FILE" | tail -5); then
           log_error "$(i18n "Auto mode: cluster init failed — aborting provisioning" "자동 모드: 클러스터 초기화 실패 — 프로비저닝 중단")"
           return 1
         fi
@@ -2999,22 +2999,22 @@ for pool in pools:
       fi
       echo -e "  ${GREEN}OK${NC}"
 
-      echo -e "  ${CYAN}[6/${ps_total}]${NC} scalex secrets apply (management)..."
-      if ! (cd "$REPO_DIR" && scalex secrets apply --role management 2>&1 | tee -a "$LOG_FILE" | tail -5); then
+      echo -e "  ${CYAN}[6/${ps_total}]${NC} scalex-pod secrets apply (management)..."
+      if ! (cd "$REPO_DIR" && scalex-pod secrets apply --role management 2>&1 | tee -a "$LOG_FILE" | tail -5); then
         log_error "$(i18n "Auto mode: management cluster secrets apply failed — aborting provisioning" "자동 모드: 관리 클러스터 시크릿 적용 실패 — 프로비저닝 중단")"
         return 1
       fi
       echo -e "  ${GREEN}OK${NC}"
 
-      echo -e "  ${CYAN}[7/${ps_total}]${NC} scalex secrets apply (workload)..."
-      if ! (cd "$REPO_DIR" && scalex secrets apply --role workload 2>&1 | tee -a "$LOG_FILE" | tail -5); then
+      echo -e "  ${CYAN}[7/${ps_total}]${NC} scalex-pod secrets apply (workload)..."
+      if ! (cd "$REPO_DIR" && scalex-pod secrets apply --role workload 2>&1 | tee -a "$LOG_FILE" | tail -5); then
         log_warn "$(i18n "Workload secrets apply failed — continuing" "워크로드 시크릿 적용 실패 — 계속 진행")"
       fi
       echo -e "  ${GREEN}OK${NC}"
 
       # Verify API tunnels are alive + API servers ready before bootstrap (second gate)
-      echo -e "  ${CYAN}[8/${ps_total}]${NC} $(i18n "Pre-bootstrap tunnel gate + scalex bootstrap..." \
-        "부트스트랩 전 터널 게이트 확인 + scalex bootstrap...")"
+      echo -e "  ${CYAN}[8/${ps_total}]${NC} $(i18n "Pre-bootstrap tunnel gate + scalex-pod bootstrap..." \
+        "부트스트랩 전 터널 게이트 확인 + scalex-pod bootstrap...")"
       if ! verify_api_tunnels_ready "$REPO_DIR" 120; then
         log_error "$(i18n "Auto mode: pre-bootstrap tunnel readiness check failed — aborting" \
           "자동 모드: 부트스트랩 전 터널 준비 상태 확인 실패 — 중단")"
@@ -3022,7 +3022,7 @@ for pool in pools:
       fi
       # SSH health check: pre-bootstrap — verify nodes reachable before ArgoCD/app deployment
       phase_ssh_check "$(i18n "pre-bootstrap" "부트스트랩 전")" "$REPO_DIR" || return 1
-      if ! (cd "$REPO_DIR" && scalex bootstrap 2>&1 | tee -a "$LOG_FILE" | tail -5); then
+      if ! (cd "$REPO_DIR" && scalex-pod bootstrap 2>&1 | tee -a "$LOG_FILE" | tail -5); then
         log_error "$(i18n "Auto mode: bootstrap failed — aborting provisioning" "자동 모드: 부트스트랩 실패 — 프로비저닝 중단")"
         return 1
       fi
@@ -3030,7 +3030,7 @@ for pool in pools:
 
       # Step 9: Final pre-exit tunnel connectivity verification.
       # Called BEFORE cleanup_api_tunnels so SSH tunnel processes are still alive.
-      # Uses scalex tunnel status (preferred) or direct port probe (fallback).
+      # Uses scalex-pod tunnel status (preferred) or direct port probe (fallback).
       # Non-fatal: warns if connectivity cannot be confirmed but does not abort.
       echo -e "  ${CYAN}[9/${ps_total}]${NC} $(i18n "Verifying tunnel connectivity before exit..." \
         "종료 전 터널 연결 확인...")"
@@ -3042,12 +3042,12 @@ for pool in pools:
 
     else
       # --- Interactive mode: explicit steps with tunnel support ---
-      local prov_pre_tunnel=("scalex facts --all"
-                             "scalex sdi init config/sdi-specs.yaml"
-                             "scalex cluster init config/k8s-clusters.yaml")
-      local prov_post_tunnel=("scalex secrets apply --role management"
-                              "scalex secrets apply --role workload"
-                              "scalex bootstrap")
+      local prov_pre_tunnel=("scalex-pod facts --all"
+                             "scalex-pod sdi init config/sdi-specs.yaml"
+                             "scalex-pod cluster init config/k8s-clusters.yaml")
+      local prov_post_tunnel=("scalex-pod secrets apply --role management"
+                              "scalex-pod secrets apply --role workload"
+                              "scalex-pod bootstrap")
       local ps_i=0 ps_total=$(( ${#prov_pre_tunnel[@]} + 1 + ${#prov_post_tunnel[@]} ))
 
       # Pre-tunnel steps (no kubectl needed)
@@ -3192,7 +3192,7 @@ post_install_summary() {
   echo -e "${BOLD}${GREEN}============================================================${NC}"
   echo ""
   echo -e "  ${BOLD}$(i18n "Repository:" "리포지토리:")${NC}  ${repo_dir}"
-  echo -e "  ${BOLD}CLI:${NC}         ~/.local/bin/scalex"
+  echo -e "  ${BOLD}CLI:${NC}         ~/.local/bin/scalex-pod"
   echo -e "  ${BOLD}$(i18n "State:" "상태:")${NC}        ${INSTALLER_DIR}"
   echo -e "  ${BOLD}$(i18n "Logs:" "로그:")${NC}        ${LOG_FILE}"
   echo ""
@@ -3209,8 +3209,8 @@ post_install_summary() {
   echo -e "  ${BOLD}$(i18n "Next steps:" "다음 단계:")${NC}"
   echo -e "    export PATH=\"\$HOME/.local/bin:\$PATH\""
   echo -e "    cd ${repo_dir}"
-  echo -e "    scalex get config-files    # $(i18n "Check config" "구성 확인")"
-  echo -e "    scalex status              # $(i18n "Cluster status" "클러스터 상태")"
+  echo -e "    scalex-pod get config-files    # $(i18n "Check config" "구성 확인")"
+  echo -e "    scalex-pod status              # $(i18n "Cluster status" "클러스터 상태")"
   echo ""
   echo -e "  ${BOLD}$(i18n "ArgoCD dashboard:" "ArgoCD 대시보드:")${NC}"
   echo -e "    https://$(grep -o 'argocd:.*' "$GEN_DIR/config/k8s-clusters.yaml" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"' || echo "cd.example.com")"

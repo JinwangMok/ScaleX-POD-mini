@@ -37,7 +37,7 @@ pub struct PlatformStatus {
 /// Compute facts layer status from node count
 pub fn compute_facts_status(node_count: usize) -> LayerStatus {
     let health = if node_count == 0 {
-        LayerHealth::NotReady("No hardware facts gathered. Run `scalex facts --all`.".to_string())
+        LayerHealth::NotReady("No hardware facts gathered. Run `scalex-pod facts --all`.".to_string())
     } else {
         LayerHealth::Ready
     };
@@ -51,7 +51,7 @@ pub fn compute_facts_status(node_count: usize) -> LayerStatus {
 /// Compute SDI layer status from pool/node counts
 pub fn compute_sdi_status(pool_count: usize, node_count: usize) -> LayerStatus {
     let health = if pool_count == 0 {
-        LayerHealth::NotReady("No SDI pools. Run `scalex sdi init <spec>`.".to_string())
+        LayerHealth::NotReady("No SDI pools. Run `scalex-pod sdi init <spec>`.".to_string())
     } else if node_count == 0 {
         LayerHealth::Partial("Pools defined but no nodes provisioned.".to_string())
     } else {
@@ -71,7 +71,7 @@ pub fn compute_cluster_status(clusters: &[(String, u32, bool)]) -> LayerStatus {
         return LayerStatus {
             name: "Clusters".to_string(),
             health: LayerHealth::NotReady(
-                "No clusters. Run `scalex cluster init <config>`.".to_string(),
+                "No clusters. Run `scalex-pod cluster init <config>`.".to_string(),
             ),
             details: vec![],
         };
@@ -113,7 +113,7 @@ pub fn compute_cluster_status_with_readiness(clusters: &[(String, u32, u32, bool
         return LayerStatus {
             name: "Clusters".to_string(),
             health: LayerHealth::NotReady(
-                "No clusters. Run `scalex cluster init <config>`.".to_string(),
+                "No clusters. Run `scalex-pod cluster init <config>`.".to_string(),
             ),
             details: vec![],
         };

@@ -1,6 +1,6 @@
 # Setup Guide
 
-> From fresh bare-metal to `scalex get clusters` — complete provisioning walkthrough.
+> From fresh bare-metal to `scalex-pod get clusters` — complete provisioning walkthrough.
 
 ---
 
@@ -25,7 +25,7 @@ The installer runs 5 phases:
 2. **Phase 1**: Bare-metal SSH access setup (→ `.baremetal-init.yaml`, `.env`)
 3. **Phase 2**: SDI virtualization layer config (→ `sdi-specs.yaml`)
 4. **Phase 3**: Cluster & GitOps config (→ `k8s-clusters.yaml`, `secrets.yaml`)
-5. **Phase 4**: Repo clone, CLI build, auto-provision (`scalex facts → sdi init → cluster init → bootstrap`)
+5. **Phase 4**: Repo clone, CLI build, auto-provision (`scalex-pod facts → sdi init → cluster init → bootstrap`)
 
 Interrupted? State is saved automatically — re-run to resume from the last completed phase.
 
@@ -77,7 +77,7 @@ git submodule update --init --recursive  # Kubespray v2.30.0 submodule
 ```bash
 cd scalex-cli && cargo build --release
 export PATH="$PWD/target/release:$PATH"
-scalex --help
+scalex-pod --help
 cd ..
 ```
 
@@ -168,17 +168,17 @@ Edit: `cluster_sdi_resource_pool` (must match sdi-specs pool_name), `network.pod
 **Validate all configs:**
 
 ```bash
-scalex get config-files   # All items should be OK or Present
+scalex-pod get config-files   # All items should be OK or Present
 ```
 
 ### Step 3: Gather Hardware Facts
 
 ```bash
-scalex facts --all
+scalex-pod facts --all
 # Results: _generated/facts/{node-name}.json
 
-scalex facts --host playbox-0   # Single node (for debugging)
-scalex get baremetals            # View results
+scalex-pod facts --host playbox-0   # Single node (for debugging)
+scalex-pod get baremetals            # View results
 ```
 
 > **SSH failure?** Re-check Step 1.5. **Permission denied?** Verify `.env` passwords or SSH key.
@@ -186,20 +186,20 @@ scalex get baremetals            # View results
 ### Step 4: SDI Virtualization (OpenTofu)
 
 ```bash
-scalex sdi init config/sdi-specs.yaml
+scalex-pod sdi init config/sdi-specs.yaml
 # Results: _generated/sdi/ (HCL files + tofu apply)
 # Duration: ~5 min per node (libvirt install + VM creation)
 
-scalex get sdi-pools   # Verify VM pool status
+scalex-pod get sdi-pools   # Verify VM pool status
 ```
 
-> libvirt not installed? `scalex sdi init` auto-installs via ansible.
+> libvirt not installed? `scalex-pod sdi init` auto-installs via ansible.
 > **Failure?** Check `sudo systemctl status libvirtd` on each node.
 
 ### Step 5: K8s Cluster Provisioning (Kubespray)
 
 ```bash
-scalex cluster init config/k8s-clusters.yaml
+scalex-pod cluster init config/k8s-clusters.yaml
 # Duration: ~15-30 min per cluster (Kubespray full provisioning)
 # Results: _generated/clusters/{name}/ (inventory.ini + group_vars + kubeconfig.yaml)
 
@@ -210,7 +210,7 @@ kubectl get nodes
 export KUBECONFIG=_generated/clusters/sandbox/kubeconfig.yaml
 kubectl get nodes
 
-scalex get clusters   # Multi-cluster inventory
+scalex-pod get clusters   # Multi-cluster inventory
 ```
 
 > Kubespray is idempotent — re-run on failure to resume from the failure point.
@@ -219,7 +219,7 @@ scalex get clusters   # Multi-cluster inventory
 
 ```bash
 export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
-scalex secrets apply
+scalex-pod secrets apply
 ```
 
 > **Important**: If using Cloudflare Tunnel, `credentials/cloudflare-tunnel.json` must exist before this step. Otherwise cloudflared Pod will CrashLoop in Step 7.
@@ -227,9 +227,9 @@ scalex secrets apply
 ### Step 7: ArgoCD Bootstrap
 
 ```bash
-scalex bootstrap
+scalex-pod bootstrap
 # Or preview first:
-scalex bootstrap --dry-run
+scalex-pod bootstrap --dry-run
 ```
 
 This automatically:
@@ -276,8 +276,8 @@ kubectl --kubeconfig _generated/clusters/tower/kubeconfig.yaml \
 ### Step 8: Final Verification
 
 ```bash
-scalex status              # Full platform status
-scalex get clusters        # Cluster inventory
+scalex-pod status              # Full platform status
+scalex-pod get clusters        # Cluster inventory
 
 export KUBECONFIG=_generated/clusters/tower/kubeconfig.yaml
 kubectl -n argocd get applications
@@ -293,10 +293,10 @@ kubectl -n argocd get applications
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `scalex get config-files` shows Missing | Config file not copied | Re-check Step 2 `cp` commands |
-| `scalex facts` SSH failure | SSH access unreachable | Re-check Step 1.5 pre-flight |
-| `scalex sdi init` libvirt error | libvirt not installed/running | `sudo apt install -y libvirt-daemon-system` on each node |
-| `scalex cluster init` mid-failure | Network/package issue | Re-run same command (idempotent) |
+| `scalex-pod get config-files` shows Missing | Config file not copied | Re-check Step 2 `cp` commands |
+| `scalex-pod facts` SSH failure | SSH access unreachable | Re-check Step 1.5 pre-flight |
+| `scalex-pod sdi init` libvirt error | libvirt not installed/running | `sudo apt install -y libvirt-daemon-system` on each node |
+| `scalex-pod cluster init` mid-failure | Network/package issue | Re-run same command (idempotent) |
 | ArgoCD app OutOfSync | Git repo URL mismatch | Check `k8s-clusters.yaml` `argocd.repo_url` |
 | cloudflared Pod CrashLoop | Tunnel credentials missing | Check Step 6 + `credentials/cloudflare-tunnel.json` |
 

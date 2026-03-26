@@ -114,7 +114,7 @@ pub fn validate_removal_safety(has_state: bool, nodes_to_remove: &[String]) -> V
     warnings.push(format!(
         "SDI state file not found but {} node(s) scheduled for removal: {}. \
          Cannot verify whether these hosts have active VMs. \
-         Run `scalex sdi init` first to establish state, or use `--force` to proceed at your own risk.",
+         Run `scalex-pod sdi init` first to establish state, or use `--force` to proceed at your own risk.",
         nodes_to_remove.len(),
         nodes_to_remove.join(", ")
     ));
@@ -132,7 +132,7 @@ pub fn has_management_cluster_conflict(conflicts: &[VmConflict], pools: &[SdiPoo
 
 /// Quorum risk for a specific pool when hosts are removed.
 #[derive(Debug, PartialEq)]
-#[allow(dead_code)] // Will be used by `scalex sdi sync` command handler
+#[allow(dead_code)] // Will be used by `scalex-pod sdi sync` command handler
 pub struct QuorumRisk {
     pub pool_name: String,
     pub total_cp_nodes: usize,
@@ -148,7 +148,7 @@ pub struct QuorumRisk {
 /// control-plane count below the majority quorum threshold (total/2 + 1).
 ///
 /// Pure function: no I/O, no side effects.
-#[allow(dead_code)] // Will be used by `scalex sdi sync` command handler
+#[allow(dead_code)] // Will be used by `scalex-pod sdi sync` command handler
 pub fn detect_quorum_loss_risk(
     pools: &[SdiPoolState],
     hosts_to_remove: &[String],

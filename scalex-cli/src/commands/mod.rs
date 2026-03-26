@@ -1,6 +1,5 @@
 pub mod bootstrap;
 pub mod cluster;
-pub mod dash;
 pub mod facts;
 pub mod get;
 pub mod kernel_tune;

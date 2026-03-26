@@ -35,7 +35,7 @@ pub fn run(args: KernelTuneArgs) -> anyhow::Result<()> {
         let facts_path = args.facts_dir.join(format!("{}.json", node_name));
         if !facts_path.exists() {
             anyhow::bail!(
-                "Facts file '{}' not found. Run `scalex facts --host {}` first.",
+                "Facts file '{}' not found. Run `scalex-pod facts --host {}` first.",
                 facts_path.display(),
                 node_name
             );

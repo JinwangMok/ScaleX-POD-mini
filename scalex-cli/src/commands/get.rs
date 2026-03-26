@@ -99,7 +99,7 @@ pub fn run(args: GetArgs) -> anyhow::Result<()> {
 fn get_baremetals(facts_dir: &PathBuf, format: &OutputFormat) -> anyhow::Result<()> {
     if !facts_dir.exists() {
         anyhow::bail!(
-            "Facts directory '{}' not found. Run `scalex facts` first.",
+            "Facts directory '{}' not found. Run `scalex-pod facts` first.",
             facts_dir.display()
         );
     }
@@ -119,7 +119,7 @@ fn get_baremetals(facts_dir: &PathBuf, format: &OutputFormat) -> anyhow::Result<
     }
 
     if all_facts.is_empty() {
-        println!("No facts found. Run `scalex facts` first.");
+        println!("No facts found. Run `scalex-pod facts` first.");
         return Ok(());
     }
 
@@ -171,7 +171,7 @@ struct ClusterRow {
 fn get_clusters(clusters_dir: &std::path::Path) -> anyhow::Result<()> {
     if !clusters_dir.exists() {
         anyhow::bail!(
-            "Clusters directory '{}' not found. Run `scalex cluster init` first.",
+            "Clusters directory '{}' not found. Run `scalex-pod cluster init` first.",
             clusters_dir.display()
         );
     }
@@ -237,7 +237,7 @@ fn get_clusters(clusters_dir: &std::path::Path) -> anyhow::Result<()> {
     }
 
     if rows.is_empty() {
-        println!("No clusters found. Run `scalex cluster init` first.");
+        println!("No clusters found. Run `scalex-pod cluster init` first.");
         return Ok(());
     }
 
@@ -282,12 +282,12 @@ fn get_sdi_pools(sdi_dir: &std::path::Path, format: &OutputFormat) -> anyhow::Re
             return Ok(());
         }
 
-        println!("[Unified Bare-Metal Resource Pool — run `sdi init <spec>` to create VM pools]");
+        println!("[Unified Bare-Metal Resource Pool — run `scalex-pod sdi init <spec>` to create VM pools]");
         let table = Table::new(&rows).to_string();
         println!("{}", table);
     } else {
         anyhow::bail!(
-            "SDI state not found at '{}'. Run `scalex sdi init` first.",
+            "SDI state not found at '{}'. Run `scalex-pod sdi init` first.",
             sdi_dir.display()
         );
     }
@@ -325,14 +325,14 @@ fn get_config_files() -> anyhow::Result<()> {
             "config/k8s-clusters.yaml",
             "Multi-cluster Kubernetes config",
         ),
-        ("_generated/facts/", "Hardware facts (from `scalex facts`)"),
+        ("_generated/facts/", "Hardware facts (from `scalex-pod facts`)"),
         (
             "_generated/sdi/",
-            "SDI OpenTofu state (from `scalex sdi init`)",
+            "SDI OpenTofu state (from `scalex-pod sdi init`)",
         ),
         (
             "_generated/clusters/",
-            "Cluster configs (from `scalex cluster init`)",
+            "Cluster configs (from `scalex-pod cluster init`)",
         ),
     ];
 

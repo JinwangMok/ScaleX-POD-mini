@@ -1,12 +1,11 @@
 mod commands;
 mod core;
-mod dash;
 mod models;
 
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "scalex", version, about = "Multi-cluster SDI platform CLI")]
+#[command(name = "scalex-pod", version, about = "Multi-cluster SDI platform CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -34,8 +33,6 @@ enum Commands {
     Validate(commands::validate::ValidateArgs),
     /// Plan VM placement based on available resources
     Plan(commands::plan::PlanArgs),
-    /// Multi-cluster Kubernetes TUI dashboard (interactive & headless)
-    Dash(commands::dash::DashArgs),
     /// Manage API tunnels (SSH bastion / Cloudflare Tunnel)
     Tunnel(commands::tunnel::TunnelArgs),
 }
@@ -54,7 +51,6 @@ fn main() -> anyhow::Result<()> {
         Commands::KernelTune(args) => commands::kernel_tune::run(args),
         Commands::Validate(args) => commands::validate::run(args),
         Commands::Plan(args) => commands::plan::run(args),
-        Commands::Dash(args) => commands::dash::run(args),
         Commands::Tunnel(args) => commands::tunnel::run(args),
     }
 }

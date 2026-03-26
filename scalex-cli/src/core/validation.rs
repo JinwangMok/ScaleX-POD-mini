@@ -490,7 +490,7 @@ pub fn check_prerequisites(command: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "Missing required tools for `scalex {}`: {}\n\
+            "Missing required tools for `scalex-pod {}`: {}\n\
              Install them before proceeding. See README.md Step 0 for installation instructions.",
             command.replace('-', " "),
             missing.join(", ")
@@ -529,8 +529,8 @@ pub fn check_workflow_dependencies(command: &str, existing_paths: &[&str]) -> Ve
             },
             WorkflowDep {
                 artifact_path: "_generated/facts/".to_string(),
-                description: "Hardware facts (gathered by `scalex facts`)".to_string(),
-                fix_command: "scalex facts --all".to_string(),
+                description: "Hardware facts (gathered by `scalex-pod facts`)".to_string(),
+                fix_command: "scalex-pod facts --all".to_string(),
             },
         ],
         "sdi-init-spec" => vec![
@@ -547,7 +547,7 @@ pub fn check_workflow_dependencies(command: &str, existing_paths: &[&str]) -> Ve
             WorkflowDep {
                 artifact_path: "_generated/facts/".to_string(),
                 description: "Hardware facts".to_string(),
-                fix_command: "scalex facts --all".to_string(),
+                fix_command: "scalex-pod facts --all".to_string(),
             },
             WorkflowDep {
                 artifact_path: "config/sdi-specs.yaml".to_string(),
@@ -558,8 +558,8 @@ pub fn check_workflow_dependencies(command: &str, existing_paths: &[&str]) -> Ve
         "cluster-init" => vec![
             WorkflowDep {
                 artifact_path: "_generated/sdi-state.json".to_string(),
-                description: "SDI state (created by `scalex sdi init`)".to_string(),
-                fix_command: "scalex sdi init <sdi-specs.yaml>".to_string(),
+                description: "SDI state (created by `scalex-pod sdi init`)".to_string(),
+                fix_command: "scalex-pod sdi init <sdi-specs.yaml>".to_string(),
             },
             WorkflowDep {
                 artifact_path: "config/k8s-clusters.yaml".to_string(),
@@ -570,8 +570,8 @@ pub fn check_workflow_dependencies(command: &str, existing_paths: &[&str]) -> Ve
         "bootstrap" => vec![
             WorkflowDep {
                 artifact_path: "_generated/kubeconfigs/".to_string(),
-                description: "Kubeconfig files (created by `scalex cluster init`)".to_string(),
-                fix_command: "scalex cluster init <k8s-clusters.yaml>".to_string(),
+                description: "Kubeconfig files (created by `scalex-pod cluster init`)".to_string(),
+                fix_command: "scalex-pod cluster init <k8s-clusters.yaml>".to_string(),
             },
             WorkflowDep {
                 artifact_path: "credentials/secrets.yaml".to_string(),
@@ -596,7 +596,7 @@ pub fn format_workflow_errors(command: &str, missing: &[WorkflowDep]) -> String 
     }
 
     let mut msg = format!(
-        "Cannot run `scalex {}` — missing prerequisites:\n\n",
+        "Cannot run `scalex-pod {}` — missing prerequisites:\n\n",
         command.replace('-', " ")
     );
 
@@ -610,7 +610,7 @@ pub fn format_workflow_errors(command: &str, missing: &[WorkflowDep]) -> String 
         ));
     }
 
-    msg.push_str("Tip: Run `scalex status` to see the current workflow state.");
+    msg.push_str("Tip: Run `scalex-pod status` to see the current workflow state.");
     msg
 }
 
@@ -667,7 +667,7 @@ pub fn validate_sdi_resource_allocation(spec: &SdiSpec, facts: &[NodeFacts]) -> 
             None => {
                 errors.push(format!(
                     "Host '{}': no facts data available — cannot verify resource limits. \
-                     Run `scalex facts --host {}` first.",
+                     Run `scalex-pod facts --host {}` first.",
                     host, host
                 ));
             }
@@ -3520,7 +3520,7 @@ spec:
     #[test]
     fn test_sdi_init_no_spec_generates_resource_pool_summary() {
         // CL-1: When `sdi init` runs without a spec file, it must generate
-        // a resource-pool-summary.json so that `scalex get sdi-pools` can display it.
+        // a resource-pool-summary.json so that `scalex-pod get sdi-pools` can display it.
         // Verify the code path exists by checking sdi.rs contains the summary generation logic.
         let sdi_rs = include_str!("../commands/sdi.rs");
 
@@ -3575,7 +3575,7 @@ spec:
         );
 
         // The cache must be written in the spec-file branch (not the no-spec branch)
-        let spec_branch_marker = "Save pool state for `scalex get sdi-pools`";
+        let spec_branch_marker = "Save pool state for `scalex-pod get sdi-pools`";
         let spec_branch_start = sdi_rs
             .find(spec_branch_marker)
             .expect("spec branch marker must exist");
@@ -3596,7 +3596,7 @@ spec:
 
     #[test]
     fn test_get_sdi_pools_supports_baremetal_resource_pool() {
-        // CL-1 + CL-8: `scalex get sdi-pools` must support displaying the unified
+        // CL-1 + CL-8: `scalex-pod get sdi-pools` must support displaying the unified
         // bare-metal resource pool from resource-pool-summary.json (no-spec path).
         let get_rs = include_str!("../commands/get.rs");
 
@@ -4140,14 +4140,14 @@ spec:
 
         // Verify README or CLI-REFERENCE.md mentions key scalex commands
         let required_commands = [
-            "scalex facts",
-            "scalex sdi init",
-            "scalex sdi clean",
-            "scalex cluster init",
-            "scalex get",
-            "scalex secrets",
-            "scalex status",
-            "scalex kernel-tune",
+            "scalex-pod facts",
+            "scalex-pod sdi init",
+            "scalex-pod sdi clean",
+            "scalex-pod cluster init",
+            "scalex-pod get",
+            "scalex-pod secrets",
+            "scalex-pod status",
+            "scalex-pod kernel-tune",
         ];
         for cmd in &required_commands {
             assert!(
@@ -5056,19 +5056,19 @@ config:
 
         // All CLI commands must be documented in CLI-REFERENCE.md
         let required_commands = [
-            "scalex facts",
-            "scalex sdi init",
-            "scalex sdi clean",
-            "scalex sdi sync",
-            "scalex bootstrap",
-            "scalex cluster init",
-            "scalex get baremetals",
-            "scalex get sdi-pools",
-            "scalex get clusters",
-            "scalex get config-files",
-            "scalex status",
-            "scalex kernel-tune",
-            "scalex secrets apply",
+            "scalex-pod facts",
+            "scalex-pod sdi init",
+            "scalex-pod sdi clean",
+            "scalex-pod sdi sync",
+            "scalex-pod bootstrap",
+            "scalex-pod cluster init",
+            "scalex-pod get baremetals",
+            "scalex-pod get sdi-pools",
+            "scalex-pod get clusters",
+            "scalex-pod get config-files",
+            "scalex-pod status",
+            "scalex-pod kernel-tune",
+            "scalex-pod secrets apply",
         ];
 
         for cmd in &required_commands {
@@ -5101,14 +5101,14 @@ config:
         }
     }
 
-    /// C-1/C-2: README must document `scalex bootstrap` as a distinct installation step.
+    /// C-1/C-2: README must document `scalex-pod bootstrap` as a distinct installation step.
     /// This is critical: without ArgoCD install + cluster registration, spread.yaml cannot work.
     #[test]
     fn test_checklist_readme_bootstrap_step_exists() {
         let readme = include_str!("../../../README.md");
 
         assert!(
-            readme.contains("scalex bootstrap"),
+            readme.contains("scalex-pod bootstrap"),
             "README must document 'scalex bootstrap' command — ArgoCD install + cluster registration is a critical missing step"
         );
 
@@ -5170,7 +5170,7 @@ config:
 
         // Verify the step references the validation command
         assert!(
-            setup_guide.contains("scalex get config-files"),
+            setup_guide.contains("scalex-pod get config-files"),
             "SETUP-GUIDE.md Step 2 must end with config validation command"
         );
     }
@@ -5185,19 +5185,19 @@ config:
 
         // Find positions of key commands in README
         let facts_pos = readme
-            .find("scalex facts --all")
+            .find("scalex-pod facts --all")
             .expect("README must contain scalex facts --all");
         let sdi_init_pos = readme
-            .find("scalex sdi init config/sdi-specs.yaml")
+            .find("scalex-pod sdi init config/sdi-specs.yaml")
             .expect("README must contain scalex sdi init");
         let cluster_init_pos = readme
-            .find("scalex cluster init config/k8s-clusters.yaml")
+            .find("scalex-pod cluster init config/k8s-clusters.yaml")
             .expect("README must contain scalex cluster init");
         let secrets_pos = readme
-            .find("scalex secrets apply")
+            .find("scalex-pod secrets apply")
             .expect("README must contain scalex secrets apply");
         let bootstrap_pos = readme
-            .find("scalex bootstrap")
+            .find("scalex-pod bootstrap")
             .expect("README must contain scalex bootstrap");
 
         // Verify ordering: facts < sdi init < cluster init < secrets < bootstrap
@@ -6350,8 +6350,9 @@ config:
         );
         assert!(
             cargo_toml.contains("name = \"scalex\"")
-                || cargo_toml.contains("name = \"scalex-cli\""),
-            "Package name must be scalex or scalex-cli"
+                || cargo_toml.contains("name = \"scalex-cli\"")
+                || cargo_toml.contains("name = \"scalex-pod\""),
+            "Package name must be scalex, scalex-cli, or scalex-pod"
         );
     }
 
@@ -6700,15 +6701,15 @@ config:
         let mut unknown_commands = Vec::new();
 
         for line in readme.lines() {
-            // Find "scalex " occurrences in this line
+            // Find "scalex-pod " occurrences in this line
             let mut search_from = 0;
-            while let Some(pos) = line[search_from..].find("scalex ") {
-                let abs_pos = search_from + pos + 7; // skip "scalex "
+            while let Some(pos) = line[search_from..].find("scalex-pod ") {
+                let abs_pos = search_from + pos + 11; // skip "scalex-pod "
                 if abs_pos >= line.len() {
                     break;
                 }
 
-                // Extract the next word after "scalex "
+                // Extract the next word after "scalex-pod "
                 let rest = &line[abs_pos..];
                 let subcommand: String = rest
                     .chars()
@@ -6722,7 +6723,7 @@ config:
                 }
 
                 if !valid_subcommands.contains(&subcommand.as_str()) {
-                    unknown_commands.push(format!("scalex {}", subcommand));
+                    unknown_commands.push(format!("scalex-pod {}", subcommand));
                 }
 
                 search_from = abs_pos;
@@ -6731,7 +6732,7 @@ config:
 
         assert!(
             unknown_commands.is_empty(),
-            "README references unknown scalex commands: {:?}",
+            "README references unknown scalex-pod commands: {:?}",
             unknown_commands
         );
     }
@@ -7595,10 +7596,10 @@ config:
         ];
 
         for cmd in &subcommands {
-            let scalex_cmd = format!("scalex {}", cmd);
+            let scalex_cmd = format!("scalex-pod {}", cmd);
             assert!(
                 cli_ref.contains(&scalex_cmd),
-                "CLI-REFERENCE.md must document 'scalex {}' command",
+                "CLI-REFERENCE.md must document 'scalex-pod {}' command",
                 cmd
             );
         }
@@ -7606,7 +7607,7 @@ config:
         // CLI-REFERENCE.md must also document the get subcommands
         let get_subcommands = ["baremetals", "sdi-pools", "clusters", "config-files"];
         for sub in &get_subcommands {
-            let get_cmd = format!("scalex get {}", sub);
+            let get_cmd = format!("scalex-pod get {}", sub);
             assert!(
                 cli_ref.contains(&get_cmd),
                 "CLI-REFERENCE.md must document '{}' query command",
@@ -8236,7 +8237,7 @@ spec:
         let missing = check_workflow_dependencies("sdi-init", &existing);
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].artifact_path, "_generated/facts/");
-        assert!(missing[0].fix_command.contains("scalex facts"));
+        assert!(missing[0].fix_command.contains("scalex-pod facts"));
     }
 
     #[test]
@@ -8257,7 +8258,7 @@ spec:
         let missing = check_workflow_dependencies("cluster-init", &existing);
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].artifact_path, "_generated/sdi-state.json");
-        assert!(missing[0].fix_command.contains("scalex sdi init"));
+        assert!(missing[0].fix_command.contains("scalex-pod sdi init"));
     }
 
     #[test]
@@ -8287,13 +8288,13 @@ spec:
         let missing = vec![WorkflowDep {
             artifact_path: "_generated/facts/".to_string(),
             description: "Hardware facts".to_string(),
-            fix_command: "scalex facts --all".to_string(),
+            fix_command: "scalex-pod facts --all".to_string(),
         }];
         let msg = format_workflow_errors("sdi-init", &missing);
-        assert!(msg.contains("Cannot run `scalex sdi init`"));
+        assert!(msg.contains("Cannot run `scalex-pod sdi init`"));
         assert!(msg.contains("Hardware facts"));
-        assert!(msg.contains("scalex facts --all"));
-        assert!(msg.contains("scalex status"));
+        assert!(msg.contains("scalex-pod facts --all"));
+        assert!(msg.contains("scalex-pod status"));
     }
 
     // ── Sprint 42: Cross-file integration tests ──
@@ -9017,8 +9018,8 @@ spec:
             "README must have Minimum Bare-Metal Requirements section"
         );
         assert!(
-            content.contains("scalex validate"),
-            "README minimum specs section must reference `scalex validate` for verification"
+            content.contains("scalex-pod validate"),
+            "README minimum specs section must reference `scalex-pod validate` for verification"
         );
     }
 }

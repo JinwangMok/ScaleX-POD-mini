@@ -1249,7 +1249,7 @@ mod tests {
         );
     }
 
-    // ===== Sub-AC 5: Idempotent re-run of `scalex sdi clean --hard` =====
+    // ===== Sub-AC 5: Idempotent re-run of `scalex-pod sdi clean --hard` =====
     // These tests verify the cleanup script is safe to re-run on already-clean
     // nodes — e.g., second run after K8s/KVM/bridge artifacts are already absent.
 

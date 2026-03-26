@@ -53,7 +53,7 @@ pub fn run(args: PlanArgs) -> anyhow::Result<()> {
     let facts = load_facts(&args.facts_dir)?;
     if facts.is_empty() {
         anyhow::bail!(
-            "No facts found in {}. Run `scalex facts --all` first.",
+            "No facts found in {}. Run `scalex-pod facts --all` first.",
             args.facts_dir.display()
         );
     }
@@ -62,7 +62,7 @@ pub fn run(args: PlanArgs) -> anyhow::Result<()> {
     // 2. Load cluster config
     let k8s_content = std::fs::read_to_string(&args.clusters_file).map_err(|e| {
         anyhow::anyhow!(
-            "Failed to read {}: {}. Run `scalex plan <path>` with correct path.",
+            "Failed to read {}: {}. Run `scalex-pod plan <path>` with correct path.",
             args.clusters_file.display(),
             e
         )

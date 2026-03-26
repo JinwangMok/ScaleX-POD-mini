@@ -1,6 +1,6 @@
-# CLI Reference (`scalex`)
+# CLI Reference (`scalex-pod`)
 
-The `scalex` CLI is the primary tool for managing the entire ScaleX-POD-mini platform — from hardware facts gathering through SDI virtualization to multi-cluster provisioning.
+The `scalex-pod` CLI is the primary tool for managing the entire ScaleX-POD-mini platform — from hardware facts gathering through SDI virtualization to multi-cluster provisioning.
 
 ## Build
 
@@ -13,43 +13,43 @@ cd scalex-cli && cargo build --release
 
 | Command | Description |
 |---------|-------------|
-| `scalex facts --all` | Gather hardware info from all bare-metal nodes |
-| `scalex facts --host <name>` | Gather from a single node |
-| `scalex sdi init <sdi-specs.yaml>` | Virtualize bare-metal → resource pool → VM pools |
-| `scalex sdi clean --hard --yes-i-really-want-to` | Full infrastructure reset |
-| `scalex sdi sync` | Reconcile bare-metal changes (add/remove nodes) |
-| `scalex cluster init <k8s-clusters.yaml>` | Kubespray → multi-cluster provisioning |
-| `scalex secrets apply` | Generate and apply pre-bootstrap K8s secrets |
-| `scalex bootstrap` | Install ArgoCD + register clusters + apply spread.yaml |
+| `scalex-pod facts --all` | Gather hardware info from all bare-metal nodes |
+| `scalex-pod facts --host <name>` | Gather from a single node |
+| `scalex-pod sdi init <sdi-specs.yaml>` | Virtualize bare-metal → resource pool → VM pools |
+| `scalex-pod sdi clean --hard --yes-i-really-want-to` | Full infrastructure reset |
+| `scalex-pod sdi sync` | Reconcile bare-metal changes (add/remove nodes) |
+| `scalex-pod cluster init <k8s-clusters.yaml>` | Kubespray → multi-cluster provisioning |
+| `scalex-pod secrets apply` | Generate and apply pre-bootstrap K8s secrets |
+| `scalex-pod bootstrap` | Install ArgoCD + register clusters + apply spread.yaml |
 
 ## Query Commands
 
 | Command | Description |
 |---------|-------------|
-| `scalex get baremetals` | Hardware facts table |
-| `scalex get sdi-pools` | VM pool status |
-| `scalex get clusters` | Cluster inventory |
-| `scalex get config-files` | Config file validation |
-| `scalex validate` | Pre-provisioning config validation (YAML parsing, IP/CIDR conflicts, pool mapping) |
-| `scalex status` | 5-layer platform status report |
-| `scalex kernel-tune` | Kernel parameter recommendations and diff |
+| `scalex-pod get baremetals` | Hardware facts table |
+| `scalex-pod get sdi-pools` | VM pool status |
+| `scalex-pod get clusters` | Cluster inventory |
+| `scalex-pod get config-files` | Config file validation |
+| `scalex-pod validate` | Pre-provisioning config validation (YAML parsing, IP/CIDR conflicts, pool mapping) |
+| `scalex-pod status` | 5-layer platform status report |
+| `scalex-pod kernel-tune` | Kernel parameter recommendations and diff |
 
 ## Quick Reference
 
 ```bash
-scalex facts --all                           # HW facts
-scalex sdi init config/sdi-specs.yaml        # VM pools
-scalex cluster init config/k8s-clusters.yaml # K8s clusters
-scalex secrets apply                         # Secrets
-scalex bootstrap                             # ArgoCD + GitOps
-scalex status                                # Full status
-scalex get clusters                          # Cluster list
-scalex sdi clean --hard --yes-i-really-want-to  # Full reset
+scalex-pod facts --all                           # HW facts
+scalex-pod sdi init config/sdi-specs.yaml        # VM pools
+scalex-pod cluster init config/k8s-clusters.yaml # K8s clusters
+scalex-pod secrets apply                         # Secrets
+scalex-pod bootstrap                             # ArgoCD + GitOps
+scalex-pod status                                # Full status
+scalex-pod get clusters                          # Cluster list
+scalex-pod sdi clean --hard --yes-i-really-want-to  # Full reset
 ```
 
 ## VM Resource Budget
 
-`scalex plan` computes VM specs from component budgets. Source: `resource_planner.rs`
+`scalex-pod plan` computes VM specs from component budgets. Source: `resource_planner.rs`
 
 | Cluster Role | CPU (mc) | RAM (MB) | Disk (MB) | VM Spec (vCPU / GB / disk GB) |
 |--------------|----------|----------|-----------|-------------------------------|

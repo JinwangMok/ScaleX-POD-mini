@@ -127,7 +127,7 @@ fn cluster_state(entry: &ClusterTunnelEntry, connect_timeout: Duration) -> &'sta
 
 // ── Command entry point ──────────────────────────────────────────────────────
 //
-// Exit-code legend for `scalex tunnel status`
+// Exit-code legend for `scalex-pod tunnel status`
 // ─────────────────────────────────────────────
 //  0  All clusters in the state file are reachable (TCP probe succeeded).
 //  1  Partial or total connectivity failure:

@@ -142,7 +142,7 @@ fn run_init(
     if !facts_dir.exists() || dir_is_empty(&facts_dir) {
         println!("[sdi] No facts found. Running facts collection first...");
         if dry_run {
-            println!("[dry-run] Would run `scalex facts --all` first");
+            println!("[dry-run] Would run `scalex-pod facts --all` first");
         } else {
             run_facts_collection(&config_path, &env_path, &facts_dir)?;
         }
@@ -348,7 +348,7 @@ fn run_init(
             if all_facts.is_empty() {
                 anyhow::bail!(
                     "Auto-placement requires node facts but none are available. \
-                     Run `scalex facts --all` first or assign hosts explicitly in sdi-specs.yaml"
+                     Run `scalex-pod facts --all` first or assign hosts explicitly in sdi-specs.yaml"
                 );
             }
             let summary = resource_pool::generate_resource_pool_summary(&all_facts);
@@ -630,7 +630,7 @@ fn run_init(
             }
         }
 
-        // Save pool state for `scalex get sdi-pools`
+        // Save pool state for `scalex-pod get sdi-pools`
         let state = build_pool_state(&spec);
         let state_path = output_dir.join("sdi-state.json");
         let state_json = serde_json::to_string_pretty(&state)?;
@@ -723,7 +723,7 @@ fn run_init(
         // No spec file: set up host-level libvirt infrastructure via OpenTofu
         println!("[sdi] Phase 2: Setting up host-level libvirt infrastructure via OpenTofu...");
         if all_facts.is_empty() {
-            println!("[sdi] No facts available. Run `scalex facts --all` first.");
+            println!("[sdi] No facts available. Run `scalex-pod facts --all` first.");
         } else {
             // Generate OpenTofu HCL for host-level libvirt infra (storage pools)
             let host_inputs = build_host_infra_inputs(&bm_config.target_nodes);
@@ -1286,7 +1286,7 @@ fn run_sync(
         if !safety_warnings.is_empty() && !dry_run && !force {
             anyhow::bail!(
                 "Cannot safely remove nodes without SDI state. \
-                 Run `scalex sdi init` first or use `--force` to override."
+                 Run `scalex-pod sdi init` first or use `--force` to override."
             );
         }
         if !safety_warnings.is_empty() && force {
@@ -1331,7 +1331,7 @@ fn run_sync(
                 println!("[sdi] You must migrate or destroy these VMs before removing the host.");
                 if !dry_run {
                     anyhow::bail!(
-                        "Cannot remove nodes with active VMs. Run `scalex sdi clean` first or migrate VMs."
+                        "Cannot remove nodes with active VMs. Run `scalex-pod sdi clean` first or migrate VMs."
                     );
                 }
             }
@@ -1509,7 +1509,7 @@ fn run_sync(
     let sdi_state_path = output_dir.join("sdi-state.json");
     if sdi_state_path.exists() && !diff.to_add.is_empty() {
         println!(
-            "[sdi] NOTE: New hosts added. Re-run `scalex sdi init <spec>` to update VM placement."
+            "[sdi] NOTE: New hosts added. Re-run `scalex-pod sdi init <spec>` to update VM placement."
         );
     }
 
@@ -3409,7 +3409,7 @@ mod tests {
         );
     }
 
-    // ===== Sub-AC 5: Idempotent re-run of `scalex sdi clean --hard` across all 4 nodes =====
+    // ===== Sub-AC 5: Idempotent re-run of `scalex-pod sdi clean --hard` across all 4 nodes =====
     //
     // These tests validate:
     //   1. First run returns the correct set of operations for 4-node playbox setup
@@ -3417,7 +3417,7 @@ mod tests {
     //   3. The idempotency holds regardless of which OpenTofu files are present
     //   4. The 4-node scenario (playbox-0/1/2/3) is explicitly represented
     //
-    // Per constraints: `scalex sdi clean --hard` must be idempotent; second run must
+    // Per constraints: `scalex-pod sdi clean --hard` must be idempotent; second run must
     // exit cleanly with no leftover K8s/KVM/bridge artifacts.
 
     /// Sub-AC 5: Full two-run scenario — first run with 4 nodes removes state,
